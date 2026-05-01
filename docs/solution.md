@@ -113,34 +113,30 @@ API Server 内部由三层组成：**Adapter → Resolver → API**。
 
 ### 数据流
 
-正常路径（以 `agent_state` 为例）：
+正常路径（以 agent 状态为例）：
 
 ```
-runtime hook(Stop) → activity-monitor → agent-status.json
-                                              │
-Dashboard FileAdapter ─── fs.watch ───────────┘
-       │
-  Resolver: capability check → adapter ranking → freshness check
-       │
-  REST /api/metrics/agent_state → { value: "idle", availability: "ok", source: "status_file" }
-       │
-  SSE event: { type: "metric_update", metric: "agent_state" }
-       │
-  Browser: 状态灯从 "busy" 变为 "idle"
+runtime hook → activity-monitor 写入状态文件
+                        │
+Dashboard adapter ── fs.watch 检测变更 ── resolver 选出最佳来源
+                        │
+              REST 返回指标值 + 来源信息 + 可用性状态
+                        │
+              SSE 推送变更通知 → 浏览器更新状态灯
 ```
 
-降级路径（以 `token_usage` 为例）：
+降级路径（以 token 消耗为例）：
 
 ```
-  Resolver("token_usage"):
-    TelemetryAdapter → stale (OTel collector 5min 无数据)
-    StatusLineAdapter → ok (statusline.json 2s 前更新)
-    FileAdapter → ok (cost-log.jsonl)
-    
-  ranking: StatusLineAdapter ok（freshness 优先于 source priority）
-  → value=..., source="statusline", preferredSource="telemetry", fallbackReason="telemetry_stale"
-  → 前端: 数值正常展示 + 黄灯提示"数据来源降级"
+resolver 查询所有 adapter：
+  遥测 adapter → 5 分钟无数据（stale）
+  状态文件 adapter → 2 秒前更新（ok）
+
+freshness 优先于 source priority → 选中状态文件 adapter
+→ 前端：数值正常展示 + 黄灯提示"数据来源降级至状态文件"
 ```
+
+Resolver 的完整排序规则、输出结构和更多示例见 → [指标模型模块文档](modules/metric-model.md)
 
 ### 统一指标模型
 
@@ -202,7 +198,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 - 任务调度监控（活跃任务、执行历史、下次执行）
 - PM2 服务健康（运行状态、重启次数、内存/CPU）
 
-**依赖**：无。P0 验证清单通过即可上线。
+**依赖**：P0 验证清单通过即可上线。Dashboard 自身无外部依赖。Codex runtime 的 context_usage 在 Phase 1 为 degraded 状态（上游 activity-monitor 尚未写入 state file），不阻塞上线。
 
 ### Phase 2 — Multi-Runtime OTel + Hook（1-2 周）
 
@@ -247,7 +243,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 1. **OTel 数据量管理**：两个 runtime 的 OTel 输出可能非常详细，需确定保留策略（天数、采样率）
 2. **多实例数据汇聚**：Phase 3 需要数据传输机制（push vs pull？通过 HXA？）
 3. **Codex OTel 字段映射**：`codex.*` 事件和字段需实测建立到统一指标的精确映射
-4. **Codex context_usage 落地**：CodexContextMonitor 已有数据能力，需补 activity-monitor 的 state file write
+4. **Codex context_usage 上游前置**：CodexContextMonitor 已有数据读取能力，但 activity-monitor 尚未将结果持久化到 state file。这是上游改动（非 Dashboard 代码），Dashboard 在此之前将 Codex context_usage 标记为 degraded
 5. **llm_latency 语义对齐**：Codex API duration metric 与 Claude `llm_request` span 语义不一定等价
 
 ## 与 COCO Dashboard 的关系
