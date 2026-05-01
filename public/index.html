@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" data-theme="default">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Zylos Dashboard</title>
+    <link rel="stylesheet" href="/css/tokens.css">
+    <link rel="stylesheet" href="/css/themes/default.css">
+    <link rel="stylesheet" href="/css/themes/dark.css">
+    <link rel="stylesheet" href="/css/dashboard.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Zylos</p>
+          <h1>Dashboard</h1>
+        </div>
+        <div class="status-pill" id="health-pill">Starting</div>
+      </header>
+
+      <section class="panel">
+        <h2>Component Scaffold</h2>
+        <p>
+          The dashboard service is running. Phase 1 data adapters and metric
+          panels will land in the next implementation PR.
+        </p>
+        <dl class="facts" id="facts"></dl>
+      </section>
+    </main>
+    <script src="/js/app.js" type="module"></script>
+  </body>
+</html>

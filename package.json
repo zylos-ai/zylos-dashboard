@@ -1,0 +1,22 @@
+{
+  "name": "zylos-dashboard",
+  "version": "0.1.0",
+  "description": "Read-only observability dashboard for a local Zylos agent.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "find src hooks -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "smoke": "node src/index.js --smoke"
+  },
+  "keywords": [
+    "zylos",
+    "dashboard",
+    "observability"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}

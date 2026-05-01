@@ -1,0 +1,11 @@
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-page: #111418;
+  --bg-surface: #181d23;
+  --bg-subtle: #222a33;
+  --text-primary: #f3f6fa;
+  --text-secondary: #a7b1bf;
+  --border-subtle: #303946;
+  --accent: #7aa2ff;
+  --shadow-surface: 0 16px 45px rgba(0, 0, 0, 0.24);
+}
