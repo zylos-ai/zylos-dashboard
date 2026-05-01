@@ -15,7 +15,7 @@
 | **tool_calls** | 工具调用事件流 | event stream | ✅ | ✅ | telemetry → hook → JSONL fallback |
 | **tool_failures** | 工具执行失败 | event stream | ✅ | ✅ | telemetry → PostToolUseFailure (Claude) / tool_result inference → status fallback |
 | **tool_duration** | 工具执行耗时 | ms | ✅ | ✅ | telemetry → Pre/Post 时间差 |
-| **context_usage** | Context window 使用率 | % | ✅ | ✅ | Claude: telemetry → statusLine → context-monitor-state.json；Codex: CodexContextMonitor → status file（需补 file write） |
+| **context_usage** | Context window 使用率 | % | ✅ | degraded（上游前置） | Claude: telemetry → statusLine → context-monitor-state.json；Codex: CodexContextMonitor 已有读取能力，但 activity-monitor 尚未写入 state file，当前 Phase 1 为 degraded/missing |
 | **token_usage** | Token 消耗 | count | ✅ | ✅/verify | telemetry → statusLine → cost-log |
 | **session_cost** | Session 成本 | USD | ✅ | ✅/verify | telemetry → statusLine → cost-log |
 | **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | ✅ | ✅/verify | telemetry span / metric |
@@ -102,9 +102,9 @@ resolve("tool_calls", "claude"):
   → source="hook", preferredSource="telemetry", fallbackReason="telemetry_missing"
 
 resolve("context_usage", "codex"):
-  FileAdapter → ok, value=62.5 (status file updated 28s ago)
-  → source="status_file", preferredSource="telemetry", fallbackReason="telemetry_missing"
-  注：需在 activity-monitor Codex context polling callback 补 state file write
+  FileAdapter → missing (context-monitor-state.json 不存在或无 Codex 数据)
+  → availability="missing", source=none
+  注：上游前置——activity-monitor 补写 context-monitor-state.json 后，此路径变为 FileAdapter → ok
 
 resolve("context_usage", "claude"):
   TelemetryAdapter  → stale (last update 5min ago)
