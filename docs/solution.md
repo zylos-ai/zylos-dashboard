@@ -107,7 +107,7 @@ Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude �
 |----------|------------|-----------|------|
 | SessionStart | ✅ | ✅ | 会话开始/恢复 |
 | UserPromptSubmit | ✅ | ✅ | 用户提交 prompt 前（可阻塞） |
-| PreToolUse | ✅ | ✅ | 工具执行前；Codex 仅 Bash 触发 |
+| PreToolUse | ✅ | ✅ | 工具执行前；Codex 对所有工具触发（Bash/apply_patch/MCP），matcher 控制过滤 |
 | PostToolUse | ✅ | ✅ | 工具执行后 |
 | PermissionRequest | ✅ | ✅ | 权限审批时 |
 | Stop | ✅ | ✅ | 回复结束时 |
@@ -169,9 +169,18 @@ Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude �
 | prompt | ✅ | ❌（解析但不执行） | 单轮 Claude 评估 |
 | agent | ✅ | ❌ | 子 agent（实验性） |
 
+**Codex hook 关键限制（源码确认）：**
+
+- 所有 hook 同步阻塞执行（`async` 字段存在于 schema 但未实现）
+- PreToolUse 只能 block/deny，不能 approve（approve 会 fail open）
+- PreToolUse 的 `updatedInput` 和 `additionalContext` 在 schema 中定义但未实现（返回会导致失败）
+- PostToolUse 的 `updatedMCPToolOutput` 同样未实现
+- 非 JSON 的 stdout 如果以 `{` 或 `[` 开头会导致解析失败（SessionStart 和 UserPromptSubmit 除外）
+- 默认超时 600 秒，最小 1 秒
+
 配置路径：
 - Claude Code：`~/.claude/settings.json` → `hooks` 字段（支持 project/local/user 三层）
-- Codex CLI：`~/.codex/hooks.json` 或 `<repo>/.codex/hooks.json`
+- Codex CLI：`~/.codex/hooks.json` 或 `<repo>/.codex/hooks.json`（project/user 两层 + plugin `hooks.json`）
 
 #### 其他数据源（runtime 无关）
 
