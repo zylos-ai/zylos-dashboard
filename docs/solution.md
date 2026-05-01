@@ -61,15 +61,51 @@ Claude Code 原生支持 OpenTelemetry，通过环境变量启用：
 | `OTEL_LOG_TOOL_CONTENT=1` | 完整工具 I/O（60KB 截断） |
 | `OTEL_LOG_RAW_API_BODIES` | 完整 API 请求/响应 |
 
-8 个 Metrics：`claude_code.session.count`、`claude_code.lines_of_code.count`、`claude_code.pull_request.count`、`claude_code.commit.count`、`claude_code.cost.usage`、`claude_code.token.usage`、`claude_code.code_edit_tool.decision`、`claude_code.active_time.total`
+8 个 Metrics（含关键维度）：
 
-13+ 个 Log Events：`claude_code.user_prompt`、`claude_code.tool_result`、`claude_code.api_request`、`claude_code.api_error`、`claude_code.tool_decision`、`claude_code.compaction`、`claude_code.hook_execution_start/complete`、`claude_code.mcp_server_connection` 等
+| Metric | 关键 attributes |
+|--------|----------------|
+| `claude_code.session.count` | `start_type` (fresh/resume/continue) |
+| `claude_code.lines_of_code.count` | — |
+| `claude_code.pull_request.count` | — |
+| `claude_code.commit.count` | — |
+| `claude_code.cost.usage` | `model`, `query_source` (main/subagent/auxiliary), `speed` (fast), `effort` (low/medium/high/xhigh/max) |
+| `claude_code.token.usage` | `type` (input/output/cacheRead/cacheCreation), `model`, `query_source`, `speed`, `effort` |
+| `claude_code.code_edit_tool.decision` | `language`, `source` (config/hook/user_permanent/user_temporary/user_abort/user_reject) |
+| `claude_code.active_time.total` | `type` (cli/user) |
+
+17 个 Log Events：
+
+| Event | 关键 attributes |
+|-------|----------------|
+| `claude_code.user_prompt` | `prompt.id`, `event.sequence` |
+| `claude_code.tool_result` | `tool_name`, `success`, `prompt.id` |
+| `claude_code.tool_decision` | `tool_name`, `decision` |
+| `claude_code.api_request` | `model`, `cost_usd`, `prompt.id` |
+| `claude_code.api_error` | `error_code`, `status_code` |
+| `claude_code.api_request_body` | `body`, `body_length`, `model`（需 OTEL_LOG_RAW_API_BODIES） |
+| `claude_code.api_response_body` | `body`, `body_length`（需 OTEL_LOG_RAW_API_BODIES） |
+| `claude_code.api_retries_exhausted` | `total_attempts`, `total_retry_duration_ms` |
+| `claude_code.compaction` | `trigger`, `success`, `duration_ms`, `pre_tokens`, `post_tokens` |
+| `claude_code.hook_execution_start` | `hook_name`, `event_name` |
+| `claude_code.hook_execution_complete` | `hook_name`, `duration_ms`, `exit_code` |
+| `claude_code.mcp_server_connection` | `server_name`, `status`, `transport_type`, `duration_ms` |
+| `claude_code.permission_mode_changed` | `from_mode`, `to_mode`, `trigger` |
+| `claude_code.skill_activated` | `skill.name`, `invocation_trigger`, `skill.source` |
+| `claude_code.auth` | `action`, `success`, `auth_method` |
+| `claude_code.internal_error` | `error_name`, `error_code` |
+| `claude_code.plugin_installed` | `plugin.name`, `plugin.version`, `install.trigger` |
+
+事件关联字段：`prompt.id`（UUID，链接一个 user prompt 下的所有事件）、`event.sequence`（单调递增，事件排序）。
 
 Traces span 层级 (beta)：
 ```
 claude_code.interaction（一轮对话）
-├── claude_code.llm_request（API 调用：model, tokens, ttft_ms, cache stats）
+├── claude_code.llm_request（API 调用）
+│   attrs: model, ttft_ms, attempt, stop_reason, response.has_tool_call,
+│          gen_ai.system, gen_ai.request.model, llm_request.context (interaction/tool/standalone)
 ├── claude_code.tool（工具执行）
+│   attrs: tool_name, duration_ms, result_tokens, file_path, full_command (gated)
 │   ├── claude_code.tool.blocked_on_user（等待用户确认）
 │   ├── claude_code.tool.execution（实际执行）
 │   └── （Task 子 agent 的 spans 嵌套在此）
@@ -78,6 +114,9 @@ claude_code.interaction（一轮对话）
 ```
 
 W3C Trace Context 传播：自动传播 `TRACEPARENT` 到 Bash 子进程和 Agent SDK 子 agent。
+
+Resource-level attributes：`service.name=claude-code`、`service.version`、`os.type`、`os.version`、`host.arch`、`wsl.version`。
+Cardinality 控制：`OTEL_METRICS_INCLUDE_SESSION_ID`(默认 true)、`OTEL_METRICS_INCLUDE_VERSION`(默认 false)、`OTEL_METRICS_INCLUDE_ACCOUNT_UUID`(默认 true)。
 
 #### Codex CLI OTel
 
@@ -91,11 +130,36 @@ log_user_prompt = false  # 默认 redacted
 
 支持 `otlp-http` 和 `otlp-grpc` 两种 exporter。
 
-Log Events：`codex.conversation_starts`、`codex.api_request`、`codex.sse_event`、`codex.websocket_request/event`、`codex.user_prompt`、`codex.tool_decision`、`codex.tool_result`
+Log Events（关键 attributes）：
 
-Metrics：API duration、SSE duration、WebSocket duration、tool call count/duration 等
+| Event | 关键 attributes |
+|-------|----------------|
+| `codex.conversation_starts` | `conversation.id`, `user.email`, `terminal.type` |
+| `codex.api_request` | `model`, `call_id`, `cf_ray`, `auth_mode`, `duration_ms` |
+| `codex.sse_event` | `input_token_count`, `output_token_count`, `cached_token_count`, `reasoning_token_count`, `tool_token_count`, `call_id` |
+| `codex.websocket_request` / `codex.websocket_event` | `duration_ms`, `call_id` |
+| `codex.user_prompt` | `conversation.id`, `decision` |
+| `codex.tool_decision` | `tool_name`, `decision` |
+| `codex.tool_result` | `tool_name`, `success`, `duration_ms` |
 
-Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude 详尽，需实测确认结构。
+事件关联字段：`conversation.id`（跨事件关联）、`call_id`（per model call 唯一）。
+
+Metrics：
+
+| Metric | 说明 |
+|--------|------|
+| `codex.turn.e2e_duration_ms` | 端到端 turn 耗时 histogram |
+| `codex.turn.ttft.duration_ms` | 首 token 延迟 histogram |
+| `codex.approval.requested` | 审批请求计数（按 tool、result 分） |
+| `codex.mcp.call` | MCP 工具调用结果 |
+| `codex.thread.started` | 线程启动（按 Git repo 存在性分） |
+| `codex.conversation.turn.count` | 对话轮次计数 |
+| `codex.skill.injected` | Skill 注入结果 |
+| API/SSE/WebSocket duration | 请求耗时 histogram |
+
+**重要架构差异**：Codex 的主要数据信号是 **OTel Logs**（非 Metrics）。SigNoz 的 Codex dashboard 完全基于 log attributes 聚合（如 `sum(input_token_count)`、`count_distinct(conversation.id)`）。TelemetryAdapter 对 Codex 侧需采用 log-based aggregation 模式，而非 Claude 的 metrics pipeline 模式。
+
+Traces：`codex.session` root span + 子 span（API 调用、工具执行）。Resource: `service.name=codex_cli_rs`。
 
 #### Hook 事件对比
 
@@ -230,7 +294,9 @@ Dashboard 的核心抽象。用户看到统一的指标，不关心底层来自�
 | **session_lifecycle** | Session 启动/结束 | event | ✅ | ✅ | SessionStart hook（两端均支持）→ status file |
 | **permission_requests** | 权限审批 | event stream | ✅ | ✅ | PermissionRequest hook（两端均支持） |
 | **health** | 健康/心跳 | healthy/degraded/error | ✅ | ✅ | status file (health + watchdog_phase) |
-| **cache_hit_rate** | Prompt cache 命中率 | % | ✅ | ❌ | telemetry token metric |
+| **cache_hit_rate** | Prompt cache 命中率 | % | ✅ | ✅ | Claude: token.usage cacheRead/(cacheRead+input)；Codex: sse_event cached_token_count/(cached+input) |
+| **ttft** | 首 token 延迟 | ms | ✅ (span attr) | ✅ (`codex.turn.ttft.duration_ms`) | telemetry span/metric |
+| **usage_leverage** | 自主工作比 | ratio | ✅ | — | 派生：active_time(cli) / active_time(user) |
 | **pm2_services** | PM2 服务状态 | structured | ✅ | ✅ | pm2 jlist（runtime 无关） |
 | **messages** | 通信消息量 | count + event | ✅ | ✅ | c4.db（runtime 无关） |
 | **scheduled_tasks** | 计划任务状态 | structured | ✅ | ✅ | scheduler.db（runtime 无关） |
@@ -402,7 +468,21 @@ interface MetricAdapter {
 | **HookAdapter** | Hook 事件流（6 共有 + Claude 独有扩展） | Phase 2 | tool_calls, tool_failures, agent_state, session_lifecycle, permission_requests |
 | **TelemetryAdapter** | OTel OTLP 接收端（multi-runtime） | Phase 2 | token_usage, session_cost, llm_latency, cache_hit_rate, tool_calls, tool_failures, tool_duration |
 
-TelemetryAdapter 内部按 runtime 分 codec：Claude 事件以 `claude_code.*` 为前缀，Codex 以 `codex.*` 为前缀。共用 OTLP ingestion pipeline，各自映射到统一指标模型。
+TelemetryAdapter 内部按 runtime 分 codec：
+- **Claude codec**：消费 OTel Metrics（`claude_code.*`）+ Logs + Traces
+- **Codex codec**：消费 OTel Logs（`codex.*` 事件，按 attributes 聚合）+ Metrics（`codex.turn.*` 等）+ Traces
+- 关键差异：Claude 主信号是 metrics pipeline，Codex 主信号是 logs pipeline（log-based aggregation）
+
+**派生指标**（由 TelemetryAdapter 计算，不直接来自 OTel）：
+
+| 派生指标 | 公式 | 来源 |
+|---------|------|------|
+| cache_efficiency_pct | cacheRead / (cacheRead + input) × 100 | token.usage by type |
+| cost_leverage | actual_api_cost / subscription_time_equivalent | cost.usage + active_time |
+| usage_leverage | cli_time / user_time | active_time.total by type |
+| tokens_per_turn | token.usage / turn_count | 聚合 |
+
+**事件链重建**：通过 `prompt.id`（Claude）和 `conversation.id`（Codex）字段，可串联一次交互下的所有 log events，重建完整执行流程。
 
 ### 4.3 技术选型
 
