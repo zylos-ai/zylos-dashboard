@@ -86,7 +86,7 @@ lifecycle:
 http_routes:
   - path: /dashboard/*
     type: reverse_proxy
-    target: localhost:${DASHBOARD_PORT}
+    target: localhost:3470
     strip_prefix: /dashboard
 config:
   required: []
@@ -104,11 +104,12 @@ upgrade:
 
 ## Caddy 路由
 
-走 http_routes marker block：
+走 http_routes marker block，zylos-core 的 route 生成器直接将 `target` 写入 `reverse_proxy`：
 
 ```
-handle_path /dashboard/* {
-    reverse_proxy localhost:{DASHBOARD_PORT}
+handle /dashboard/* {
+    uri strip_prefix /dashboard
+    reverse_proxy localhost:3470
 }
 ```
 

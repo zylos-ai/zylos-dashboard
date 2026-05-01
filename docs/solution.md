@@ -250,7 +250,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 | 问题 | 决议 |
 |------|------|
-| OTel 数据量管理 | 保留时长可配置，默认全保留。查询维度支持小时/天/7天/30天。采样率建议：metrics 全量保留，traces/logs 按 1:10 采样（可配置），超 30 天的 traces 自动归档 |
+| OTel 数据量管理 | 保留时长可配置，默认全保留。查询维度支持小时/天/7天/30天。Metrics 和 logs 全量保留；traces 默认 1:10 采样（可配置）。超 30 天的 traces 和 logs 自动归档 |
 | 多实例数据汇聚 | Dashboard 自身闭环，不依赖 HXA。Push vs pull 方式延迟到 Phase 3 实施时决定 |
 | Codex OTel 字段映射 | Phase 2 实测建立映射表，按 data-sources.md 中已验证的字段为准 |
 | Codex context_usage | 不等 activity-monitor 迭代。Phase 1 标记为 degraded，Dashboard 自身不阻塞 |
