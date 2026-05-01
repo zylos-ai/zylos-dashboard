@@ -49,6 +49,14 @@ Dashboard 是纯粹的消费者。它读取现有 activity-monitor 写入的状�
 
 Phase 1 只读已有文件，零侵入即可运行。Phase 2 接入 OTel 获得更深的观测能力。每个 phase 独立可用，不依赖后续 phase。
 
+### 可换肤的前端
+
+UI 通过 CSS Custom Properties 实现主题分离。所有视觉元素（颜色、间距、图表配色）绑定到语义化变量（如 `--bg-surface`、`--chart-palette-1`），切换皮肤只需翻转根元素的 `data-theme` 属性。每个主题是一个独立的 CSS 块，新增皮肤不需要修改 JavaScript。
+
+### zylos 组件规范
+
+Dashboard 是 zylos 组件，遵循 zylos-component-template 规范：ESM only、SKILL.md v2 frontmatter、lifecycle hooks（post-install / pre-upgrade / post-upgrade）、代码与数据分离（skill 目录放代码，components 目录放运行时数据）、PM2 服务管理。
+
 ## 架构
 
 ### 系统上下文
@@ -225,7 +233,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 | 决策 | 结论 | 关键 tradeoff |
 |------|------|--------------|
 | 架构定位 | 纯只读观测层 | 放弃控制能力，换取零侵入和安全性 |
-| 前端技术 | Vanilla JS + Chart.js | 放弃 React 生态和组件复用，换取零构建和即开即用 |
+| 前端技术 | Vanilla JS + Chart.js + CSS Custom Properties 主题层 | 零构建即开即用，CSS 变量支撑皮肤切换（~25 个语义 token），切换主题只需翻转 `data-theme` 属性。评估过 Preact/Vue CDN/Svelte，均不值得引入框架开销 |
 | 实时推送 | SSE + polling fallback | 只读场景不需要 WebSocket 双向通信，SSE 更轻量 |
 | 数据库访问 | SQLite 三层只读 | 性能有代价（无法用 WAL 优化），但绝对防止意外写入 |
 | 文件监控 | fs.watch + 5-10s polling 兜底 | inotify 在 temp+rename 模式下不可靠，polling 兜底保正确性 |
@@ -238,13 +246,15 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 | TelemetryAdapter 分 codec | Claude=metrics pipeline, Codex=log-based aggregation | 两个 runtime OTel 架构根本不同，不强行统一 |
 | capability/availability 拆两层 | 静态能力 vs 动态状态 | 避免"capability=supported 但此刻收不到数据"的混淆 |
 
-## 开放问题
+## 已决议的开放问题
 
-1. **OTel 数据量管理**：两个 runtime 的 OTel 输出可能非常详细，需确定保留策略（天数、采样率）
-2. **多实例数据汇聚**：Phase 3 需要数据传输机制（push vs pull？通过 HXA？）
-3. **Codex OTel 字段映射**：`codex.*` 事件和字段需实测建立到统一指标的精确映射
-4. **Codex context_usage 上游前置**：CodexContextMonitor 已有数据读取能力，但 activity-monitor 尚未将结果持久化到 state file。这是上游改动（非 Dashboard 代码），Dashboard 在此之前将 Codex context_usage 标记为 degraded
-5. **llm_latency 语义对齐**：Codex API duration metric 与 Claude `llm_request` span 语义不一定等价
+| 问题 | 决议 |
+|------|------|
+| OTel 数据量管理 | 保留时长可配置，默认全保留。查询维度支持小时/天/7天/30天。采样率建议：metrics 全量保留，traces/logs 按 1:10 采样（可配置），超 30 天的 traces 自动归档 |
+| 多实例数据汇聚 | Dashboard 自身闭环，不依赖 HXA。Push vs pull 方式延迟到 Phase 3 实施时决定 |
+| Codex OTel 字段映射 | Phase 2 实测建立映射表，按 data-sources.md 中已验证的字段为准 |
+| Codex context_usage | 不等 activity-monitor 迭代。Phase 1 标记为 degraded，Dashboard 自身不阻塞 |
+| llm_latency 语义对齐 | 如果两个 runtime 的延迟语义不等价，各成一套指标，选择性展示（不强行统一为一个数字） |
 
 ## 与 COCO Dashboard 的关系
 
@@ -269,6 +279,6 @@ Zylos Dashboard 的 agent 可观测性探索可反哺 COCO Dashboard 的 AI Ops 
 
 ---
 
-*文档版本: v3.0*
+*文档版本: v3.1*
 *创建日期: 2026-05-02*
 *作者: zylos01*
