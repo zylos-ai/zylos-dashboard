@@ -99,7 +99,7 @@ Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude �
 
 #### Hook 事件对比
 
-两个 runtime 都支持 hook 机制。Claude Code 支持 33 种事件，Codex CLI 支持 6 种，交集为 6 种：
+两个 runtime 都支持 hook 机制。Claude Code 支持 29 种事件，Codex CLI 支持 6 种，交集为 6 种：
 
 **共有事件（Dashboard 可统一采集）：**
 
