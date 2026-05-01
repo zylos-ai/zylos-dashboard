@@ -112,6 +112,10 @@ if (process.argv.includes('--smoke')) {
   }, null, 2));
 } else {
   const server = createServer();
+  server.on('error', (err) => {
+    console.error(`zylos-dashboard failed to start: ${err.message}`);
+    process.exitCode = 1;
+  });
   server.listen(config.port, config.host, () => {
     console.log(`zylos-dashboard listening on http://${config.host}:${config.port}`);
   });

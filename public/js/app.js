@@ -2,6 +2,11 @@ import { connectEvents } from './events.js';
 import { updateOverviewChart } from './charts.js';
 
 const $ = (selector) => document.querySelector(selector);
+const basePath = new URL('.', window.location.href);
+
+function apiPath(path) {
+  return new URL(path.replace(/^\//, ''), basePath).pathname;
+}
 
 function metric(summary, path) {
   return path.reduce((node, key) => (node == null ? null : node[key]), summary);
@@ -140,7 +145,7 @@ export function render(summary) {
 }
 
 async function fetchSummary() {
-  const response = await fetch('/api/summary');
+  const response = await fetch(apiPath('/api/summary'));
   if (!response.ok) throw new Error(`summary ${response.status}`);
   return response.json();
 }
