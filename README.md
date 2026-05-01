@@ -20,3 +20,13 @@ Open `http://127.0.0.1:3470/`.
 
 The dashboard reads these sources only. It does not mutate upstream databases,
 configuration, or runtime services.
+
+## API
+
+- `GET /api/health`
+- `GET /api/config`
+- `GET /api/adapters`
+- `GET /api/summary`
+- `GET /api/metrics`
+- `GET /api/metrics/:name`
+- `GET /api/events` (SSE)

@@ -33,7 +33,7 @@ export function serveStatic(req, res, rootDir) {
   const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const candidate = path.resolve(rootDir, relative);
 
-  if (!candidate.startsWith(rootDir)) {
+  if (candidate !== rootDir && !candidate.startsWith(`${rootDir}${path.sep}`)) {
     sendText(res, 403, 'forbidden');
     return true;
   }
