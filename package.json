@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "check": "find src hooks -name '*.js' -print0 | xargs -0 -n1 node --check",
-    "smoke": "node src/index.js --smoke"
+    "smoke": "node src/index.js --smoke",
+    "smoke:api": "node scripts/smoke-api.js"
   },
   "keywords": [
     "zylos",
@@ -18,5 +19,7 @@
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {}
+  "dependencies": {
+    "chart.js": "4.4.9"
+  }
 }

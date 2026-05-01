@@ -31,9 +31,14 @@ export function serveStatic(req, res, rootDir) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathname = decodeURIComponent(url.pathname);
   const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-  const candidate = path.resolve(rootDir, relative);
+  const vendorPrefix = 'vendor/';
+  const baseDir = relative.startsWith(vendorPrefix)
+    ? path.resolve(rootDir, '..', 'node_modules', 'chart.js', 'dist')
+    : rootDir;
+  const localRelative = relative.startsWith(vendorPrefix) ? relative.slice(vendorPrefix.length) : relative;
+  const candidate = path.resolve(baseDir, localRelative);
 
-  if (candidate !== rootDir && !candidate.startsWith(`${rootDir}${path.sep}`)) {
+  if (candidate !== baseDir && !candidate.startsWith(`${baseDir}${path.sep}`)) {
     sendText(res, 403, 'forbidden');
     return true;
   }

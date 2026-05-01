@@ -4,10 +4,15 @@ export function connectEvents(onSummary, fallbackRefresh) {
     return;
   }
 
-  const source = new EventSource('/api/events');
+  const basePath = new URL('.', window.location.href);
+  const source = new EventSource(new URL('api/events', basePath).pathname);
   let fallbackTimer = null;
 
   source.addEventListener('metrics', (event) => {
+    if (fallbackTimer) {
+      clearInterval(fallbackTimer);
+      fallbackTimer = null;
+    }
     try {
       onSummary(JSON.parse(event.data));
     } catch {
