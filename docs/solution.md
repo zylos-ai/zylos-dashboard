@@ -135,14 +135,14 @@ Log Events（关键 attributes）：
 | Event | 关键 attributes |
 |-------|----------------|
 | `codex.conversation_starts` | `conversation.id`, `user.email`, `terminal.type` |
-| `codex.api_request` | `model`, `call_id`, `cf_ray`, `auth_mode`, `duration_ms` |
-| `codex.sse_event` | `input_token_count`, `output_token_count`, `cached_token_count`, `reasoning_token_count`, `tool_token_count`, `call_id` |
-| `codex.websocket_request` / `codex.websocket_event` | `duration_ms`, `call_id` |
-| `codex.user_prompt` | `conversation.id`, `decision` |
-| `codex.tool_decision` | `tool_name`, `decision` |
-| `codex.tool_result` | `tool_name`, `success`, `duration_ms` |
+| `codex.api_request` | `model`, `cf_ray`, `auth_mode`, `duration_ms`, `status` |
+| `codex.sse_event` | `input_token_count`, `output_token_count`, `cached_token_count`, `reasoning_token_count`, `tool_token_count` |
+| `codex.websocket_request` / `codex.websocket_event` | `duration_ms`, `success`, `kind`, `error` |
+| `codex.user_prompt` | `conversation.id` |
+| `codex.tool_decision` | `tool_name`, `decision`, `call_id` |
+| `codex.tool_result` | `tool_name`, `success`, `duration_ms`, `call_id` |
 
-事件关联字段：`conversation.id`（跨事件关联）、`call_id`（per model call 唯一）。
+事件关联字段：`conversation.id`（宽关联键，跨所有事件）、`call_id`（仅 tool decision/result 路径，per tool call）。Per-model-call 级别的细粒度关联字段待实测确认。
 
 Metrics：
 
@@ -150,7 +150,7 @@ Metrics：
 |--------|------|
 | `codex.turn.e2e_duration_ms` | 端到端 turn 耗时 histogram |
 | `codex.turn.ttft.duration_ms` | 首 token 延迟 histogram |
-| `codex.approval.requested` | 审批请求计数（按 tool、result 分） |
+| `codex.approval.requested` | 审批请求计数（按 `tool`、`approved` 分） |
 | `codex.mcp.call` | MCP 工具调用结果 |
 | `codex.thread.started` | 线程启动（按 Git repo 存在性分） |
 | `codex.conversation.turn.count` | 对话轮次计数 |
@@ -588,7 +588,7 @@ log_user_prompt = false
 
 **性能分析**
 - LLM 请求延迟 P50/P95/P99（Claude `llm_request` span；Codex API duration metric，语义映射待验证）
-- Cache hit rate 追踪（Claude only）
+- Cache hit rate 追踪（multi-runtime：Claude via cacheRead token type，Codex via cached_token_count）
 - 工具执行延迟分布
 
 **异常检测**
