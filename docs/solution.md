@@ -99,22 +99,73 @@ Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude �
 
 #### Hook 事件对比
 
-两个 runtime 都支持 hook 机制，事件覆盖有交集：
+两个 runtime 都支持 hook 机制。Claude Code 支持 33 种事件，Codex CLI 支持 6 种，交集为 6 种：
+
+**共有事件（Dashboard 可统一采集）：**
 
 | Hook 事件 | Claude Code | Codex CLI | 备注 |
 |----------|------------|-----------|------|
-| UserPromptSubmit | ✅ | ✅ | 共有 |
-| PreToolUse | ✅ | ✅ | 共有 |
-| PostToolUse | ✅ | ✅ | 共有 |
-| Stop | ✅ | ✅ | 共有 |
-| PostToolUseFailure | ✅ | ❌ | Claude 独有 |
-| Notification | ✅ | ❌ | Claude 独有 |
-| PermissionRequest | ❌ | ✅ | Codex 独有 |
-| SessionStart | ❌ | ✅ | Codex 独有 |
+| SessionStart | ✅ | ✅ | 会话开始/恢复 |
+| UserPromptSubmit | ✅ | ✅ | 用户提交 prompt 前（可阻塞） |
+| PreToolUse | ✅ | ✅ | 工具执行前；Codex 仅 Bash 触发 |
+| PostToolUse | ✅ | ✅ | 工具执行后 |
+| PermissionRequest | ✅ | ✅ | 权限审批时 |
+| Stop | ✅ | ✅ | 回复结束时 |
+
+**Claude Code 独有事件（Dashboard 可利用的完整列表）：**
+
+| Hook 事件 | 阻塞? | Dashboard 用途 |
+|----------|-------|---------------|
+| PostToolUseFailure | 否 | 工具失败事件流、错误率统计 |
+| PostToolBatch | 是 | 批量工具调用结束后采集状态 |
+| Notification | 否 | permission_prompt/idle 等通知事件 |
+| SubagentStart / SubagentStop | 否/是 | 子代理生命周期追踪 |
+| TaskCreated / TaskCompleted | 是 | Task 调度事件流 |
+| TeammateIdle | 是 | Agent team 成员空闲检测 |
+| SessionEnd | 否 | 会话终止信号 |
+| StopFailure | 否 | API 错误（rate_limit/auth_failed/billing）分类 |
+| UserPromptExpansion | 是 | 命令展开（扩展命令审计） |
+| PermissionDenied | 否 | 被拒绝的工具调用统计 |
+| InstructionsLoaded | 否 | CLAUDE.md/rules 加载事件 |
+| ConfigChange | 是 | 配置变更审计 |
+| CwdChanged | 否 | 工作目录切换追踪 |
+| FileChanged | 否 | 状态文件变更通知（字面文件名匹配） |
+| WorktreeCreate / WorktreeRemove | 是/否 | Worktree 生命周期 |
+| PostCompact | 否 | 压缩完成后状态快照 |
+| Elicitation / ElicitationResult | — | MCP 用户交互事件 |
+| Setup | 否 | 启动时 init/maintenance 标记 |
+
+**不纳入的事件：**
+
+| Hook 事件 | 原因 |
+|----------|------|
+| PreCompact | zylos-core 框架设计上避免触发 auto compact，此事件不应发生 |
+
+**Dashboard 重点利用的 hook（Phase 1–2）：**
+
+| 阶段 | 事件 | 采集内容 |
+|------|------|---------|
+| Phase 1 | PostToolUse | 工具调用事件流、statusline 解析 |
+| Phase 1 | SessionStart | 会话初始化、状态文件写入 |
+| Phase 1 | Stop | Turn 结束时刷新指标快照 |
+| Phase 2 | PostToolUseFailure | 错误率、失败分类 |
+| Phase 2 | SubagentStart/Stop | 子代理追踪 |
+| Phase 2 | StopFailure | API 错误分类告警 |
+| Phase 2 | FileChanged | 监听状态文件变更驱动推送 |
+
+**Hook handler 类型：**
+
+| 类型 | Claude Code | Codex CLI | 说明 |
+|------|------------|-----------|------|
+| command | ✅ | ✅ | Shell 命令，stdin 接收 JSON |
+| http | ✅ | ❌ | POST 到远程端点 |
+| mcp_tool | ✅ | ❌ | 调用 MCP server 工具 |
+| prompt | ✅ | ❌（解析但不执行） | 单轮 Claude 评估 |
+| agent | ✅ | ❌ | 子 agent（实验性） |
 
 配置路径：
-- Claude Code：`~/.claude/settings.json` `hooks` 字段
-- Codex CLI：`~/.codex/hooks.json` 或 `config.toml`（需 `codex_hooks=true`）
+- Claude Code：`~/.claude/settings.json` → `hooks` 字段（支持 project/local/user 三层）
+- Codex CLI：`~/.codex/hooks.json` 或 `<repo>/.codex/hooks.json`
 
 #### 其他数据源（runtime 无关）
 
@@ -161,8 +212,8 @@ Dashboard 的核心抽象。用户看到统一的指标，不关心底层来自�
 | **token_usage** | Token 消耗 | count | ✅ | ✅/verify (`sse_event` token counts) | telemetry → statusLine → cost-log |
 | **session_cost** | Session 成本 | USD | ✅ | ✅/verify (需确认 cost 字段) | telemetry → statusLine → cost-log |
 | **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | ✅ | ✅/verify (API duration ≠ llm_request span，需 audit) | telemetry span / metric |
-| **session_lifecycle** | Session 启动/结束 | event | ✅ | ✅ | SessionStart hook (Codex) / 推断 (Claude) → status file |
-| **permission_requests** | 权限审批 | event stream | ❌ | ✅ | PermissionRequest hook |
+| **session_lifecycle** | Session 启动/结束 | event | ✅ | ✅ | SessionStart hook（两端均支持）→ status file |
+| **permission_requests** | 权限审批 | event stream | ✅ | ✅ | PermissionRequest hook（两端均支持） |
 | **health** | 健康/心跳 | healthy/degraded/error | ✅ | ✅ | status file (health + watchdog_phase) |
 | **cache_hit_rate** | Prompt cache 命中率 | % | ✅ | ❌ | telemetry token metric |
 | **pm2_services** | PM2 服务状态 | structured | ✅ | ✅ | pm2 jlist（runtime 无关） |
@@ -330,7 +381,7 @@ interface MetricAdapter {
 | **StatusLineAdapter** | statusline.json (Claude only) | Phase 1 | context_usage, token_usage, session_cost, cache_hit_rate |
 | **SQLiteAdapter** | c4.db, scheduler.db (readonly) | Phase 1 | messages, scheduled_tasks |
 | **PM2Adapter** | pm2 jlist | Phase 1 | pm2_services |
-| **HookAdapter** | Hook 事件流（4 共有 + 各自独有） | Phase 2 | tool_calls, tool_failures, agent_state, session_lifecycle, permission_requests (Codex) |
+| **HookAdapter** | Hook 事件流（6 共有 + Claude 独有扩展） | Phase 2 | tool_calls, tool_failures, agent_state, session_lifecycle, permission_requests |
 | **TelemetryAdapter** | OTel OTLP 接收端（multi-runtime） | Phase 2 | token_usage, session_cost, llm_latency, cache_hit_rate, tool_calls, tool_failures, tool_duration |
 
 TelemetryAdapter 内部按 runtime 分 codec：Claude 事件以 `claude_code.*` 为前缀，Codex 以 `codex.*` 为前缀。共用 OTLP ingestion pipeline，各自映射到统一指标模型。
