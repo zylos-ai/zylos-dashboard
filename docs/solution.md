@@ -107,7 +107,7 @@ Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude �
 |----------|------------|-----------|------|
 | SessionStart | ✅ | ✅ | 会话开始/恢复 |
 | UserPromptSubmit | ✅ | ✅ | 用户提交 prompt 前（可阻塞） |
-| PreToolUse | ✅ | ✅ | 工具执行前；Codex 对所有工具触发（Bash/apply_patch/MCP），matcher 控制过滤 |
+| PreToolUse | ✅ | ✅ | 工具执行前；Codex 非 Bash-only，对暴露 `PreToolUsePayload` 的 handler 触发（Bash/unified exec/apply_patch/MCP tools）；matcher 控制过滤 |
 | PostToolUse | ✅ | ✅ | 工具执行后 |
 | PermissionRequest | ✅ | ✅ | 权限审批时 |
 | Stop | ✅ | ✅ | 回复结束时 |
