@@ -6,6 +6,12 @@
   --text-secondary: #586474;
   --border-subtle: #d8dee8;
   --accent: #2563eb;
+  --chart-palette-1: #2563eb;
+  --chart-palette-2: #0891b2;
+  --chart-palette-3: #0f8a4b;
+  --chart-palette-4: #c2410c;
+  --chart-palette-5: #7c3aed;
+  --chart-palette-6: #b7791f;
   --status-ok: #0f8a4b;
   --status-warn: #b7791f;
   --status-error: #c2410c;

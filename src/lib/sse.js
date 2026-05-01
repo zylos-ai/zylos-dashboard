@@ -3,6 +3,7 @@ export class SseHub {
     this.intervalMs = intervalMs;
     this.clients = new Set();
     this.timer = null;
+    this.sequence = 0;
   }
 
   add(res, producer) {
@@ -37,6 +38,8 @@ export class SseHub {
     for (const client of this.clients) {
       try {
         const payload = await client.producer();
+        this.sequence += 1;
+        client.res.write(`id: ${this.sequence}\n`);
         client.res.write(`event: metrics\n`);
         client.res.write(`data: ${JSON.stringify(payload)}\n\n`);
       } catch (err) {

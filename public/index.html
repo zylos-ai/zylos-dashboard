@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/css/themes/default.css">
     <link rel="stylesheet" href="/css/themes/dark.css">
     <link rel="stylesheet" href="/css/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
   </head>
   <body>
     <main class="shell">
@@ -16,18 +17,105 @@
           <p class="eyebrow">Zylos</p>
           <h1>Dashboard</h1>
         </div>
-        <div class="status-pill" id="health-pill">Starting</div>
+        <div class="top-actions">
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="Toggle theme" title="Toggle theme">◐</button>
+          <div class="status-pill" id="health-pill">Starting</div>
+        </div>
       </header>
 
-      <section class="panel">
-        <h2>Component Scaffold</h2>
-        <p>
-          The dashboard service is running. Phase 1 data adapters and metric
-          panels will land in the next implementation PR.
-        </p>
-        <dl class="facts" id="facts"></dl>
+      <section class="hero-grid" aria-label="Current state">
+        <article class="metric-card">
+          <span class="metric-label">Agent</span>
+          <strong class="metric-value" id="agent-state">n/a</strong>
+          <span class="metric-meta" id="agent-meta">Waiting for data</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Context</span>
+          <strong class="metric-value" id="context-usage">n/a</strong>
+          <span class="metric-meta" id="context-meta">Waiting for data</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Session Cost</span>
+          <strong class="metric-value" id="session-cost">n/a</strong>
+          <span class="metric-meta" id="cost-meta">Waiting for data</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">PM2</span>
+          <strong class="metric-value" id="pm2-summary">n/a</strong>
+          <span class="metric-meta" id="pm2-meta">Waiting for data</span>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel span-2">
+          <div class="panel-header">
+            <div>
+              <h2>Runtime Signals</h2>
+              <p id="last-updated">No refresh yet</p>
+            </div>
+            <span class="badge" id="data-quality">unknown</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="overview-chart" width="800" height="260"></canvas>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Tools</h2>
+            <span class="badge" id="tools-availability">unknown</span>
+          </div>
+          <dl class="facts compact">
+            <div><dt>Calls</dt><dd id="tool-call-count">0</dd></div>
+            <div><dt>Failures</dt><dd id="tool-failure-count">0</dd></div>
+            <div><dt>Avg Duration</dt><dd id="tool-duration">n/a</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Communication</h2>
+            <span class="badge" id="messages-availability">unknown</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Channel</th><th>Direction</th><th>Status</th><th>Count</th></tr></thead>
+              <tbody id="messages-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Scheduler</h2>
+            <span class="badge" id="tasks-availability">unknown</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Task</th><th>Status</th><th>Next Run</th></tr></thead>
+              <tbody id="tasks-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Services</h2>
+            <span class="badge" id="services-availability">unknown</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Status</th><th>CPU</th><th>Memory</th></tr></thead>
+              <tbody id="services-table"></tbody>
+            </table>
+          </div>
+        </article>
       </section>
     </main>
+
+    <script src="/js/theme.js" type="module"></script>
+    <script src="/js/charts.js" type="module"></script>
+    <script src="/js/events.js" type="module"></script>
     <script src="/js/app.js" type="module"></script>
   </body>
 </html>

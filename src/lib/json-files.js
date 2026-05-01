@@ -1,6 +1,4 @@
 import fs from 'node:fs';
-import readline from 'node:readline';
-
 export function readJson(filePath) {
   try {
     if (!fs.existsSync(filePath)) return { ok: false, error: 'missing' };
@@ -31,16 +29,4 @@ export function readJsonlTail(filePath, limit = 100) {
   } catch (err) {
     return { ok: false, error: err.message, value: [] };
   }
-}
-
-export async function readTextTail(filePath, limit = 100) {
-  if (!fs.existsSync(filePath)) return [];
-  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  const lines = [];
-  for await (const line of rl) {
-    lines.push(line);
-    if (lines.length > limit) lines.shift();
-  }
-  return lines;
 }

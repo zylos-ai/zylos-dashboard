@@ -7,5 +7,11 @@
   --text-secondary: #a7b1bf;
   --border-subtle: #303946;
   --accent: #7aa2ff;
+  --chart-palette-1: #7aa2ff;
+  --chart-palette-2: #28c7d9;
+  --chart-palette-3: #55c783;
+  --chart-palette-4: #ff8a65;
+  --chart-palette-5: #b596ff;
+  --chart-palette-6: #f2c166;
   --shadow-surface: 0 16px 45px rgba(0, 0, 0, 0.24);
 }
