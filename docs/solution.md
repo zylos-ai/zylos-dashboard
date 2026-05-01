@@ -141,17 +141,23 @@ Traces：SigNoz guide 确认可用，但官方 span 层级文档不如 Claude �
 |----------|------|
 | PreCompact | zylos-core 框架设计上避免触发 auto compact，此事件不应发生 |
 
-**Dashboard 重点利用的 hook（Phase 1–2）：**
+**Dashboard 利用 hook 的两种模式：**
 
-| 阶段 | 事件 | 采集内容 |
-|------|------|---------|
-| Phase 1 | PostToolUse | 工具调用事件流、statusline 解析 |
-| Phase 1 | SessionStart | 会话初始化、状态文件写入 |
-| Phase 1 | Stop | Turn 结束时刷新指标快照 |
-| Phase 2 | PostToolUseFailure | 错误率、失败分类 |
-| Phase 2 | SubagentStart/Stop | 子代理追踪 |
-| Phase 2 | StopFailure | API 错误分类告警 |
-| Phase 2 | FileChanged | 监听状态文件变更驱动推送 |
+| 模式 | Phase | 说明 |
+|------|-------|------|
+| 间接消费（读文件） | Phase 1 | activity-monitor 已有的 hook（PostToolUse/SessionStart/Stop 等）将数据写入 status files 和 JSONL，Dashboard 通过 FileAdapter 读取这些产出物 |
+| 直接 ingestion（HookAdapter） | Phase 2 | Dashboard 自身注册 hook handler，实时接收事件流，不依赖中间文件 |
+
+**HookAdapter 重点事件（Phase 2）：**
+
+| 事件 | 采集内容 |
+|------|---------|
+| PostToolUse | 实时工具调用事件流（替代 JSONL 轮询） |
+| PostToolUseFailure | 错误率、失败分类 |
+| SessionStart / SessionEnd | 会话生命周期精确时间戳 |
+| Stop / StopFailure | Turn 边界 + API 错误分类告警 |
+| SubagentStart / SubagentStop | 子代理追踪 |
+| FileChanged | 监听状态文件变更驱动 WebSocket 推送 |
 
 **Hook handler 类型：**
 
@@ -640,7 +646,7 @@ service:
 | Phase | 范围 | 预计工期 | 依赖 |
 |-------|------|---------|------|
 | Phase 1 MVP | 状态文件 + SQLite + PM2 + StatusLine 可视化 | 1-2 周 | 无 |
-| Phase 2 OTel | Multi-runtime OTel adapter（Claude env var + Codex config.toml），字段映射验证，安全清单 | 1-2 周 | 验证清单 P1 通过 |
+| Phase 2 OTel + Hook | Multi-runtime OTel adapter + HookAdapter 直接 ingestion，字段映射验证，安全清单 | 1-2 周 | 验证清单 P1 通过 |
 | Phase 3 Multi | 多实例集中监控 | TBD | Phase 2 + 多实例部署 |
 
 ## 附录：决策记录
