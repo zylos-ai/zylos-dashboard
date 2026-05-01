@@ -223,7 +223,7 @@ Dashboard 的核心抽象。用户看到统一的指标，不关心底层来自�
 | **tool_calls** | 工具调用事件流 | event stream | ✅ | ✅ | telemetry → hook → JSONL fallback |
 | **tool_failures** | 工具执行失败 | event stream | ✅ | ✅ (`codex.tool_result`) | telemetry → PostToolUseFailure (Claude) / tool_result inference → status fallback |
 | **tool_duration** | 工具执行耗时 | ms | ✅ | ✅ (OTel metric) | telemetry → Pre/Post 时间差 |
-| **context_usage** | Context window 使用率 | % | ✅ | ✅ | Claude: telemetry → statusLine → status file；Codex: CodexContextMonitor（JSONL rollout → SQLite fallback）→ status file |
+| **context_usage** | Context window 使用率 | % | ✅ | ✅ | Claude: telemetry → statusLine → context-monitor-state.json；Codex: `CodexContextMonitor.getUsage()`（JSONL rollout → SQLite fallback），数据可用但当前未持久化到 status file，需补 file write 或 Dashboard 直接调用 |
 | **token_usage** | Token 消耗 | count | ✅ | ✅/verify (`sse_event` token counts) | telemetry → statusLine → cost-log |
 | **session_cost** | Session 成本 | USD | ✅ | ✅/verify (需确认 cost 字段) | telemetry → statusLine → cost-log |
 | **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | ✅ | ✅/verify (API duration ≠ llm_request span，需 audit) | telemetry span / metric |
@@ -302,8 +302,9 @@ resolve("tool_calls", "claude"):
   → source="hook", preferredSource="telemetry", fallbackReason="telemetry_missing"
 
 resolve("context_usage", "codex"):
-  FileAdapter       → ok, value=62.5 (CodexContextMonitor 写入 status file, updated 28s ago)
+  FileAdapter       → ok, value=62.5 (activity-monitor 调用 CodexContextMonitor.getUsage() 后写入 status file, updated 28s ago)
   → source="status_file", preferredSource="telemetry", fallbackReason="telemetry_missing"
+  注：需在 activity-monitor 的 Codex context polling callback 中补一行 state file write（当前只驱动 threshold 回调）
 
 resolve("context_usage", "claude"):
   TelemetryAdapter  → stale (last update 5min ago)
@@ -394,7 +395,7 @@ interface MetricAdapter {
 
 | Adapter | 数据来源 | Phase | 覆盖指标 |
 |---------|---------|-------|---------|
-| **FileAdapter** | activity-monitor JSON/JSONL | Phase 1 | agent_state, current_tool, tool_calls, tool_duration, health, context_usage (两端均可：Claude via statusline→status file, Codex via CodexContextMonitor→status file) |
+| **FileAdapter** | activity-monitor JSON/JSONL | Phase 1 | agent_state, current_tool, tool_calls, tool_duration, health, context_usage (Claude via context-monitor-state.json；Codex 需补 state file write 后同路径可用) |
 | **StatusLineAdapter** | statusline.json (Claude only) | Phase 1 | context_usage, token_usage, session_cost, cache_hit_rate |
 | **SQLiteAdapter** | c4.db, scheduler.db (readonly) | Phase 1 | messages, scheduled_tasks |
 | **PM2Adapter** | pm2 jlist | Phase 1 | pm2_services |
@@ -425,7 +426,7 @@ TelemetryAdapter 内部按 runtime 分 codec：Claude 事件以 `claude_code.*` 
 | Statusline | `statusline.json` | 每 turn | fs.watch | Claude only |
 | Session 成本 | `cost-log.jsonl` | session 结束 | 启动全量 + tail 增量 | 无 |
 | 工具事件 | `tool-events.jsonl` | 实时 | tail -f 流式 | 无 |
-| Context 状态 | `context-monitor-state.json` | 定期 | fs.watch | 两端均可靠：Claude 由 statusline hook 写入，Codex 由 `CodexContextMonitor` 写入（读 JSONL rollout `last_token_usage.input_tokens` + `model_context_window`，或 SQLite `threads.tokens_used` fallback）。零 token 消耗 |
+| Context 状态 | `context-monitor-state.json` | 定期 | fs.watch | Claude：statusline hook 每 turn 写入。Codex：zylos-core `CodexContextMonitor` 已能读取（JSONL rollout `last_token_usage.input_tokens` + SQLite fallback），零 token 消耗，但 **当前仅驱动 threshold 回调，未写入此文件**——需在 activity-monitor polling loop 补一行 `writeFileSync` |
 | 进程采样 | `proc-state.json` | ~10s | fs.watch | 无 |
 | 配额 | `usage.json` | 定期 | fs.watch | 无 |
 | 通信记录 | `c4.db` | 消息到达 | SQLite readonly | 无 |
@@ -465,7 +466,7 @@ log_user_prompt = false
 **实时状态面板**
 - Agent 状态指示灯（idle / busy / thinking / error）
 - 当前活跃工具名称和运行时长
-- Context 使用率仪表盘（Claude runtime 可用；Codex 显示 unsupported）
+- Context 使用率仪表盘（两端均可用：Claude via statusline，Codex via CodexContextMonitor；需补 state file write）
 - 配额使用率
 - 运行时间
 
@@ -649,7 +650,7 @@ service:
 1. **OTel 数据量管理**：两个 runtime 的 OTel 输出可能非常详细，需确定保留策略（天数、采样率）
 2. **多实例数据汇聚**：Phase 3 需要数据传输机制（push vs pull？通过 HXA？）
 3. **Codex OTel 字段映射**：事件名 (`codex.*`) 和字段 shape 与 Claude (`claude_code.*`) 不同，需实测建立映射表。关键待确认：`codex.sse_event` token count 字段名、`codex.tool_result` success/failure 标志、traces span 层级
-4. **Codex context_usage**：已解决。zylos-core `CodexContextMonitor` 通过读 JSONL rollout 文件（`last_token_usage.input_tokens` + `model_context_window`）和 SQLite fallback（`threads.tokens_used` + `models_cache.json`）获取，零 token 消耗，每 30 秒轮询
+4. **Codex context_usage**：数据源已有。zylos-core `CodexContextMonitor` 每 30 秒读 JSONL rollout（`last_token_usage.input_tokens` + `model_context_window`）/ SQLite fallback，零 token 消耗。**待做**：activity-monitor polling callback 补写 `context-monitor-state.json`（当前仅驱动 threshold 回调，未持久化），Dashboard 即可通过 FileAdapter 读取
 5. **llm_latency 语义对齐**：Codex API duration metric 与 Claude `llm_request` span 语义不一定等价，Phase 2 audit 验证
 
 ## 12. 里程碑
