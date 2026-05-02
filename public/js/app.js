@@ -52,6 +52,19 @@ function formatEpoch(seconds) {
   return new Date(valueNumber * 1000).toLocaleString();
 }
 
+function formatReset(value) {
+  if (value == null || value === '') return 'n/a';
+  if (typeof value === 'number') return formatEpoch(value);
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return formatEpoch(numeric);
+  return String(value);
+}
+
+function quotaMeta(limit, availability) {
+  const reset = formatReset(limit?.resetsAt);
+  return reset === 'n/a' ? availability : `resets ${reset}`;
+}
+
 function rows(tbodySelector, items, render) {
   const tbody = $(tbodySelector);
   if (!tbody) return;
@@ -88,6 +101,7 @@ export function render(summary) {
   const agent = metric(summary, ['status', 'agent']);
   const context = metric(summary, ['status', 'context']);
   const cost = metric(summary, ['cost', 'session']);
+  const rateLimits = metric(summary, ['cost', 'rateLimits']);
   const pm2 = metric(summary, ['operations', 'pm2Services']);
   const tools = metric(summary, ['tools', 'calls']);
   const failures = metric(summary, ['tools', 'failures']);
@@ -106,6 +120,12 @@ export function render(summary) {
   const costValue = value(cost, {});
   text('#session-cost', formatMoney(costValue.usd));
   text('#cost-meta', cost.availability);
+
+  const rateLimitValue = value(rateLimits, {});
+  text('#five-hour-quota', formatPercent(rateLimitValue.fiveHour?.usedPercentage));
+  text('#five-hour-meta', quotaMeta(rateLimitValue.fiveHour, rateLimits?.availability));
+  text('#seven-day-quota', formatPercent(rateLimitValue.sevenDay?.usedPercentage));
+  text('#seven-day-meta', quotaMeta(rateLimitValue.sevenDay, rateLimits?.availability));
 
   const pm2Value = value(pm2, {});
   text('#pm2-summary', `${pm2Value.online ?? 0}/${pm2Value.count ?? 0}`);

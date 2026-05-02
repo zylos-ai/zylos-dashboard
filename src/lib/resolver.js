@@ -15,6 +15,7 @@ export const METRICS = [
   { name: 'context_usage', domain: 'status', label: 'Context usage' },
   { name: 'token_usage', domain: 'cost', label: 'Token usage' },
   { name: 'session_cost', domain: 'cost', label: 'Session cost' },
+  { name: 'rate_limits', domain: 'cost', label: 'Rate limits' },
   { name: 'llm_latency', domain: 'performance', label: 'LLM latency' },
   { name: 'session_lifecycle', domain: 'status', label: 'Session lifecycle' },
   { name: 'permission_requests', domain: 'tools', label: 'Permission requests' },
@@ -111,7 +112,8 @@ export class Resolver {
       cost: {
         session: metrics.session_cost,
         tokens: metrics.token_usage,
-        cacheHitRate: metrics.cache_hit_rate
+        cacheHitRate: metrics.cache_hit_rate,
+        rateLimits: metrics.rate_limits
       },
       tools: {
         calls: metrics.tool_calls,

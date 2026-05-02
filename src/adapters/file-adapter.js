@@ -11,6 +11,7 @@ const SUPPORTED = new Set([
   'tool_failures',
   'tool_duration',
   'context_usage',
+  'rate_limits',
   'health',
   'session_lifecycle'
 ]);
@@ -62,6 +63,7 @@ export class FileAdapter {
     if (metric === 'current_tool') return this.currentTool(metric);
     if (metric === 'health') return this.healthMetric(metric);
     if (metric === 'context_usage') return this.contextUsage(metric);
+    if (metric === 'rate_limits') return this.rateLimits(metric);
     if (metric === 'tool_calls') return this.toolCalls(metric);
     if (metric === 'tool_failures') return this.toolFailures(metric);
     if (metric === 'tool_duration') return this.toolDuration(metric);
@@ -130,6 +132,39 @@ export class FileAdapter {
     };
     const availability = value.usedPercentage == null ? 'missing' : (isStale(updatedAt, 300) ? 'stale' : 'ok');
     return { ...ok({ metric, value, source: this.name, updatedAt, confidence: value.usedPercentage == null ? 'none' : 'medium' }), availability };
+  }
+
+  rateLimits(metric) {
+    const filePath = this.path('usage.json');
+    const result = readJson(filePath);
+    if (!result.ok) return unavailable({ metric, source: this.name, availability: 'missing', reason: result.error });
+    const updatedAt = fileUpdatedAt(filePath);
+    const value = {
+      fiveHour: {
+        usedPercentage: result.value.session?.percent ?? null,
+        resetsAt: result.value.session?.resets ?? null
+      },
+      sevenDay: {
+        usedPercentage: result.value.weeklyAll?.percent ?? null,
+        resetsAt: result.value.weeklyAll?.resets ?? null
+      },
+      weeklySonnet: {
+        usedPercentage: result.value.weeklySonnet?.percent ?? null,
+        resetsAt: result.value.weeklySonnet?.resets ?? null
+      }
+    };
+    const hasData = value.fiveHour.usedPercentage != null || value.sevenDay.usedPercentage != null;
+    const availability = hasData ? (isStale(updatedAt, 300) ? 'stale' : 'ok') : 'missing';
+    return {
+      ...ok({
+        metric,
+        value,
+        source: this.name,
+        updatedAt,
+        confidence: hasData ? 'medium' : 'none'
+      }),
+      availability
+    };
   }
 
   toolCalls(metric) {

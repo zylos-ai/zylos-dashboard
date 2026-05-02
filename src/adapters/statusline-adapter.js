@@ -4,7 +4,7 @@ import { readJson, readJsonlTail } from '../lib/json-files.js';
 import { ok, unavailable } from '../lib/result.js';
 import { isStale } from '../lib/time.js';
 
-const SUPPORTED = new Set(['context_usage', 'token_usage', 'session_cost', 'cache_hit_rate']);
+const SUPPORTED = new Set(['context_usage', 'token_usage', 'session_cost', 'cache_hit_rate', 'rate_limits']);
 
 function fileUpdatedAt(filePath) {
   try {
@@ -111,6 +111,31 @@ export class StatusLineAdapter {
         confidence: denominator ? 'medium' : 'low'
         }),
         availability
+      };
+    }
+
+    if (metric === 'rate_limits') {
+      const rateLimits = data.rate_limits || {};
+      const value = {
+        fiveHour: {
+          usedPercentage: rateLimits.five_hour?.used_percentage ?? null,
+          resetsAt: rateLimits.five_hour?.resets_at ?? null
+        },
+        sevenDay: {
+          usedPercentage: rateLimits.seven_day?.used_percentage ?? null,
+          resetsAt: rateLimits.seven_day?.resets_at ?? null
+        }
+      };
+      const hasData = value.fiveHour.usedPercentage != null || value.sevenDay.usedPercentage != null;
+      return {
+        ...ok({
+        metric,
+        source: this.name,
+        updatedAt,
+        value,
+        confidence: hasData ? 'high' : 'none'
+        }),
+        availability: hasData ? availability : 'missing'
       };
     }
 

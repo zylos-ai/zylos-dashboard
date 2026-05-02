@@ -10,7 +10,7 @@ async function check(path, predicate) {
 }
 
 await check('/api/health', (json) => json.ok && Array.isArray(json.adapters));
-await check('/api/summary', (json) => json.metrics && json.status && json.operations);
+await check('/api/summary', (json) => json.metrics && json.status && json.operations && json.cost?.rateLimits);
 await check('/api/metrics/messages', (json) => {
   const raw = JSON.stringify(json);
   return !raw.includes('endpoint_id') && !raw.includes('raw_content') && !raw.includes('"content"');
