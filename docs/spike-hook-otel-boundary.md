@@ -219,13 +219,14 @@ SubagentStart 字段 + ：
 | 事件 | Claude Code | Codex | 备注 |
 |------|------------|-------|------|
 | PreToolUse | ✅ | ✅ | 都有 tool_name、tool_input、tool_use_id |
-| PostToolUse | ✅ | ✅ | 都有 tool_response、duration_ms |
+| PostToolUse | ✅ | ✅ | 都有 tool_response；duration_ms 仅 Claude hook 有，Codex 的在 OTel `codex.tool_result.duration_ms` |
 | PostToolBatch | ✅ | ❌ | Claude 独有，批次汇总 |
 | PostToolUseFailure | ✅ | ❌ | Claude 独有 |
 | Stop | ✅ | ✅ | Codex 额外有 turn_id |
 | UserPromptSubmit | ✅ | ✅ | — |
 | SubagentStart/Stop | ✅ | ❌ | Claude 独有 |
-| SessionStart/End | ✅ | ✅ | Codex SessionStart 有 model 字段 |
+| SessionStart | ✅ | ✅ | Codex SessionStart 有 model 字段 |
+| SessionEnd | ✅ | ❌ | Claude 独有；Codex 未观察到 |
 | turn_id | ❌ | ✅ | Codex 独有，用于 turn 追踪 |
 
 **HookAdapter 设计影响**：
@@ -266,8 +267,8 @@ SubagentStart 字段 + ：
 | codex.user_prompt | prompt, prompt_length | ✅ | ⚠️ 含原始 prompt |
 | codex.websocket_connect | — | 新发现 | — |
 | codex.websocket_request | duration_ms, success | 部分 | — |
-| codex.websocket_event | input/output/cached/reasoning/tool token 计数 | ✅ | — |
-| codex.sse_event | token 计数（同上） | ✅ | — |
+| codex.websocket_event | event.kind, duration_ms, success 等传输事件字段 | ✅ | — |
+| codex.sse_event | input/output/cached/reasoning/tool token 计数 | ✅ | — |
 | codex.tool_decision | tool_name, decision, call_id | ✅ | — |
 | codex.tool_result | tool_name, call_id, duration_ms, success, arguments, output | ✅ | ⚠️ 完整 I/O |
 
@@ -302,7 +303,7 @@ SubagentStart 字段 + ：
 | 项目 | 方案文档假设 | 实际 | 修正 |
 |------|-----------|------|------|
 | 导出器配置 | `exporter = { otlp-http = { endpoint = "..." } }` | 需要 `protocol = "json"` | 添加 `protocol = "json"` |
-| 指标导出器 | 与日志共用 | 需独立 `metrics_exporter` | 分别配置 |
+| 指标导出器 | 与日志共用 | 需独立 `metrics_exporter` + `trace_exporter` | 三者需分别声明（exporter / metrics_exporter / trace_exporter） |
 | 资源命名 | `codex.session` 风格 | `codex_cli_rs` | 更新文档 |
 | Trace 结构 | 干净的 `codex.session` 根 span | 52 个实现级 span | 视为不稳定 API |
 
