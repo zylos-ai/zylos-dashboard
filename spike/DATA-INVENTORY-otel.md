@@ -353,7 +353,7 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318", protocol 
 | `codex.hooks.run.duration_ms` | Hook 运行耗时 |
 | `codex.mcp.tools.*.duration_ms` | MCP 工具调用耗时 |
 | `codex.plugins.startup_sync` | 插件启动同步 |
-| `codex.plugins.final` | 插件最终状态 |
+| `codex.plugins.startup_sync.final` | 插件启动同步最终状态 |
 | `codex.remote_models.load_cache.duration_ms` | 远程模型缓存加载耗时 |
 | `codex.shell_snapshot` | Shell 快照 |
 | `codex.shell_snapshot.duration_ms` | Shell 快照耗时 |
@@ -409,7 +409,7 @@ Codex traces 是实现级 span（非稳定 API），span 层级较深。
 | `total_token_usage` | 累计 token 使用量 |
 | `model_context_window` | 模型上下文窗口大小 |
 | `rate_limits.primary.used_percent` | 主限速使用率 |
-| `rate_limits.primary.window` | 主限速窗口 |
+| `rate_limits.primary.window_minutes` | 主限速窗口（分钟） |
 | `rate_limits.primary.resets_at` | 主限速重置时间 |
 | `rate_limits.secondary.*` | 次级限速信息 |
 | `plan_type` | 用户计划类型 |

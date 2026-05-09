@@ -8,7 +8,7 @@
 
 ## 摘要
 
-两个运行时（Claude Code、Codex）均提供丰富的可观测性数据。Hook 事件是主要数据源，payload 比预期更丰富——包含完整的工具输入/输出，无需额外启用 OTel 即可满足大部分监控需求。Codex OTel 提供了 33 个指标（方案文档假设 8 个）和 52 种 trace span。
+两个运行时（Claude Code、Codex）均提供丰富的可观测性数据。Hook 事件是主要数据源，payload 比预期更丰富——包含完整的工具输入/输出，无需额外启用 OTel 即可满足大部分监控需求。Codex OTel 提供了 33 个指标（方案文档假设 8 个）和 13+ 种独立 trace span 类型。
 
 **核心结论**:
 1. Claude Code hook 事件在无头模式下**正常触发**（含 Stop 和 UserPromptSubmit），已验证 17 种事件类型
@@ -316,7 +316,7 @@ SubagentStart 字段 + ：
 | 导出器配置 | `exporter = { otlp-http = { endpoint = "..." } }` | 需要 `protocol = "json"` | 添加 `protocol = "json"` |
 | 指标导出器 | 与日志共用 | 需独立 `metrics_exporter` + `trace_exporter` | 三者需分别声明（exporter / metrics_exporter / trace_exporter） |
 | 资源命名 | `codex.session` 风格 | `codex_cli_rs` | 更新文档 |
-| Trace 结构 | 干净的 `codex.session` 根 span | 52 个实现级 span | 视为不稳定 API |
+| Trace 结构 | 干净的 `codex.session` 根 span | 13+ 种实现级 span 类型 | 视为不稳定 API |
 
 ---
 
