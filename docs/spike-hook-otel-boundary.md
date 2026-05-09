@@ -11,10 +11,12 @@
 两个运行时（Claude Code、Codex）均提供丰富的可观测性数据。Hook 事件是主要数据源，payload 比预期更丰富——包含完整的工具输入/输出，无需额外启用 OTel 即可满足大部分监控需求。Codex OTel 提供了 33 个指标（方案文档假设 8 个）和 52 种 trace span。
 
 **核心结论**:
-1. Claude Code 28 种 hook 事件在无头模式下**全部正常触发**（含 Stop 和 UserPromptSubmit）
+1. Claude Code hook 事件在无头模式下**正常触发**（含 Stop 和 UserPromptSubmit），已验证 17 种事件类型
 2. Hook payload 包含完整工具 I/O——HookAdapter 单独即可覆盖工具监控需求
 3. Codex OTel 数据量远超文档预期（33 指标 vs 8 个）
-4. **安全风险**：两个运行时默认暴露原始 prompt 和完整工具 I/O，Dashboard 必须在摄入层做脱敏
+4. Claude Code OTel 已实测验证：6 指标 / 6 种日志事件 / 5 种 trace span
+5. **StatusLine** 是第三数据源——提供 token、费用、缓存、速率限制等 Hook 和 OTel 都没有的数据
+6. **安全风险**：两个运行时默认暴露原始 prompt 和完整工具 I/O，Dashboard 必须在摄入层做脱敏
 
 ---
 
@@ -22,7 +24,9 @@
 
 ### 1.1 已捕获事件类型
 
-两个 session 共捕获 **360+ 事件**，覆盖 **13 种事件类型**：
+初始探查两个 session 共捕获 **360+ 事件**，覆盖 **13 种事件类型**。后续持续采集已累积 **6000+ 事件**，覆盖 **17 种事件类型**（含 ConfigChange、TaskCreated、TaskCompleted）。
+
+初始探查数据：
 
 | 事件 | 数量 | 说明 |
 |------|------|------|
@@ -59,7 +63,7 @@ SessionStart
   → Stop
 ```
 
-**结论**：无头模式无信息损失，28 种 hook 事件类型全部可用。
+**结论**：无头模式无信息损失，hook 事件正常触发。
 
 ### 1.3 每种事件的 Payload 字段
 
@@ -174,29 +178,28 @@ SubagentStart 字段 + ：
 | notification_type | string | 通知类型（如 "idle_prompt"） |
 | message | string | 通知内容 |
 
-### 1.4 未触发但已注册的事件（15 种）
+### 1.4 初始探查未触发的事件（更新状态）
 
-需要特定条件才能触发：
-
-| 事件 | 触发条件 | 备注 |
+| 事件 | 触发条件 | 状态 |
 |------|---------|------|
-| StopFailure | Stop hook 执行失败 | 罕见 |
-| UserPromptExpansion | Prompt 展开 | 待验证 |
-| Setup | 首次运行 | 一次性 |
-| PermissionRequest | 非 bypass 权限模式 | 我们用 bypass 模式 |
-| PermissionDenied | 权限拒绝 | 同上 |
-| TaskCreated | Task 工具创建任务 | 待触发 |
-| TaskCompleted | 任务完成 | 待触发 |
-| TeammateIdle | 队友空闲 | 多代理场景 |
-| WorktreeCreate | 创建 worktree | 待触发 |
-| WorktreeRemove | 移除 worktree | 待触发 |
-| PreCompact | 上下文压缩前 | 待触发（文档未列出，schema 支持） |
-| PostCompact | 上下文压缩后 | 待触发 |
-| Elicitation | MCP 交互式请求 | MCP 场景 |
-| ElicitationResult | MCP 请求结果 | MCP 场景 |
-| at_mention | @提及 | 多代理场景 |
-| FileChanged | 文件变更 | 待验证 |
-| ConfigChange | 配置变更 | 待触发 |
+| ConfigChange | 配置变更 | ✅ **已触发**（32 条） |
+| TaskCreated | Task 工具创建任务 | ✅ **已触发**（2 条） |
+| TaskCompleted | 任务完成 | ✅ **已触发**（2 条） |
+| StopFailure | Stop hook 执行失败 | 未触发（罕见） |
+| UserPromptExpansion | Prompt 展开 | 未触发 |
+| Setup | 首次运行 | 未触发（一次性） |
+| PermissionRequest | 非 bypass 权限模式 | 未触发（我们用 bypass） |
+| PermissionDenied | 权限拒绝 | 未触发（同上） |
+| TeammateIdle | 队友空闲 | 未触发（多代理场景） |
+| WorktreeCreate | 创建 worktree | 未触发 |
+| WorktreeRemove | 移除 worktree | 未触发 |
+| PreCompact | 上下文压缩前 | 未触发 |
+| PostCompact | 上下文压缩后 | 未触发 |
+| Elicitation | MCP 交互式请求 | 未触发（MCP 场景） |
+| ElicitationResult | MCP 请求结果 | 未触发（MCP 场景） |
+| FileChanged | 文件变更 | 未触发 |
+
+注：`at_mention` 已从列表移除——经 `/doctor` 检查确认为无效事件（spike probe 产生的误注册），已从 settings.json 中删除。
 
 ### 1.5 工具延迟统计
 
@@ -238,18 +241,26 @@ SubagentStart 字段 + ：
 
 ## 二、OTel 遥测探查
 
-### 2.1 Claude Code OTel
+### 2.1 Claude Code OTel ✅ 已实测验证
 
-**状态**：环境变量已配置（`CLAUDE_CODE_ENABLE_TELEMETRY=1`），OTLP 接收器就绪（端口 4318）。需 session 重启生效。
+**状态**：2026-05-09 通过 clean env + runtime-env.manifest 注入 OTel 环境变量，session 重启后数据正常流入 otlp-spike。
 
-**预期信号**（基于文档，待实际验证）：
-- **指标 (8)**: `claude_code.session.count`、`.cost.usage`、`.token.usage` 等
-- **日志 (17)**: `claude_code.user_prompt`、`.tool_result`、`.api_request` 等
-- **链路 (beta)**: `claude_code.interaction` → `claude_code.llm_request` → `claude_code.tool`
+**实测结果**（v2.1.138，作用域 `com.anthropic.claude_code`）：
+
+- **指标 (6 个)**：`claude_code.session.count`、`.active_time.total`、`.cost.usage`（USD）、`.token.usage`（含 model/query_source/effort/type 维度）、`.lines_of_code.count`、`.code_edit_tool.decision`
+- **日志 (6 种事件)**：`user_prompt`（含完整 prompt）、`api_request`（含 cost_usd、token 分项、model）、`hook_execution_start/complete`（配对）、`tool_decision`、`tool_result`（含 tool_input/tool_parameters/决策来源）
+- **链路 (5 种 span)**：`interaction`（顶层）→ `llm_request`（含 TTFT、cache tokens、model）→ `tool`（含命令/文件路径）→ `tool.blocked_on_user`（权限决策）+ `tool.execution`（执行结果）
+
+**与文档预期的差异**：
+- 指标实际 6 个（非 8 个）——`code_edit_tool.decision` 是新发现
+- 日志实际 6 种事件（非 17 种）——部分事件可能在特定场景下触发
+- 链路已稳定可用（非 beta），span 名称规范（`claude_code.*`），层级关系清晰
+
+详见 `spike/DATA-INVENTORY-otel.md`。
 
 ### 2.2 Codex OTel（Jinglever 实测）
 
-**样本**: 102 个 OTLP 请求，实际抓取数据。
+**样本**: 151 个 OTLP 请求，实际抓取数据（初始探查 102 个，后续补充至 151 个）。
 
 #### 资源属性
 
@@ -290,13 +301,13 @@ SubagentStart 字段 + ：
 | codex.thread.skills.* | 新发现 | 技能使用追踪 |
 | codex.plugins.* | 新发现 | 插件使用追踪 |
 
-#### 链路追踪（52 种 span）
+#### 链路追踪（13+ 种 span）
 
 实际 span 是实现级别的内部名称，非稳定 API：
-- 关键 span: `codex.exec`、`session_init*`、`thread/start`、`turn/start`、`model_client.stream_responses_websocket`、`handle_responses`、`exec_command`、`session_task.turn`
+- 关键 span: `session_init`、`run_turn`、`session_task.turn`、`turn/start`、`turn/steer`、`handle_responses`、`handle_tool_call`、`exec_command`、`write_stdin`、`model_client.stream_responses_websocket`、`responses_websocket.connect`、`responses_websocket.stream_request`、`app_server.thread_start.*`
 - Token 字段（在 `handle_responses` 和 `session_task.turn` 上）：`gen_ai.usage.input_tokens`、`gen_ai.usage.output_tokens`、`gen_ai.usage.cache_read.input_tokens`、`codex.usage.total_tokens`
 
-**注意**：Trace span 名称是实现细节，不应依赖特定名称构建 UI。
+**注意**：Trace span 名称是实现细节，不应依赖特定名称构建 UI。初始探查报告的 52 种 span 数量包含了参数化变体（如 `app_server.thread_start.*`），去重后为 13+ 种独立 span 类型。
 
 #### 配置修正
 
@@ -344,14 +355,17 @@ SubagentStart 字段 + ：
 
 | 维度 | 限制 | 替代方案 |
 |------|------|---------|
-| Token 用量 | ❌ hook 不含 token 计数 | OTel 指标 或 解析 transcript |
-| LLM 延迟（TTFT/P95） | ❌ hook 无 LLM 请求耗时 | OTel trace |
-| 模型名称/版本 | ❌ hook 不含模型信息 | OTel 资源属性 或 SessionStart |
-| Prompt cache 命中率 | ❌ hook 不含缓存信息 | OTel 指标 |
+| Token 用量 | ❌ hook 不含 token 计数 | OTel 指标 / **StatusLine** `context_window.current_usage` |
+| LLM 延迟（TTFT/P95） | ❌ hook 无 LLM 请求耗时 | OTel trace `ttft_ms` |
+| 模型名称/版本 | ❌ hook 不含模型信息 | OTel 资源属性 / **StatusLine** `model.id` |
+| Prompt cache 命中率 | ❌ hook 不含缓存信息 | OTel 指标 / **StatusLine** `cache_read/creation_input_tokens` |
 | 流式响应进度 | ❌ 所有事件都是时间点快照 | 无替代 |
-| 成本估算 | ❌ hook 无成本数据 | OTel 指标 或 自行按 token 计算 |
+| 成本估算 | ❌ hook 无成本数据 | OTel 指标 `cost.usage` / **StatusLine** `cost.total_cost_usd` |
+| 上下文窗口用量 | ❌ hook 无上下文信息 | **StatusLine** `context_window.used_percentage`（独有） |
+| 速率限制 | ❌ hook 无限速数据 | **StatusLine** `rate_limits`（独有） |
+| 推理力度 | ❌ hook 无 effort 信息 | **StatusLine** `effort.level`（独有） |
 
-### 4.3 OTel 能补充什么（Codex 实测，Claude 待验证）
+### 4.3 OTel 能补充什么（Claude Code + Codex 均已实测）
 
 | 维度 | 可获取 | 备注 |
 |------|--------|------|
@@ -364,22 +378,46 @@ SubagentStart 字段 + ：
 
 ---
 
-## 五、对方案文档的修正
+## 五、StatusLine 数据源（Claude Code 独有）
+
+StatusLine 是 Claude Code 底部状态栏，通过 `settings.json` 配置 shell 脚本，每次状态更新时从 stdin 接收完整的 JSON 会话数据。它填补了 Hook 和 OTel 都无法获取的关键指标。
+
+**StatusLine 独有数据**（Hook 和 OTel 都没有）：
+- `context_window.used_percentage` / `remaining_percentage` — 上下文用量实时百分比
+- `context_window.context_window_size` — 上下文窗口大小（200K / 1M）
+- `cost.total_duration_ms` / `total_api_duration_ms` — 会话总时长和 API 等待时长
+- `rate_limits.five_hour` / `seven_day` — 速率限制用量（Pro/Max 订阅独有）
+- `effort.level` — 当前推理力度（low/medium/high/xhigh/max）
+- `thinking.enabled` — 是否启用 extended thinking
+- `exceeds_200k_tokens` — 是否超过 200K token
+
+**与 OTel 互补**：
+- `cost.total_cost_usd` — StatusLine 给累计值，OTel 给每次请求值
+- `cache_read/creation_tokens` — StatusLine 给当前快照，OTel 给每次请求明细
+
+**采集方案**：脚本同时输出状态栏 + 追加 JSONL 文件。详见 `spike/DATA-INVENTORY-hooks.md` 第十节。
+
+---
+
+## 六、对方案文档的修正
 
 | 项目 | 原假设 | 实际 | 影响 |
 |------|--------|------|------|
 | 无头模式 Stop/UserPromptSubmit | 不触发 | **正常触发**（需 session 启动时就注册 hook） | HookAdapter 可用统一 Stop 做 turn 边界 |
 | Hook payload | 可能是摘要 | **完整工具 I/O** | HookAdapter 单独可覆盖工具监控 |
 | Codex 指标数 | 8 个 | 33 个 | TelemetryAdapter 需动态指标发现 |
-| Codex Trace | 干净的根 span | 52 个实现级 span | Trace 面板视为补充，非核心依赖 |
+| Codex Trace | 干净的根 span | 13+ 种实现级 span（去重后） | Trace 面板视为补充，非核心依赖 |
+| Claude Code OTel | 待验证 | **已实测**：6 指标 / 6 种日志 / 5 种 trace span | 全部可用 |
+| 数据源 | Hook + OTel 两源 | **三源**：Hook + OTel + StatusLine | StatusLine 填补 context/rate limit/effort 空白 |
 | Codex 配置格式 | 单一 exporter | 需分别配 metrics/trace exporter + protocol=json | 更新配置文档 |
 | 安全脱敏 | 可选 | **必须**——默认就暴露原文 | 脱敏管线是 P0 |
 
 ---
 
-## 六、待完成项
+## 七、待完成项
 
-1. **Claude Code OTel 实测**：session 重启后抓取实际 OTel 数据，验证 8 指标 / 17 日志 / trace 是否与文档一致
-2. **更多事件触发**：PermissionRequest（需非 bypass 模式）、WorktreeCreate/Remove、PostCompact（需上下文压缩）
+1. ~~**Claude Code OTel 实测**~~：✅ **已完成**（2026-05-09）——6 指标 / 6 种日志 / 5 种 trace span，数据正常流入 otlp-spike
+2. **更多事件触发**：PermissionRequest（需非 bypass 模式）、WorktreeCreate/Remove、PreCompact/PostCompact（需上下文压缩）。ConfigChange、TaskCreated、TaskCompleted 已在后续 session 中触发
 3. **脱敏管线设计**：定义每个字段的 strip/hash/keep 策略
 4. **方案文档更新**：将本报告的修正同步到 `docs/solution.md` 的 data-sources 章节
+5. **StatusLine 数据采集**：配置 statusLine 脚本，开始采集 context/cost/rate limit 数据
