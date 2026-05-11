@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=4"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=5"></script>
 </head>
 <body>
 <header class="app-header">
@@ -58,15 +58,12 @@
             </div>
           </div>
           <div class="runtime-right">
-            <span class="kv-label" data-i18n="label.activity">Current Activity</span>
+            <div class="activity-head">
+              <span class="kv-label" data-i18n="label.activity">Current Activity</span>
+              <span class="tool-badge" id="tool-count" hidden>0</span>
+            </div>
             <p class="activity-desc" id="state-activity">--</p>
-            <details class="tool-drawer" id="tool-details">
-              <summary>
-                <span data-i18n="label.running_tools">Running tools</span>
-                <span class="pill" id="tool-count">0</span>
-              </summary>
-              <div class="tool-list" id="tool-list"></div>
-            </details>
+            <div class="tool-feed" id="tool-feed"></div>
           </div>
         </div>
       </section>

@@ -165,6 +165,8 @@ function metVal(m) {
 }
 
 // ─── Render: State ───
+const prevToolIds = new Set();
+
 function renderState() {
   const p = state.dashboardState;
   $('#state-dot').className = `state-dot ${stateClass(p?.state)}`;
@@ -175,16 +177,47 @@ function renderState() {
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 
   const tools = p?.running_tools || [];
-  $('#tool-count').textContent = String(tools.length);
-  $('#tool-details').open = tools.length > 1;
-  $('#tool-list').replaceChildren(...tools.map((tool) => {
-    const el = document.createElement('div');
-    el.className = 'tool-item';
+  const badge = $('#tool-count');
+  badge.textContent = String(tools.length);
+  badge.hidden = tools.length === 0;
+
+  renderToolFeed(tools);
+}
+
+function renderToolFeed(tools) {
+  const feed = $('#tool-feed');
+  const currentIds = new Set(tools.map((t) => t.tool_use_id));
+
+  for (const id of prevToolIds) {
+    if (!currentIds.has(id)) {
+      const el = feed.querySelector(`[data-tool-id="${id}"]`);
+      if (el && !el.classList.contains('completed')) {
+        el.classList.add('completed');
+        el.addEventListener('animationend', () => el.remove(), { once: true });
+      }
+    }
+  }
+
+  for (const tool of tools) {
+    let el = feed.querySelector(`[data-tool-id="${tool.tool_use_id}"]`);
     const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
     const detail = tool.tool_detail ? `: ${esc(tool.tool_detail)}` : '';
-    el.innerHTML = `<span class="mono">${esc(tool.tool_name || 'tool')}${detail}</span><strong>${dur(elapsed)}</strong>`;
-    return el;
-  }));
+    const label = `${esc(tool.tool_name || 'tool')}${detail}`;
+
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tool-feed-item';
+      el.dataset.toolId = tool.tool_use_id;
+      el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-elapsed">${dur(elapsed)}</span>`;
+      feed.appendChild(el);
+      feed.scrollTop = feed.scrollHeight;
+    } else {
+      el.querySelector('.tool-elapsed').textContent = dur(elapsed);
+    }
+  }
+
+  prevToolIds.clear();
+  for (const id of tools.map((t) => t.tool_use_id)) prevToolIds.add(id);
 }
 
 // ─── Render: Metrics ───

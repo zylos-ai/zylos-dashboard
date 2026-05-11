@@ -339,49 +339,77 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   font-weight: 600;
 }
 
-/* ─── Tool drawer ─── */
-.tool-drawer summary {
+/* ─── Tool feed ─── */
+.activity-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  min-height: 36px;
-  padding: 0 var(--space-xs);
-  cursor: pointer;
-  color: var(--text-dim);
-  font-size: 13px;
-  list-style: none;
-  border-radius: var(--radius-xs);
-  transition: background 150ms ease;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
 }
-.tool-drawer summary:hover { background: rgba(0, 0, 0, 0.02); }
-.tool-drawer summary::-webkit-details-marker { display: none; }
-.tool-drawer summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 
-.pill {
+.tool-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 24px;
-  height: 20px;
-  padding: 0 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
   border-radius: 999px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+.tool-badge[hidden] { display: none; }
+
+.tool-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
-.tool-list { display: grid; gap: 1px; margin-top: var(--space-sm); }
-
-.tool-item {
+.tool-feed-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
   min-width: 0;
-  padding: var(--space-sm) var(--space-xs);
+  padding: var(--space-xs) 0;
   border-top: 1px solid var(--border);
+  font-size: 12px;
+  animation: tool-enter 200ms ease;
+}
+
+.tool-feed-item .tool-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.tool-feed-item .tool-elapsed {
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.tool-feed-item.completed {
+  animation: tool-exit 2s ease forwards;
+}
+
+@keyframes tool-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes tool-exit {
+  0% { opacity: 1; max-height: 32px; }
+  70% { opacity: 0.3; }
+  100% { opacity: 0; max-height: 0; padding: 0; border-top-width: 0; overflow: hidden; }
 }
 
 .mono {
