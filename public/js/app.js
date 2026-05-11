@@ -165,15 +165,19 @@ function renderToolFeed(tools, p) {
     if (!currentIds.has(id)) {
       const el = feed.querySelector(`[data-tool-id="${id}"]`);
       if (el && !el.classList.contains('done')) {
-        el.classList.add('done');
         const statusEl = el.querySelector('.tool-status');
         if (statusEl) statusEl.textContent = '✓';
+        const age = Date.now() - (Number(el.dataset.addedAt) || 0);
+        const greyDelay = Math.max(0, 2000 - age);
         setTimeout(() => {
-          if (el.parentNode) {
-            el.classList.add('removing');
-            el.addEventListener('animationend', () => el.remove(), { once: true });
-          }
-        }, 5000);
+          el.classList.add('done');
+          setTimeout(() => {
+            if (el.parentNode) {
+              el.classList.add('removing');
+              el.addEventListener('animationend', () => el.remove(), { once: true });
+            }
+          }, 10000);
+        }, greyDelay);
       }
     }
   }
@@ -188,6 +192,7 @@ function renderToolFeed(tools, p) {
       el = document.createElement('div');
       el.className = 'tool-feed-item';
       el.dataset.toolId = tool.tool_use_id;
+      el.dataset.addedAt = String(Date.now());
       el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-status">${dur(elapsed)}</span>`;
       feed.appendChild(el);
     } else if (!el.classList.contains('done')) {
