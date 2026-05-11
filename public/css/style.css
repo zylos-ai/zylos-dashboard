@@ -403,6 +403,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .tool-feed-item.thinking {
   color: var(--accent);
+}
+
+.tool-feed-item.thinking .tool-detail {
   font-style: italic;
 }
 

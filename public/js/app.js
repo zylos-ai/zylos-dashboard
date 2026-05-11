@@ -168,6 +168,12 @@ function renderToolFeed(tools, p) {
         el.classList.add('done');
         const statusEl = el.querySelector('.tool-status');
         if (statusEl) statusEl.textContent = '✓';
+        setTimeout(() => {
+          if (el.parentNode) {
+            el.classList.add('removing');
+            el.addEventListener('animationend', () => el.remove(), { once: true });
+          }
+        }, 5000);
       }
     }
   }
@@ -191,16 +197,18 @@ function renderToolFeed(tools, p) {
 
   const thinkingId = '_thinking';
   const existingThinking = feed.querySelector(`[data-tool-id="${thinkingId}"]`);
-  const shouldThink = s === 'BUSY' && tools.length === 0 && p?.reason;
+  const shouldThink = s === 'BUSY' && tools.length === 0;
   if (shouldThink) {
     if (!existingThinking) {
       const el = document.createElement('div');
       el.className = 'tool-feed-item thinking';
       el.dataset.toolId = thinkingId;
-      el.innerHTML = `<span class="tool-detail">${esc(p.reason)}</span><span class="tool-status"></span>`;
+      el.dataset.startedAt = new Date().toISOString();
+      el.innerHTML = `<span class="mono tool-detail">Thinking...</span><span class="tool-status">0s</span>`;
       feed.appendChild(el);
     } else {
-      existingThinking.querySelector('.tool-detail').textContent = p.reason;
+      const thinkAge = ageSec(existingThinking.dataset.startedAt) ?? 0;
+      existingThinking.querySelector('.tool-status').textContent = dur(thinkAge);
     }
   } else if (existingThinking) {
     existingThinking.remove();
