@@ -18,6 +18,7 @@ import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
+import { C4Reader } from './lib/c4-reader.js';
 
 const startedAt = new Date();
 const config = loadConfig();
@@ -61,6 +62,9 @@ systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
 
 // 8. Metric resolver
 const metricResolver = new MetricResolver(store, collectors, config);
+
+// 9b. C4 reader (read-only access to comm-bridge DB)
+const c4Reader = new C4Reader(config.zylosDir);
 
 // 9. Ingest handler (with state engine reference)
 const ingestHandler = new IngestHandler(store, sanitizer, stateEngine, config);
@@ -157,6 +161,51 @@ function handleApi(req, res, pathname, url) {
     }
     const result = metricResolver.resolve(metricName);
     sendJson(res, 200, result);
+    return true;
+  }
+
+  if (pathname === '/api/summary') {
+    const today = new Date().toISOString().slice(0, 10);
+    const todayStart = `${today}T00:00:00.000Z`;
+    const events = store.queryEvents({ since: todayStart, types: ['post_tool_use'], limit: 10000 });
+    const toolCalls = events.length;
+    const activeTimeMs = events.reduce((sum, e) => sum + (e.duration_ms || 0), 0);
+
+    const toolBreakdown = {};
+    for (const e of events) {
+      const name = e.metadata?.tool_name || 'Unknown';
+      toolBreakdown[name] = (toolBreakdown[name] || 0) + 1;
+    }
+    const topTool = Object.entries(toolBreakdown).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+    const c4Stats = c4Reader.getTodayStats();
+    const messagesProcessed = c4Stats ? c4Stats.total_in + c4Stats.total_out : 0;
+
+    sendJson(res, 200, {
+      date: today,
+      tool_calls: toolCalls,
+      active_time_ms: activeTimeMs,
+      active_time_h: Math.round(activeTimeMs / 36000) / 100,
+      top_tool: topTool,
+      tool_breakdown: toolBreakdown,
+      messages_processed: messagesProcessed
+    });
+    return true;
+  }
+
+  if (pathname === '/api/communication') {
+    const stats = c4Reader.getTodayStats();
+    const pending = c4Reader.getPendingQueue();
+    const lastOutbound = c4Reader.getLastOutbound();
+
+    sendJson(res, 200, {
+      channels: stats?.channels || {},
+      total_in: stats?.total_in || 0,
+      total_out: stats?.total_out || 0,
+      pending_depth: pending.depth,
+      pending_oldest_age_s: pending.oldest_age_s,
+      last_outbound: lastOutbound
+    });
     return true;
   }
 
@@ -385,6 +434,7 @@ if (isMain && process.argv.includes('--smoke')) {
       spoolDrainer.stopPeriodicDrain();
       sse.closeAll();
       server.close(() => {
+        c4Reader.close();
         store.close();
         process.exit(0);
       });

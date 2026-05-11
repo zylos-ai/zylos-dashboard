@@ -50,5 +50,18 @@
   "trends.6h": "Last 6 hours",
   "trends.24h": "Last 24 hours",
   "trends.7d": "Last 7 days",
-  "trends.no_data": "No data available for this range"
+  "trends.no_data": "No data available for this range",
+  "block.timeline": "Current Work Timeline",
+  "block.summary": "Work History",
+  "block.communication": "Communication",
+  "timeline.empty": "No recent activity",
+  "summary.tool_calls": "Tool Calls",
+  "summary.active_time": "Active Time",
+  "summary.messages": "Messages",
+  "summary.top_tool": "Top Tool",
+  "comm.empty": "No channel data",
+  "comm.in": "in",
+  "comm.out": "out",
+  "comm.pending": "Pending",
+  "comm.oldest": "oldest"
 }

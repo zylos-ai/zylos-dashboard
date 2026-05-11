@@ -13,9 +13,15 @@ const state = {
   metrics: new Map(),
   health: null,
   system: null,
+  summary: null,
+  communication: null,
+  timeline: null,
   sourceUpdatedAt: null,
   metricsUpdatedAt: null,
   healthUpdatedAt: null,
+  summaryUpdatedAt: null,
+  commUpdatedAt: null,
+  timelineUpdatedAt: null,
   timer: null,
   pollTimer: null,
   eventSource: null,
@@ -221,6 +227,102 @@ function flatSources(tree) {
   return out;
 }
 
+// ─── Render: Timeline ───
+function fmtTime(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '--';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function timelineDotType(eventType) {
+  if (eventType === 'session_start' || eventType === 'session_end') return 'session';
+  if (eventType === 'permission_request') return 'permission';
+  if (eventType === 'post_compact') return 'compact';
+  return '';
+}
+
+function fmtDuration(ms) {
+  if (!ms) return '';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function renderTimeline() {
+  const events = state.timeline || [];
+  const container = $('#timeline-list');
+  if (!events.length) {
+    container.innerHTML = `<p class="empty-state">${t('timeline.empty')}</p>`;
+    return;
+  }
+  container.replaceChildren(...events.slice(0, 50).map((e) => {
+    const el = document.createElement('div');
+    el.className = 'timeline-item';
+    const durStr = fmtDuration(e.duration_ms);
+    el.innerHTML =
+      `<span class="timeline-time">${fmtTime(e.timestamp)}</span>` +
+      `<span class="timeline-dot" data-type="${timelineDotType(e.event_type)}"></span>` +
+      `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>` +
+      `<span class="timeline-duration">${esc(durStr)}</span>`;
+    return el;
+  }));
+  $('#timeline-updated').textContent = fmtAge(state.timelineUpdatedAt);
+}
+
+// ─── Render: Summary ───
+function renderSummary() {
+  const s = state.summary;
+  $('#summary-tool-calls').textContent = s ? String(s.tool_calls) : '--';
+  $('#summary-active-time').textContent = s ? formatActiveTime(s.active_time_ms) : '--';
+  $('#summary-messages').textContent = s ? String(s.messages_processed) : '--';
+  $('#summary-top-tool').textContent = s?.top_tool || '--';
+  $('#summary-updated').textContent = fmtAge(state.summaryUpdatedAt);
+}
+
+function formatActiveTime(ms) {
+  if (!ms) return '0m';
+  const totalMin = Math.floor(ms / 60000);
+  if (totalMin < 60) return `${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}h ${m}m`;
+}
+
+// ─── Render: Communication ───
+function renderComm() {
+  const c = state.communication;
+  const container = $('#comm-channels');
+  if (!c || !Object.keys(c.channels || {}).length) {
+    container.innerHTML = `<p class="empty-state">${t('comm.empty')}</p>`;
+    $('#comm-pending').innerHTML = '';
+    return;
+  }
+
+  const lastOb = c.last_outbound || {};
+  container.replaceChildren(...Object.entries(c.channels).map(([ch, counts]) => {
+    const el = document.createElement('div');
+    el.className = 'comm-row';
+    const lastTs = lastOb[ch];
+    const ageStr = lastTs ? fmtAge(lastTs) : '--';
+    el.innerHTML =
+      `<span class="comm-channel">${esc(ch)}</span>` +
+      `<span class="comm-counts">${counts.in} ${t('comm.in')} / ${counts.out} ${t('comm.out')}</span>` +
+      `<span class="comm-age">${ageStr}</span>`;
+    return el;
+  }));
+
+  const pendingEl = $('#comm-pending');
+  if (c.pending_depth > 0) {
+    const warn = c.pending_oldest_age_s > 300 ? ' warn' : '';
+    pendingEl.innerHTML =
+      `<span class="${warn}">${t('comm.pending')}: ${c.pending_depth}</span>` +
+      (c.pending_oldest_age_s != null ? ` · ${t('comm.oldest')}: ${dur(c.pending_oldest_age_s)}` : '');
+  } else {
+    pendingEl.innerHTML = `${t('comm.pending')}: 0`;
+  }
+
+  $('#comm-updated').textContent = fmtAge(state.commUpdatedAt);
+}
+
 function renderConnection(mode) {
   const pill = $('#connection-status');
   pill.dataset.state = mode;
@@ -232,6 +334,9 @@ function renderAll() {
   renderState();
   renderMetrics();
   renderHealth();
+  renderTimeline();
+  renderSummary();
+  renderComm();
 }
 
 // ─── Data fetching ───
@@ -268,8 +373,31 @@ async function refreshHealth() {
   renderHealth();
 }
 
+async function refreshTimeline() {
+  const since = new Date(Date.now() - 30 * 60_000).toISOString();
+  const data = await fetchJson(`/api/timeline?since=${since}&limit=50`);
+  state.timeline = (data.events || []).reverse();
+  state.timelineUpdatedAt = new Date().toISOString();
+  renderTimeline();
+}
+
+async function refreshSummary() {
+  state.summary = await fetchJson('/api/summary');
+  state.summaryUpdatedAt = new Date().toISOString();
+  renderSummary();
+}
+
+async function refreshComm() {
+  state.communication = await fetchJson('/api/communication');
+  state.commUpdatedAt = new Date().toISOString();
+  renderComm();
+}
+
 async function refreshAll() {
-  const results = await Promise.allSettled([refreshState(), refreshMetrics(), refreshHealth()]);
+  const results = await Promise.allSettled([
+    refreshState(), refreshMetrics(), refreshHealth(),
+    refreshTimeline(), refreshSummary(), refreshComm()
+  ]);
   const ok = results.some((r) => r.status === 'fulfilled');
   const sseOpen = state.eventSource?.readyState === EventSource.OPEN;
   renderConnection(ok ? (sseOpen ? 'live' : 'polling') : 'degraded');

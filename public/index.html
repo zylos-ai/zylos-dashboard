@@ -137,6 +137,53 @@
         <div class="source-list" id="source-list"></div>
       </section>
 
+      <!-- ④ Current Work Timeline -->
+      <section class="card timeline-card" aria-labelledby="timeline-title">
+        <div class="card-head">
+          <h2 id="timeline-title" data-i18n="block.timeline">Current Work Timeline</h2>
+          <time class="freshness" id="timeline-updated">--</time>
+        </div>
+        <div class="timeline-list" id="timeline-list">
+          <p class="empty-state" data-i18n="timeline.empty">No recent activity</p>
+        </div>
+      </section>
+
+      <!-- ⑤ Work History -->
+      <section class="card" aria-labelledby="summary-title">
+        <div class="card-head">
+          <h2 id="summary-title" data-i18n="block.summary">Work History</h2>
+          <time class="freshness" id="summary-updated">--</time>
+        </div>
+        <div class="summary-grid" id="summary-stats">
+          <article class="stat-item">
+            <strong class="stat-value" id="summary-tool-calls">--</strong>
+            <span class="stat-label" data-i18n="summary.tool_calls">Tool Calls</span>
+          </article>
+          <article class="stat-item">
+            <strong class="stat-value" id="summary-active-time">--</strong>
+            <span class="stat-label" data-i18n="summary.active_time">Active Time</span>
+          </article>
+          <article class="stat-item">
+            <strong class="stat-value" id="summary-messages">--</strong>
+            <span class="stat-label" data-i18n="summary.messages">Messages</span>
+          </article>
+          <article class="stat-item">
+            <strong class="stat-value" id="summary-top-tool">--</strong>
+            <span class="stat-label" data-i18n="summary.top_tool">Top Tool</span>
+          </article>
+        </div>
+      </section>
+
+      <!-- ⑥ Communication -->
+      <section class="card" aria-labelledby="comm-title">
+        <div class="card-head">
+          <h2 id="comm-title" data-i18n="block.communication">Communication</h2>
+          <time class="freshness" id="comm-updated">--</time>
+        </div>
+        <div class="comm-channels" id="comm-channels"></div>
+        <div class="comm-pending" id="comm-pending"></div>
+      </section>
+
     </div>
   </section>
 
