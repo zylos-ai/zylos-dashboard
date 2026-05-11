@@ -55,16 +55,16 @@ export class C4Reader {
     if (!db) return { depth: 0, oldest_age_s: null };
     try {
       const row = db.prepare(`
-        SELECT COUNT(*) as depth, MIN(timestamp) as oldest
+        SELECT COUNT(*) as depth,
+               CAST(strftime('%s','now') - strftime('%s', MIN(timestamp)) AS INTEGER) as oldest_age_s
         FROM conversations
         WHERE direction = 'in' AND status IN ('pending', 'running')
       `).get();
 
-      const oldestAge = row.oldest
-        ? Math.floor((Date.now() - new Date(row.oldest).getTime()) / 1000)
-        : null;
-
-      return { depth: row.depth || 0, oldest_age_s: oldestAge };
+      return {
+        depth: row.depth || 0,
+        oldest_age_s: row.oldest_age_s ?? null
+      };
     } catch {
       return { depth: 0, oldest_age_s: null };
     }
@@ -82,7 +82,9 @@ export class C4Reader {
       `).all();
 
       const result = {};
-      for (const r of rows) result[r.channel] = r.last_ts;
+      for (const r of rows) {
+        result[r.channel] = r.last_ts ? r.last_ts.replace(' ', 'T') + 'Z' : r.last_ts;
+      }
       return result;
     } catch {
       return {};
