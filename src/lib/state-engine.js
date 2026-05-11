@@ -113,7 +113,7 @@ export function deriveAgentState(signals) {
         confidence: 'MEDIUM',
         evidence,
         missing_evidence: missing,
-        reason: `Processing turn (${ageSec}s)`,
+        reason: `Thinking (${ageSec}s)`,
         suggested_action: null
       };
     }
@@ -148,7 +148,7 @@ export function deriveAgentState(signals) {
       confidence: 'MEDIUM',
       evidence,
       missing_evidence: missing,
-      reason: `Processing turn (${ageSec}s)`,
+      reason: `Thinking (${ageSec}s)`,
       suggested_action: null
     };
   }

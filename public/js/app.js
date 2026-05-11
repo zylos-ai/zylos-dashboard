@@ -208,7 +208,7 @@ function renderToolFeed(tools) {
 
   for (const tool of tools) {
     let el = feed.querySelector(`[data-tool-id="${tool.tool_use_id}"]`);
-    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
+    const elapsed = ageSec(tool.started_at) ?? tool.duration_s ?? 0;
     const detail = tool.tool_detail ? `: ${esc(tool.tool_detail)}` : '';
     const label = `${esc(tool.tool_name || 'tool')}${detail}`;
 
@@ -219,7 +219,7 @@ function renderToolFeed(tools) {
       el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-elapsed">${dur(elapsed)}</span>`;
       feed.appendChild(el);
       feed.scrollTop = feed.scrollHeight;
-    } else {
+    } else if (!el.dataset.completing) {
       el.querySelector('.tool-elapsed').textContent = dur(elapsed);
     }
   }
