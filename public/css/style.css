@@ -233,6 +233,15 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .runtime-right .kv-label { margin-bottom: var(--space-xs); }
 
+.activity-fallback {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.activity-fallback[hidden] { display: none; }
+
 
 .state-meta {
   padding: var(--space-sm) var(--space-md);
@@ -361,6 +370,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   flex-direction: column;
   gap: 0;
   flex: 1;
+  max-height: 155px;
   overflow-y: auto;
 }
 
