@@ -191,9 +191,13 @@ function renderToolFeed(tools) {
   for (const id of prevToolIds) {
     if (!currentIds.has(id)) {
       const el = feed.querySelector(`[data-tool-id="${id}"]`);
-      if (el && !el.classList.contains('completed')) {
-        el.classList.add('completed');
-        el.addEventListener('animationend', () => el.remove(), { once: true });
+      if (el && !el.dataset.completing) {
+        el.dataset.completing = '1';
+        el.querySelector('.tool-elapsed')?.classList.add('done');
+        setTimeout(() => {
+          el.classList.add('completed');
+          el.addEventListener('animationend', () => el.remove(), { once: true });
+        }, 2000);
       }
     }
   }
