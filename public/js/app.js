@@ -181,6 +181,10 @@ function renderState() {
   badge.textContent = String(tools.length);
   badge.hidden = tools.length === 0;
 
+  const activityEl = $('#state-activity');
+  const hasFeedItems = tools.length > 0 || $('#tool-feed')?.querySelector('.tool-feed-item');
+  activityEl.hidden = !!hasFeedItems;
+
   renderToolFeed(tools);
 }
 
