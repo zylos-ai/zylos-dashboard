@@ -115,33 +115,6 @@ function stateTitle(p) {
   return t('state.unknown_simple');
 }
 
-function activityDesc(p) {
-  const s = normState(p?.state);
-  const tools = p?.running_tools || [];
-  const tool = latestTool(tools);
-
-  if (s === 'IDLE') return t('activity.idle');
-  if (s === 'OFFLINE') return t('activity.offline');
-  if (s === 'WAITING_HUMAN') return t('activity.waiting');
-
-  if (s === 'BUSY' && tool) {
-    const detail = tool.tool_detail || '';
-    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
-    const timeStr = dur(elapsed);
-    if (detail) return `${tool.tool_name}: ${detail} (${timeStr})`;
-    return `${tool.tool_name} (${timeStr})`;
-  }
-
-  if ((s === 'POSSIBLY_STUCK' || s === 'STUCK') && tool) {
-    const detail = tool.tool_detail || '';
-    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
-    const timeStr = dur(elapsed);
-    const prefix = detail ? `${tool.tool_name}: ${detail}` : tool.tool_name;
-    return `${prefix} — ${t('activity.no_progress')} (${timeStr})`;
-  }
-
-  return p?.reason || t('value.unavailable');
-}
 
 function confLabel(v) {
   if (!v) return '--';
@@ -165,6 +138,7 @@ function metVal(m) {
 }
 
 // ─── Render: State ───
+const FEED_MAX = 5;
 const prevToolIds = new Set();
 
 function renderState() {
@@ -172,8 +146,6 @@ function renderState() {
   $('#state-dot').className = `state-dot ${stateClass(p?.state)}`;
   $('#state-title').textContent = p ? stateTitle(p) : t('state.unknown_simple');
   $('#state-confidence').textContent = confLabel(p?.confidence);
-  $('#state-activity').textContent = p ? activityDesc(p) : t('value.unavailable');
-  $('#state-activity').title = p ? activityDesc(p) : '';
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 
   const tools = p?.running_tools || [];
@@ -181,27 +153,21 @@ function renderState() {
   badge.textContent = String(tools.length);
   badge.hidden = tools.length === 0;
 
-  const activityEl = $('#state-activity');
-  const hasFeedItems = tools.length > 0 || $('#tool-feed')?.querySelector('.tool-feed-item');
-  activityEl.hidden = !!hasFeedItems;
-
-  renderToolFeed(tools);
+  renderToolFeed(tools, p);
 }
 
-function renderToolFeed(tools) {
+function renderToolFeed(tools, p) {
   const feed = $('#tool-feed');
   const currentIds = new Set(tools.map((t) => t.tool_use_id));
+  const s = normState(p?.state);
 
   for (const id of prevToolIds) {
     if (!currentIds.has(id)) {
       const el = feed.querySelector(`[data-tool-id="${id}"]`);
-      if (el && !el.dataset.completing) {
-        el.dataset.completing = '1';
-        el.querySelector('.tool-elapsed')?.classList.add('done');
-        setTimeout(() => {
-          el.classList.add('completed');
-          el.addEventListener('animationend', () => el.remove(), { once: true });
-        }, 2000);
+      if (el && !el.classList.contains('done')) {
+        el.classList.add('done');
+        const statusEl = el.querySelector('.tool-status');
+        if (statusEl) statusEl.textContent = '✓';
       }
     }
   }
@@ -216,16 +182,47 @@ function renderToolFeed(tools) {
       el = document.createElement('div');
       el.className = 'tool-feed-item';
       el.dataset.toolId = tool.tool_use_id;
-      el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-elapsed">${dur(elapsed)}</span>`;
+      el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-status">${dur(elapsed)}</span>`;
       feed.appendChild(el);
-      feed.scrollTop = feed.scrollHeight;
-    } else if (!el.dataset.completing) {
-      el.querySelector('.tool-elapsed').textContent = dur(elapsed);
+    } else if (!el.classList.contains('done')) {
+      el.querySelector('.tool-status').textContent = dur(elapsed);
     }
   }
 
+  const thinkingId = '_thinking';
+  const existingThinking = feed.querySelector(`[data-tool-id="${thinkingId}"]`);
+  const shouldThink = s === 'BUSY' && tools.length === 0 && p?.reason;
+  if (shouldThink) {
+    if (!existingThinking) {
+      const el = document.createElement('div');
+      el.className = 'tool-feed-item thinking';
+      el.dataset.toolId = thinkingId;
+      el.innerHTML = `<span class="tool-detail">${esc(p.reason)}</span><span class="tool-status"></span>`;
+      feed.appendChild(el);
+    } else {
+      existingThinking.querySelector('.tool-detail').textContent = p.reason;
+    }
+  } else if (existingThinking) {
+    existingThinking.remove();
+  }
+
+  trimFeed(feed);
+
   prevToolIds.clear();
-  for (const id of tools.map((t) => t.tool_use_id)) prevToolIds.add(id);
+  for (const id of currentIds) prevToolIds.add(id);
+}
+
+function trimFeed(feed) {
+  const items = feed.querySelectorAll('.tool-feed-item');
+  if (items.length <= FEED_MAX) return;
+  const doneItems = [...items].filter((el) => el.classList.contains('done'));
+  let excess = items.length - FEED_MAX;
+  for (const el of doneItems) {
+    if (excess <= 0) break;
+    el.classList.add('removing');
+    el.addEventListener('animationend', () => el.remove(), { once: true });
+    excess--;
+  }
 }
 
 // ─── Render: Metrics ───

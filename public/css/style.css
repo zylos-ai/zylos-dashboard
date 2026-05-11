@@ -229,16 +229,6 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .runtime-right .kv-label { margin-bottom: var(--space-xs); }
 
-.activity-desc {
-  margin: 0 0 var(--space-sm);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1.5;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
 
 .state-meta {
   padding: var(--space-sm) var(--space-md);
@@ -365,9 +355,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .tool-feed {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  max-height: 200px;
-  overflow-y: auto;
+  gap: 0;
+  min-height: 28px;
 }
 
 .tool-feed-item {
@@ -376,11 +365,14 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   justify-content: space-between;
   gap: var(--space-sm);
   min-width: 0;
-  padding: var(--space-xs) 0;
+  padding: 5px 0;
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 13px;
   animation: tool-enter 200ms ease;
+  transition: font-size 300ms ease, opacity 300ms ease, color 300ms ease;
 }
+
+.tool-feed-item:first-child { border-top: none; }
 
 .tool-feed-item .tool-detail {
   min-width: 0;
@@ -390,31 +382,41 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   flex: 1;
 }
 
-.tool-feed-item .tool-elapsed {
+.tool-feed-item .tool-status {
   white-space: nowrap;
   font-weight: 600;
-  color: var(--text-dim);
+  font-size: 12px;
+  min-width: 40px;
+  text-align: right;
+}
+
+.tool-feed-item.done {
   font-size: 11px;
-  transition: color 300ms ease;
+  opacity: 0.55;
+  color: var(--text-muted);
 }
 
-.tool-feed-item .tool-elapsed.done {
+.tool-feed-item.done .tool-status {
   color: var(--green, #059669);
+  font-size: 11px;
 }
 
-.tool-feed-item.completed {
-  animation: tool-exit 2s ease forwards;
+.tool-feed-item.thinking {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.tool-feed-item.removing {
+  animation: tool-remove 400ms ease forwards;
 }
 
 @keyframes tool-enter {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes tool-exit {
-  0% { opacity: 1; max-height: 32px; }
-  70% { opacity: 0.3; }
-  100% { opacity: 0; max-height: 0; padding: 0; border-top-width: 0; overflow: hidden; }
+@keyframes tool-remove {
+  to { opacity: 0; max-height: 0; padding: 0; border-top-width: 0; overflow: hidden; }
 }
 
 .mono {
