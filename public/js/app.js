@@ -357,7 +357,7 @@ function renderSubagents(p) {
 
   const hasContent = agents.length > 0 ||
     list.querySelector('.subagent-group') !== null;
-  section.hidden = !hasContent;
+  section.classList.toggle('visible', hasContent);
   section.closest('.runtime-split')?.classList.toggle('has-subagents', hasContent);
   badge.textContent = String(agents.length);
   badge.hidden = agents.length === 0;
@@ -372,7 +372,13 @@ function renderSubagents(p) {
         setTimeout(() => {
           if (grp.parentNode) {
             grp.classList.add('removing');
-            grp.addEventListener('animationend', () => grp.remove(), { once: true });
+            grp.addEventListener('animationend', () => {
+              grp.remove();
+              if (!list.querySelector('.subagent-group')) {
+                section.classList.remove('visible');
+                section.closest('.runtime-split')?.classList.remove('has-subagents');
+              }
+            }, { once: true });
           }
         }, 10000);
       }
@@ -488,7 +494,7 @@ function renderMetrics() {
   const ts = agg.tokens_session;
   const tt = agg.tokens_today;
   const t7 = agg['tokens_7d'];
-  const tokLine = (t) => t ? `${tok(t.input)} in / ${tok(t.output)} out` : '--';
+  const tokLine = (t) => t ? `↓${tok(t.input)} ↑${tok(t.output)}` : '--';
   $('#metric-tokens-session').textContent = tokLine(ts);
   $('#metric-tokens-cache').textContent = ts ? pctDecimal(ts.cache_rate) : '--';
   $('#metric-tokens-today').textContent = tokLine(tt);

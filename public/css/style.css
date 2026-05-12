@@ -483,11 +483,14 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 /* ─── Subagent Section ─── */
 .runtime-subagents {
-  display: flex;
+  display: none;
   flex-direction: column;
   min-width: 0;
   padding-left: var(--space-lg);
   border-left: 1px solid var(--border);
+}
+.runtime-subagents.visible {
+  display: flex;
 }
 
 .subagent-head { margin-bottom: var(--space-xs); }
@@ -605,9 +608,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 
 .metric-pair {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-sm);
+}
+.metric-pair > * {
+  flex: 1 1 200px;
+  min-width: 0;
 }
 
 .metric-text {
@@ -621,7 +628,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .metric-text .metric-value { display: block; margin-bottom: 4px; font-size: 18px; }
 .metric-multi .metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); }
 .metric-multi .metric-row small { color: var(--text-muted); font-size: 11px; }
-.metric-multi .metric-value-sub { font-size: 14px; color: var(--text-secondary); }
+.metric-multi .metric-value-sub { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 .metric-row-divider { border-top: 1px solid var(--border); margin: 4px 0; }
 
 /* ─── ③ Health & System ─── */
@@ -845,5 +852,4 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   .runtime-split, .runtime-split.has-subagents { grid-template-columns: 1fr; }
   .runtime-right, .runtime-subagents { padding-left: 0; border-left: none; border-top: 1px solid var(--border); padding-top: var(--space-md); }
   .state-label { font-size: 16px; }
-  .metric-pair { grid-template-columns: 1fr; }
 }
