@@ -318,6 +318,7 @@ async function handleStatuslineIngest(req, res) {
         sse.broadcast('metric_update', {
           metric_name: m.metric_name,
           value: Number(m.metric_value),
+          dimensions: m.dimensions || null,
           source: m.source || 'statusline',
           confidence: m.confidence || 'actual',
           timestamp: m.timestamp || now

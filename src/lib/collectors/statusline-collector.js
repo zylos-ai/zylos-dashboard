@@ -56,7 +56,7 @@ export class StatuslineCollector {
       this.store.insertMetric({
         timestamp: now, runtime: 'claude', session_id: sessionId,
         metric_name: 'rate_limit', metric_value: data.rate_limits.five_hour.used_percentage,
-        dimensions: JSON.stringify({ period: '5h', '5h': data.rate_limits.five_hour.used_percentage, '7d': data.rate_limits?.seven_day?.used_percentage }),
+        dimensions: JSON.stringify({ period: '5h', '5h': data.rate_limits.five_hour.used_percentage, '7d': data.rate_limits?.seven_day?.used_percentage, resets_at: data.rate_limits.five_hour.resets_at || null }),
         source: 'statusline', confidence: 'actual'
       });
       written++;
@@ -66,7 +66,7 @@ export class StatuslineCollector {
       this.store.insertMetric({
         timestamp: now, runtime: 'claude', session_id: sessionId,
         metric_name: 'rate_limit_7d', metric_value: data.rate_limits.seven_day.used_percentage,
-        dimensions: JSON.stringify({ period: '7d' }),
+        dimensions: JSON.stringify({ period: '7d', resets_at: data.rate_limits.seven_day.resets_at || null }),
         source: 'statusline', confidence: 'actual'
       });
       written++;

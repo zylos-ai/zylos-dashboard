@@ -64,6 +64,7 @@ export class MetricResolver {
     let selectedFreshness = null;
     let selectedConfidence = 'none';
     let fallbackReason = null;
+    let selectedDimensions = null;
     let preferredSource = chain[0].source;
 
     for (const link of chain) {
@@ -86,6 +87,7 @@ export class MetricResolver {
         selectedValue = latest.metric_value;
         selectedFreshness = Math.floor(ageMs / 1000);
         selectedConfidence = link.confidence;
+        selectedDimensions = latest.dimensions ? (typeof latest.dimensions === 'string' ? JSON.parse(latest.dimensions) : latest.dimensions) : null;
 
         if (link.source !== preferredSource) {
           fallbackReason = `${preferredSource} data stale or unavailable, using ${link.source}`;
@@ -104,6 +106,7 @@ export class MetricResolver {
 
     return {
       value: selectedValue,
+      dimensions: selectedDimensions,
       selected_source: selectedSource,
       freshness: selectedFreshness,
       confidence: selectedConfidence,

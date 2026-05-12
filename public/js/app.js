@@ -53,6 +53,13 @@ function barPct(v) {
   return Math.max(0, Math.min(100, n <= 1 ? n * 100 : n));
 }
 
+function barColor(pctValue) {
+  const p = barPct(pctValue);
+  if (p < 50) return '';
+  if (p < 75) return 'bar-warning';
+  return 'bar-danger';
+}
+
 function usd(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
@@ -88,6 +95,19 @@ function fmtAge(ts) {
   if (a === null) return '--';
   if (a < 2) return t('time.just_now');
   return t('time.seconds', { count: a });
+}
+
+function fmtResetTime(unixSeconds) {
+  const ts = Number(unixSeconds);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const ms = ts < 1e12 ? ts * 1000 : ts;
+  const diff = ms - Date.now();
+  if (diff <= 0) return 'now';
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  if (h > 24) { const d = Math.floor(h / 24); return `in ${d}d ${h % 24}h`; }
+  if (h > 0) return `in ${h}h ${m}m`;
+  return `in ${m}m`;
 }
 
 function esc(v) {
@@ -313,6 +333,7 @@ function renderSubagents(p) {
   const hasContent = agents.length > 0 ||
     list.querySelector('.subagent-group') !== null;
   section.hidden = !hasContent;
+  section.closest('.runtime-split')?.classList.toggle('has-subagents', hasContent);
   badge.textContent = String(agents.length);
   badge.hidden = agents.length === 0;
 
@@ -411,12 +432,26 @@ function renderMetrics() {
   const r7 = metVal(rate7d) ?? (ro ? (rv['7d'] ?? rv.seven_day ?? rv.long) : null);
 
   $('#metric-context-value').textContent = pct(cv);
-  $('#metric-context-bar').style.width = `${barPct(cv)}%`;
+  const ctxBar = $('#metric-context-bar');
+  ctxBar.style.width = `${barPct(cv)}%`;
+  ctxBar.className = `progress-fill ${barColor(cv)}`;
   $('#metric-context-source').textContent = srcLabel(ctx);
+
   $('#metric-rate-5h-value').textContent = pct(r5);
-  $('#metric-rate-5h-bar').style.width = `${barPct(r5)}%`;
+  const r5Bar = $('#metric-rate-5h-bar');
+  r5Bar.style.width = `${barPct(r5)}%`;
+  r5Bar.className = `progress-fill ${barColor(r5)}`;
+
   $('#metric-rate-7d-value').textContent = r7 == null ? '--' : pct(r7);
-  $('#metric-rate-7d-bar').style.width = `${barPct(r7)}%`;
+  const r7Bar = $('#metric-rate-7d-bar');
+  r7Bar.style.width = `${barPct(r7)}%`;
+  r7Bar.className = `progress-fill ${barColor(r7)}`;
+
+  const r5Reset = rate?.dimensions?.resets_at ?? rate?.resets_at;
+  const r7Reset = rate7d?.dimensions?.resets_at ?? rate7d?.resets_at;
+  $('#metric-rate-5h-reset').textContent = r5Reset ? `resets ${fmtResetTime(r5Reset)}` : '';
+  $('#metric-rate-7d-reset').textContent = r7Reset ? `resets ${fmtResetTime(r7Reset)}` : '';
+
   $('#metric-cost-value').textContent = usd(metVal(cost));
   $('#metric-cost-source').textContent = srcLabel(cost);
   $('#metric-cache-value').textContent = pct(metVal(cache));
