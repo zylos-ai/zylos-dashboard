@@ -429,13 +429,14 @@ export class Store {
   }
 
   aggregateCost({ since, until, sessionId } = {}) {
-    let sql = `SELECT COALESCE(SUM(metric_value), 0) AS total FROM metric_points WHERE metric_name = 'api_request_cost'`;
+    let sql = `SELECT SUM(metric_value) AS total, COUNT(*) AS cnt FROM metric_points WHERE metric_name = 'api_request_cost'`;
     const params = {};
     if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
     if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
     if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
     const row = this.db.prepare(sql).get(params);
-    return row?.total ?? 0;
+    if (!row || row.cnt === 0) return null;
+    return row.total;
   }
 
   aggregateCacheRate({ since, until, sessionId } = {}) {

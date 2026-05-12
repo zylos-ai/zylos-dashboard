@@ -144,7 +144,7 @@ function periodBounds(period, tz, stateEngine) {
   if (period === 'today') return dayBoundariesUTC(tz);
   if (period === '7d') return dayBoundariesUTC(tz, 7);
   if (period === '30d') return dayBoundariesUTC(tz, 30);
-  return null;
+  return undefined;
 }
 
 function handleApi(req, res, pathname, url) {
@@ -221,7 +221,11 @@ function handleApi(req, res, pathname, url) {
       return true;
     }
     const bounds = periodBounds(period, tz, stateEngine);
-    if (!bounds) { sendJson(res, 400, { error: `invalid period: ${period}` }); return true; }
+    if (bounds === undefined) { sendJson(res, 400, { error: `invalid period: ${period}` }); return true; }
+    if (bounds === null) {
+      sendJson(res, 200, { metric, period, value: null, since: null, until: null, sessionId: null });
+      return true;
+    }
     const fn = metric === 'cost' ? store.aggregateCost.bind(store) : store.aggregateCacheRate.bind(store);
     const value = fn(bounds);
     sendJson(res, 200, { metric, period, value, since: bounds.since, until: bounds.until, sessionId: bounds.sessionId || null });
