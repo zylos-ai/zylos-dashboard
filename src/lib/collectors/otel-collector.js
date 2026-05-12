@@ -1,9 +1,15 @@
 export class OTelCollector {
-  constructor(store, config) {
+  constructor(store, config, { stateEngine } = {}) {
     this.store = store;
     this.config = config;
+    this._stateEngine = stateEngine || null;
     this._timer = null;
     this._lastIngest = null;
+  }
+
+  _resolveSessionId(otelSessionId) {
+    if (otelSessionId) return otelSessionId;
+    return this._stateEngine?.getCurrentSessionId?.() || null;
   }
 
   ingestTraces(resourceSpans) {
@@ -11,7 +17,7 @@ export class OTelCollector {
     let written = 0;
 
     for (const rs of resourceSpans || []) {
-      const sessionId = extractAttr(rs.resource?.attributes, 'session.id');
+      const sessionId = this._resolveSessionId(extractAttr(rs.resource?.attributes, 'session.id'));
       for (const ss of rs.scopeSpans || []) {
         for (const span of ss.spans || []) {
           const spanType = extractAttr(span.attributes, 'span.type');
@@ -36,7 +42,7 @@ export class OTelCollector {
     let written = 0;
 
     for (const rl of resourceLogs || []) {
-      const sessionId = extractAttr(rl.resource?.attributes, 'session.id');
+      const sessionId = this._resolveSessionId(extractAttr(rl.resource?.attributes, 'session.id'));
       for (const sl of rl.scopeLogs || []) {
         for (const log of sl.logRecords || []) {
           const eventName = extractAttr(log.attributes, 'event.name');
@@ -60,7 +66,7 @@ export class OTelCollector {
     let written = 0;
 
     for (const rm of resourceMetrics || []) {
-      const sessionId = extractAttr(rm.resource?.attributes, 'session.id');
+      const sessionId = this._resolveSessionId(extractAttr(rm.resource?.attributes, 'session.id'));
       for (const sm of rm.scopeMetrics || []) {
         for (const metric of sm.metrics || []) {
           if (metric.name === 'claude_code.cost.usage') {
@@ -83,21 +89,27 @@ export class OTelCollector {
   _processLlmSpan(span, sessionId, now) {
     let written = 0;
     const attrs = span.attributes || [];
-    const inputTokens = numAttr(attrs, 'input_tokens');
-    const outputTokens = numAttr(attrs, 'output_tokens');
-    const cacheReadTokens = numAttr(attrs, 'cache_read_tokens');
-    const cacheCreationTokens = numAttr(attrs, 'cache_creation_tokens');
+    const inputTokens = numAttr(attrs, 'input_tokens') || 0;
+    const outputTokens = numAttr(attrs, 'output_tokens') || 0;
+    const cacheReadTokens = numAttr(attrs, 'cache_read_tokens') || 0;
+    const cacheCreationTokens = numAttr(attrs, 'cache_creation_tokens') || 0;
 
-    if (cacheReadTokens != null && inputTokens != null) {
-      const totalIn = inputTokens + cacheCreationTokens + cacheReadTokens;
-      if (totalIn > 0) {
-        this.store.insertMetric({
-          timestamp: now, runtime: 'claude', session_id: sessionId,
-          metric_name: 'cache_hit_rate', metric_value: cacheReadTokens / totalIn,
-          source: 'otel_token_usage', confidence: 'actual'
-        });
-        written++;
-      }
+    const totalIn = inputTokens + cacheCreationTokens + cacheReadTokens;
+
+    if (totalIn > 0) {
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'cache_hit_rate', metric_value: cacheReadTokens / totalIn,
+        source: 'otel_token_usage', confidence: 'actual'
+      });
+
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'api_request_tokens', metric_value: totalIn,
+        dimensions: { cache_read: cacheReadTokens, cache_creation: cacheCreationTokens, input: inputTokens, output: outputTokens },
+        source: 'otel_llm_span', confidence: 'actual'
+      });
+      written += 2;
     }
 
     return written;
@@ -115,7 +127,14 @@ export class OTelCollector {
         dimensions: { model: strAttr(attrs, 'model'), source: 'per_request' },
         source: 'otel_cost_sum', confidence: 'actual'
       });
-      written++;
+
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'api_request_cost', metric_value: costUsd,
+        dimensions: { model: strAttr(attrs, 'model') },
+        source: 'otel_api_log', confidence: 'actual'
+      });
+      written += 2;
     }
 
     return written;

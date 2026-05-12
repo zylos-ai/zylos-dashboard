@@ -60,9 +60,10 @@ const stateEngine = new StateEngine(store, collectors, config, {
 // Wire collector updates to state engine
 pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);
 systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
+otelCollector._stateEngine = stateEngine;
 
 // 8. Metric resolver
-const metricResolver = new MetricResolver(store, collectors, config);
+const metricResolver = new MetricResolver(store, collectors, config, { stateEngine });
 
 // 9b. C4 reader (read-only access to comm-bridge DB)
 const c4Reader = new C4Reader(config.zylosDir);
@@ -115,6 +116,35 @@ function readSchedulerTodayCount(zylosDir) {
   } catch {
     return 0;
   }
+}
+
+function dayBoundariesUTC(tz, daysBack = 0) {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false
+  });
+  const p = {};
+  for (const { type, value } of fmt.formatToParts(now)) {
+    if (type !== 'literal') p[type] = parseInt(value);
+  }
+  const asIfUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  const offsetMs = asIfUTC - now.getTime();
+  const midnightUTC = Date.UTC(p.year, p.month - 1, p.day) - offsetMs;
+  const since = new Date(midnightUTC - daysBack * 86400000);
+  return { since: since.toISOString(), until: now.toISOString() };
+}
+
+function periodBounds(period, tz, stateEngine) {
+  const now = new Date().toISOString();
+  if (period === 'session') {
+    const sessionId = stateEngine.getCurrentSessionId();
+    return sessionId ? { sessionId, until: now } : null;
+  }
+  if (period === 'today') return dayBoundariesUTC(tz);
+  if (period === '7d') return dayBoundariesUTC(tz, 7);
+  if (period === '30d') return dayBoundariesUTC(tz, 30);
+  return null;
 }
 
 function handleApi(req, res, pathname, url) {
@@ -179,6 +209,39 @@ function handleApi(req, res, pathname, url) {
       dimensions: r.dimensions
     }));
     sendJson(res, 200, { metric: metricName, since, until, points, count: points.length });
+    return true;
+  }
+
+  if (pathname === '/api/metrics/aggregate') {
+    const metric = url.searchParams.get('metric');
+    const period = url.searchParams.get('period') || 'session';
+    const tz = url.searchParams.get('tz') || process.env.TZ || 'UTC';
+    if (!metric || !['cost', 'cache'].includes(metric)) {
+      sendJson(res, 400, { error: 'metric must be "cost" or "cache"' });
+      return true;
+    }
+    const bounds = periodBounds(period, tz, stateEngine);
+    if (!bounds) { sendJson(res, 400, { error: `invalid period: ${period}` }); return true; }
+    const fn = metric === 'cost' ? store.aggregateCost.bind(store) : store.aggregateCacheRate.bind(store);
+    const value = fn(bounds);
+    sendJson(res, 200, { metric, period, value, since: bounds.since, until: bounds.until, sessionId: bounds.sessionId || null });
+    return true;
+  }
+
+  if (pathname === '/api/metrics/series') {
+    const metric = url.searchParams.get('metric');
+    const since = url.searchParams.get('since');
+    const until = url.searchParams.get('until') || new Date().toISOString();
+    const bucket = parseInt(url.searchParams.get('bucket') || '3600', 10);
+    if (!metric || !['cost', 'cache'].includes(metric)) {
+      sendJson(res, 400, { error: 'metric must be "cost" or "cache"' });
+      return true;
+    }
+    if (!since) { sendJson(res, 400, { error: 'since is required' }); return true; }
+    const fn = metric === 'cost' ? store.aggregateCostSeries.bind(store) : store.aggregateCacheRateSeries.bind(store);
+    const points = fn({ since, until, bucketSeconds: bucket });
+    const total = metric === 'cost' ? store.aggregateCost({ since, until }) : store.aggregateCacheRate({ since, until });
+    sendJson(res, 200, { metric, since, until, bucket, points, total });
     return true;
   }
 

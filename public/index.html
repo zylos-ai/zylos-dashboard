@@ -109,15 +109,17 @@
             <span class="metric-reset" id="metric-rate-7d-reset"></span>
           </article>
           <div class="metric-pair">
-            <article class="metric-text">
+            <article class="metric-text metric-multi">
               <span class="metric-label" data-i18n="label.cost">Cost</span>
-              <strong class="metric-value" id="metric-cost-value">--</strong>
-              <small class="metric-source" id="metric-cost-source">--</small>
+              <div class="metric-row"><strong class="metric-value" id="metric-cost-session">--</strong><small>session</small></div>
+              <div class="metric-row"><span class="metric-value-sub" id="metric-cost-today">--</span><small>today</small></div>
+              <div class="metric-row"><span class="metric-value-sub" id="metric-cost-7d">--</span><small>7 days</small></div>
             </article>
-            <article class="metric-text">
+            <article class="metric-text metric-multi">
               <span class="metric-label" data-i18n="label.cache_hit">Cache Hit Rate</span>
-              <strong class="metric-value" id="metric-cache-value">--</strong>
-              <small class="metric-source" id="metric-cache-source">--</small>
+              <div class="metric-row"><strong class="metric-value" id="metric-cache-session">--</strong><small>session</small></div>
+              <div class="metric-row"><span class="metric-value-sub" id="metric-cache-today">--</span><small>today</small></div>
+              <div class="metric-row"><span class="metric-value-sub" id="metric-cache-7d">--</span><small>7 days</small></div>
             </article>
           </div>
         </div>

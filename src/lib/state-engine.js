@@ -380,6 +380,10 @@ export class StateEngine {
     };
   }
 
+  getCurrentSessionId() {
+    return this._state.mainSessionId || this._currentSessionId();
+  }
+
   getRunningTools() {
     const tools = [];
     for (const [id, tool] of this._state.runningTools) {

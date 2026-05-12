@@ -130,6 +130,13 @@ export class Store {
       }
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(4);
     }
+    if (currentVersion < 5) {
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_metric_points_name_session_ts
+        ON metric_points (metric_name, session_id, timestamp)
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(5);
+    }
   }
 
   _prepareStatements() {
@@ -419,6 +426,55 @@ export class Store {
 
   cleanupSessions(absoluteCutoff, idleCutoff) {
     return this._cleanupSessions.run(absoluteCutoff, idleCutoff);
+  }
+
+  aggregateCost({ since, until, sessionId } = {}) {
+    let sql = `SELECT COALESCE(SUM(metric_value), 0) AS total FROM metric_points WHERE metric_name = 'api_request_cost'`;
+    const params = {};
+    if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
+    if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
+    if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+    const row = this.db.prepare(sql).get(params);
+    return row?.total ?? 0;
+  }
+
+  aggregateCacheRate({ since, until, sessionId } = {}) {
+    let sql = `
+      SELECT COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read,
+             COALESCE(SUM(metric_value), 0) AS total_input
+      FROM metric_points WHERE metric_name = 'api_request_tokens'`;
+    const params = {};
+    if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
+    if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
+    if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+    const row = this.db.prepare(sql).get(params);
+    if (!row || row.total_input === 0) return null;
+    return row.cache_read / row.total_input;
+  }
+
+  aggregateCostSeries({ since, until, bucketSeconds = 3600 } = {}) {
+    const sql = `
+      SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,
+             SUM(metric_value) AS cost_sum,
+             COUNT(*) AS request_count
+      FROM metric_points
+      WHERE metric_name = 'api_request_cost'
+        AND timestamp >= @since AND timestamp <= @until
+      GROUP BY bucket_start ORDER BY bucket_start`;
+    return this.db.prepare(sql).all({ since, until, bucket: bucketSeconds });
+  }
+
+  aggregateCacheRateSeries({ since, until, bucketSeconds = 3600 } = {}) {
+    const sql = `
+      SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,
+             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
+             COALESCE(SUM(metric_value), 0) AS total_input_sum
+      FROM metric_points
+      WHERE metric_name = 'api_request_tokens'
+        AND timestamp >= @since AND timestamp <= @until
+      GROUP BY bucket_start ORDER BY bucket_start`;
+    const rows = this.db.prepare(sql).all({ since, until, bucket: bucketSeconds });
+    return rows.map(r => ({ ...r, rate: r.total_input_sum > 0 ? r.cache_read_sum / r.total_input_sum : null }));
   }
 
   close() {
