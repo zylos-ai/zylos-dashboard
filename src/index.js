@@ -216,8 +216,8 @@ function handleApi(req, res, pathname, url) {
     const metric = url.searchParams.get('metric');
     const period = url.searchParams.get('period') || 'session';
     const tz = url.searchParams.get('tz') || process.env.TZ || 'UTC';
-    if (!metric || !['cost', 'cache'].includes(metric)) {
-      sendJson(res, 400, { error: 'metric must be "cost" or "cache"' });
+    if (!metric || !['cost', 'cache', 'tokens'].includes(metric)) {
+      sendJson(res, 400, { error: 'metric must be "cost", "cache", or "tokens"' });
       return true;
     }
     const bounds = periodBounds(period, tz, stateEngine);
@@ -226,8 +226,10 @@ function handleApi(req, res, pathname, url) {
       sendJson(res, 200, { metric, period, value: null, since: null, until: null, sessionId: null });
       return true;
     }
-    const fn = metric === 'cost' ? store.aggregateCost.bind(store) : store.aggregateCacheRate.bind(store);
-    const value = fn(bounds);
+    let value;
+    if (metric === 'cost') value = store.aggregateCost(bounds);
+    else if (metric === 'cache') value = store.aggregateCacheRate(bounds);
+    else value = store.aggregateTokens(bounds);
     sendJson(res, 200, { metric, period, value, since: bounds.since, until: bounds.until, sessionId: bounds.sessionId || null });
     return true;
   }
@@ -237,14 +239,15 @@ function handleApi(req, res, pathname, url) {
     const since = url.searchParams.get('since');
     const until = url.searchParams.get('until') || new Date().toISOString();
     const bucket = parseInt(url.searchParams.get('bucket') || '3600', 10);
-    if (!metric || !['cost', 'cache'].includes(metric)) {
-      sendJson(res, 400, { error: 'metric must be "cost" or "cache"' });
+    if (!metric || !['cost', 'cache', 'tokens'].includes(metric)) {
+      sendJson(res, 400, { error: 'metric must be "cost", "cache", or "tokens"' });
       return true;
     }
     if (!since) { sendJson(res, 400, { error: 'since is required' }); return true; }
-    const fn = metric === 'cost' ? store.aggregateCostSeries.bind(store) : store.aggregateCacheRateSeries.bind(store);
-    const points = fn({ since, until, bucketSeconds: bucket });
-    const total = metric === 'cost' ? store.aggregateCost({ since, until }) : store.aggregateCacheRate({ since, until });
+    let points, total;
+    if (metric === 'cost') { points = store.aggregateCostSeries({ since, until, bucketSeconds: bucket }); total = store.aggregateCost({ since, until }); }
+    else if (metric === 'cache') { points = store.aggregateCacheRateSeries({ since, until, bucketSeconds: bucket }); total = store.aggregateCacheRate({ since, until }); }
+    else { points = store.aggregateTokenSeries({ since, until, bucketSeconds: bucket }); total = store.aggregateTokens({ since, until }); }
     sendJson(res, 200, { metric, since, until, bucket, points, total });
     return true;
   }

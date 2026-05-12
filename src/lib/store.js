@@ -453,6 +453,49 @@ export class Store {
     return row.cache_read / row.total_input;
   }
 
+  aggregateTokens({ since, until, sessionId } = {}) {
+    let sql = `
+      SELECT COALESCE(SUM(json_extract(dimensions, '$.input')), 0) AS input,
+             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read,
+             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) AS cache_creation,
+             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS output,
+             COALESCE(SUM(metric_value), 0) AS total_input,
+             COUNT(*) AS cnt
+      FROM metric_points WHERE metric_name = 'api_request_tokens'`;
+    const params = {};
+    if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
+    if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
+    if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+    const row = this.db.prepare(sql).get(params);
+    if (!row || row.cnt === 0) return null;
+    return {
+      input: row.input + row.cache_creation + row.cache_read,
+      output: row.output,
+      cache_read: row.cache_read,
+      cache_rate: row.total_input > 0 ? row.cache_read / row.total_input : 0
+    };
+  }
+
+  aggregateTokenSeries({ since, until, bucketSeconds = 3600 } = {}) {
+    const sql = `
+      SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,
+             COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
+             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
+             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) AS input_sum,
+             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS output_sum,
+             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
+             COALESCE(SUM(metric_value), 0) AS total_input_sum
+      FROM metric_points
+      WHERE metric_name = 'api_request_tokens'
+        AND timestamp >= @since AND timestamp <= @until
+      GROUP BY bucket_start ORDER BY bucket_start`;
+    const rows = this.db.prepare(sql).all({ since, until, bucket: bucketSeconds });
+    return rows.map(r => ({
+      ...r,
+      cache_rate: r.total_input_sum > 0 ? r.cache_read_sum / r.total_input_sum : null
+    }));
+  }
+
   aggregateCostSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
       SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,

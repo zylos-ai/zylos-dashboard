@@ -622,6 +622,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .metric-multi .metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); }
 .metric-multi .metric-row small { color: var(--text-muted); font-size: 11px; }
 .metric-multi .metric-value-sub { font-size: 14px; color: var(--text-secondary); }
+.metric-row-divider { border-top: 1px solid var(--border); margin: 4px 0; }
 
 /* ─── ③ Health & System ─── */
 .gauge-grid {
