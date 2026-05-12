@@ -10,17 +10,19 @@ OTel emits per-request metrics (cost per API call, cache hit rate per request). 
 
 | Metric | Session | Today | 7 Day |
 |--------|---------|-------|-------|
-| Cost | Current session cumulative | Today UTC-day sum | Last 7 UTC-days sum |
-| Cache Hit Rate | Current session weighted avg | Today weighted avg | 7-day weighted avg |
+| Cost | Current session cumulative | Today local-day sum | Last 7 local-days sum |
+| Cache Hit Rate | Current session weighted avg | Today local-day weighted avg | 7 local-day weighted avg |
 
-"Weighted avg" for cache = total cache_read_tokens / total input_tokens across the period, not average of per-request percentages.
+"Today" and "7 days" use timezone-local day boundaries (TZ from .env, e.g. Asia/Singapore). DB stores UTC; day boundaries are computed by converting local midnight to UTC.
+
+"Weighted avg" for cache = SUM(cache_read_tokens) / SUM(input_tokens + cache_creation_tokens + cache_read_tokens) across the period, not average of per-request percentages.
 
 ### Analytics Tab (Data Layer Only — UI Deferred)
 
 - Time-series query for cost and cache over selectable ranges (1d, 7d, 30d, custom)
 - Minimum granularity: 1 hour
 - Returns: series of data points + period total/average
-- DB stores UTC; API accepts `tz` parameter (default from `TZ` in .env) for day-boundary alignment
+- DB stores UTC; API accepts `tz` parameter (default from `TZ` in .env, e.g. `Asia/Singapore`) for timezone-local day-boundary alignment
 
 ## Current Data Sources
 
@@ -32,7 +34,7 @@ OTel emits per-request metrics (cost per API call, cache hit rate per request). 
 | Cumulative cost counter | `daily_cost` | `otel_cost_sum` | OTel sum metric, multiple data points per export | NULL |
 | Per-request cache rate | `cache_hit_rate` | `otel_token_usage` | cache_read / total_input for one request | NULL |
 
-Problem: OTel data has `session_id = NULL` — cannot aggregate per-session from OTel alone.
+Problem: OTel data has `session_id = NULL` — cannot aggregate per-session from OTel alone. Solution: at ingest time, stamp OTel data with the current active session_id from StateEngine (see §1).
 
 ### Statusline (session-level cumulative)
 
@@ -49,43 +51,60 @@ The OTel `_processLlmSpan` extracts `input_tokens`, `cache_read_tokens`, `cache_
 
 ## Design
 
-### 1. Store Raw Token Counts from OTel
+### 1. Store Raw Per-Request Data from OTel
 
-Add to `_processLlmSpan`: store `input_tokens`, `cache_read_tokens`, `cache_creation_tokens` as separate metric_points (or a single metric with dimensions). This enables accurate weighted-average cache hit rate over any time window.
+Two separate raw metrics, matching the two OTel signal paths that already exist:
 
-New metrics from OTel LLM spans:
+**From `_processLlmSpan` (trace spans) — token counts:**
 
 ```
 metric_name: 'api_request_tokens'
-metric_value: <total_input_tokens>
-dimensions: { cache_read: N, cache_creation: N, output: N, cost_usd: N }
+metric_value: <input_tokens + cache_creation_tokens + cache_read_tokens>   (total input denominator)
+dimensions: { cache_read: N, cache_creation: N, input: N, output: N }
 source: 'otel_llm_span'
+session_id: <active session_id from StateEngine, or NULL if unknown>
 ```
 
-One row per API request, carrying all token counts + cost. Enables both cost summation and cache ratio computation over any time window.
+**From `_processApiRequestLog` (log records) — cost:**
+
+```
+metric_name: 'api_request_cost'
+metric_value: <cost_usd>
+dimensions: { model: "..." }
+source: 'otel_api_log'
+session_id: <active session_id from StateEngine, or NULL if unknown>
+```
+
+No span-to-log correlation needed — cost and tokens are stored independently and aggregated separately. Cost aggregation uses `api_request_cost`; cache aggregation uses `api_request_tokens`.
+
+**Session ID binding:** When OTel data arrives at the ingest endpoint, the handler reads the current `session_id` from StateEngine and stamps it onto each metric. If StateEngine has no active session, `session_id` remains NULL and the data is still usable for today/7d aggregation (timestamp-based), but session-level aggregation falls back to statusline.
 
 ### 2. Aggregation Queries in Store
 
 New `Store` methods:
 
 ```js
-aggregateCost(since, until)
-// Returns: SUM of cost_usd from api_request_tokens dimensions
-// Params: ISO timestamps (UTC)
+aggregateCost({ since, until, sessionId? })
+// SUM(metric_value) FROM metric_points WHERE metric_name = 'api_request_cost'
+//   AND timestamp BETWEEN since AND until
+//   [AND session_id = sessionId]  -- only if sessionId provided
 
-aggregateCacheRate(since, until)
-// Returns: SUM(cache_read) / SUM(total_input) from api_request_tokens
-// Params: ISO timestamps (UTC)
+aggregateCacheRate({ since, until, sessionId? })
+// SUM(dimensions.cache_read) / SUM(metric_value) FROM metric_points
+//   WHERE metric_name = 'api_request_tokens' ...
+// metric_value is total input denominator (input + cache_creation + cache_read)
 
-aggregateCostSeries(since, until, bucketSeconds)
-// Returns: [{bucket_start, cost_sum}] for time-series chart
+aggregateCostSeries({ since, until, bucketSeconds })
+// [{bucket_start, cost_sum}] — for time-series chart
 // bucketSeconds: 3600 for hourly, 86400 for daily
 
-aggregateCacheRateSeries(since, until, bucketSeconds)
-// Returns: [{bucket_start, cache_read_sum, total_input_sum, rate}]
+aggregateCacheRateSeries({ since, until, bucketSeconds })
+// [{bucket_start, cache_read_sum, total_input_sum, rate}]
 ```
 
-Session-level aggregation: filter by `session_id` (from current statusline session). For "today" and "7d", filter by timestamp range.
+Session-level: pass `sessionId` from current StateEngine session. If no OTel data has that session_id (e.g. session just started, or OTel binding failed), return `null` — caller falls back to statusline cumulative.
+
+Today/7d: filter by timestamp range only (no session_id filter), so all OTel data contributes regardless of session binding status.
 
 ### 3. Time Boundaries
 
@@ -103,13 +122,18 @@ For overview display, change the resolver to use aggregation results instead of 
 
 ```
 session_cost:
-  1. aggregateCost(session_start, now)  — sum of per-request costs for current session
-  2. statusline session_cost (fallback) — but note: this is total lifetime, not per-session
+  1. aggregateCost({ sessionId: currentSessionId })  — sum of per-request costs for current session
+     Returns null if no OTel data bound to this session yet.
+  2. statusline session_cost (fallback) — note: this is total lifetime, not per-session.
+     Display with a "(lifetime)" qualifier so the user knows the semantics differ.
 
 cache_hit_rate:
-  1. aggregateCacheRate(session_start, now) — weighted average for current session
-  2. statusline cache_hit_rate (fallback)
+  1. aggregateCacheRate({ sessionId: currentSessionId }) — weighted average for current session
+     Returns null if no OTel data bound to this session yet.
+  2. statusline cache_hit_rate (fallback) — cumulative session ratio
 ```
+
+`currentSessionId` comes from `stateEngine.getState().session?.id` (the same session_id that statusline reports).
 
 ### 5. New API Endpoints
 
@@ -142,14 +166,16 @@ Three rows per metric, each with a small time-dimension label. The first row (se
 
 ### 7. DB Migration (v5)
 
-No schema migration needed — `metric_points` table is unchanged. The new `api_request_tokens` metric uses the existing table with new `metric_name` and `dimensions` values.
+No schema migration needed for the table — `metric_points` is unchanged. The new `api_request_tokens` and `api_request_cost` metrics use the existing table with new `metric_name` and `dimensions` values.
 
-Consider adding an index for time-range aggregation:
+Index: `idx_metrics_name_ts ON metric_points(metric_name, timestamp)` already exists. For session-filtered aggregation, add a composite index:
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_metric_points_name_ts 
-ON metric_points (metric_name, timestamp);
+CREATE INDEX IF NOT EXISTS idx_metric_points_name_session_ts
+ON metric_points (metric_name, session_id, timestamp);
 ```
+
+This covers both session-filtered queries (`WHERE metric_name = ? AND session_id = ?`) and timestamp-range queries. Added as part of Store step (§2), validated with EXPLAIN QUERY PLAN before proceeding to API/frontend.
 
 ### 8. Data Retention
 
@@ -157,11 +183,10 @@ Current retention config applies. With hourly granularity and per-request storag
 
 ## Implementation Sequence
 
-1. **OTel collector**: add `api_request_tokens` metric with token counts + cost per LLM span
-2. **Store**: add aggregation query methods + time-boundary helper
+1. **OTel collector**: add `api_request_tokens` (from `_processLlmSpan`) and `api_request_cost` (from `_processApiRequestLog`) raw metrics; bind active session_id from StateEngine at ingest time
+2. **Store + Index**: add composite index `(metric_name, session_id, timestamp)`, add aggregation query methods + `dayBoundariesUTC(tz, daysBack)` helper; validate query plans with EXPLAIN QUERY PLAN against real data
 3. **API**: add `/api/metrics/aggregate` and `/api/metrics/series` endpoints
-4. **Resolver**: fix session_cost and cache_hit_rate to use aggregated values
+4. **Resolver**: fix session_cost and cache_hit_rate to use aggregated values, with statusline fallback
 5. **Frontend**: update overview panel to show 3 time dimensions
-6. **Index**: add composite index for query performance
 
 Verify after each step — the aggregation queries can be validated against raw data before the frontend change.
