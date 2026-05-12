@@ -511,13 +511,19 @@ function ringLevel(pctVal) {
   return 'level-ok';
 }
 
-function setRing(id, pctVal) {
+function ringLevelInverse(pctVal) {
+  if (pctVal <= 50) return 'level-danger';
+  if (pctVal <= 80) return 'level-warn';
+  return 'level-ok';
+}
+
+function setRing(id, pctVal, levelFn) {
   const el = $(`#${id}`);
   if (!el) return;
   const v = Math.max(0, Math.min(100, pctVal));
   const offset = RING_CIRCUMFERENCE * (1 - v / 100);
   el.style.strokeDashoffset = offset;
-  el.className.baseVal = `ring-fill ${ringLevel(v)}`;
+  el.className.baseVal = `ring-fill ${(levelFn || ringLevel)(v)}`;
 }
 
 function renderHealth() {
@@ -535,10 +541,10 @@ function renderHealth() {
   const memTotal = sys.memory?.total_bytes ?? sys.mem_total_bytes ?? sys.memory?.total;
   const diskVal = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
 
-  // PM2 — ring shows fraction, detail shows down services
+  // PM2 — ring shows fraction (inverse color: green=high, red=low)
   const pm2Pct = total ? (running / total) * 100 : 0;
   $('#system-pm2').textContent = total ? `${running}/${total}` : '--';
-  setRing('pm2-ring', pm2Pct);
+  setRing('pm2-ring', pm2Pct, ringLevelInverse);
   const downList = $('#pm2-down-list');
   if (downList) {
     if (downSvcs.length > 0) {
