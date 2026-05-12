@@ -503,46 +503,97 @@ function renderMetrics() {
 }
 
 // ─── Render: Health ───
+function barLevel(pctVal) {
+  if (pctVal >= 90) return 'level-danger';
+  if (pctVal >= 70) return 'level-warn';
+  return 'level-ok';
+}
+
+function setBar(id, pctVal) {
+  const el = $(`#${id}`);
+  if (!el) return;
+  const v = Math.max(0, Math.min(100, pctVal));
+  el.style.width = `${v}%`;
+  el.className = `mini-bar-fill ${barLevel(v)}`;
+}
+
 function renderHealth() {
   const sysResp = state.system || {};
   const sys = sysResp.system || sysResp;
-  const health = state.health || {};
   const pm2 = sysResp.pm2 || sys.pm2 || sys.pm2_services || sys.services || [];
   const svcs = Array.isArray(pm2) ? pm2 : (pm2.services || []);
-  const running = svcs.filter((s) => ['online', 'running', 'ok'].includes(String(s.status || s.pm2_env?.status).toLowerCase())).length;
+  const svcStatus = (s) => String(s.status || s.pm2_env?.status || '').toLowerCase();
+  const running = svcs.filter((s) => ['online', 'running', 'ok'].includes(svcStatus(s))).length;
   const total = svcs.length || Number(pm2.total) || 0;
-  const cpu = sys.cpu?.percent ?? sys.cpu_pct ?? sys.cpu;
-  const mem = sys.memory?.used_bytes ?? sys.mem_used_bytes ?? sys.memory?.used ?? sys.memory;
-  const disk = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
+  const downSvcs = svcs.filter((s) => !['online', 'running', 'ok'].includes(svcStatus(s)));
 
+  const cpuVal = sys.cpu?.percent ?? sys.cpu_pct ?? sys.cpu;
+  const memUsed = sys.memory?.used_bytes ?? sys.mem_used_bytes ?? sys.memory?.used ?? sys.memory;
+  const memTotal = sys.memory?.total_bytes ?? sys.mem_total_bytes ?? sys.memory?.total;
+  const diskVal = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
+
+  // PM2
   $('#system-pm2').textContent = total ? t('label.running', { count: running, total }) : '--';
-  $('#system-cpu').textContent = pct(cpu);
-  $('#system-memory').textContent = typeof mem === 'number' && mem > 100 ? bytes(mem) : pct(mem);
-  $('#system-disk').textContent = pct(disk);
-  $('#health-updated').textContent = fmtAge(state.healthUpdatedAt);
-
-  const sources = flatSources(state.dashboardState?.source || health.source || health.sources || {});
-  const c4Src = sources.find((s) => s.name.includes('c4'));
-  const otelSrc = sources.find((s) => s.name.includes('otel') || s.name.includes('metric'));
-  $('#system-c4').textContent = fmtSourceStatus(c4Src);
-  $('#system-otel').textContent = fmtSourceStatus(otelSrc);
-}
-
-function fmtSourceStatus(src) {
-  if (!src) return t('source.unavailable');
-  const age = Number.isFinite(Number(src.age_s)) ? `${Math.round(src.age_s)}s` : null;
-  const status = src.fresh !== false ? t('source.active') : t('source.stale');
-  return age ? `${status} (${age})` : status;
-}
-
-function flatSources(tree) {
-  const out = [];
-  for (const [domain, sources] of Object.entries(tree || {})) {
-    for (const [name, val] of Object.entries(sources || {})) {
-      out.push({ name: `${domain}.${name}`, ...(val || {}) });
+  const dot = $('#pm2-dot');
+  if (dot) {
+    dot.className = 'status-dot ' + (!total ? '' : running === total ? 'ok' : running === 0 ? 'error' : 'warn');
+  }
+  const downList = $('#pm2-down-list');
+  if (downList) {
+    if (downSvcs.length > 0) {
+      downList.textContent = '↓ ' + downSvcs.map((s) => s.name).join(', ');
+      downList.className = 'gauge-detail alert';
+    } else {
+      downList.textContent = '';
+      downList.className = 'gauge-detail';
     }
   }
-  return out;
+
+  // CPU
+  const cpuPct = Number(cpuVal);
+  $('#system-cpu').textContent = pct(cpuVal);
+  if (Number.isFinite(cpuPct)) setBar('cpu-bar', cpuPct < 1 ? cpuPct * 100 : cpuPct);
+
+  // Memory — show used / total
+  if (typeof memUsed === 'number' && memUsed > 100 && typeof memTotal === 'number' && memTotal > 0) {
+    $('#system-memory').textContent = `${bytes(memUsed)} / ${bytes(memTotal)}`;
+    setBar('mem-bar', (memUsed / memTotal) * 100);
+  } else {
+    $('#system-memory').textContent = typeof memUsed === 'number' && memUsed > 100 ? bytes(memUsed) : pct(memUsed);
+    setBar('mem-bar', 0);
+  }
+
+  // Disk
+  const diskPct = Number(diskVal);
+  $('#system-disk').textContent = pct(diskVal);
+  if (Number.isFinite(diskPct)) setBar('disk-bar', diskPct < 1 ? diskPct * 100 : diskPct);
+
+  // Scheduler
+  const sched = sysResp.scheduler;
+  const schedEl = $('#system-scheduler');
+  const schedNext = $('#scheduler-next');
+  if (schedEl) {
+    if (sched) {
+      const parts = [];
+      if (sched.pending) parts.push(`${sched.pending} pending`);
+      if (sched.paused) parts.push(`${sched.paused} paused`);
+      if (sched.running) parts.push(`${sched.running} running`);
+      schedEl.textContent = parts.length ? parts.join(' · ') : '0 tasks';
+    } else {
+      schedEl.textContent = '--';
+    }
+  }
+  if (schedNext) {
+    if (sched?.next_task) {
+      const t = new Date(sched.next_task.run_at);
+      const time = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      schedNext.textContent = `Next: ${time} ${sched.next_task.name}`;
+    } else {
+      schedNext.textContent = '';
+    }
+  }
+
+  $('#health-updated').textContent = fmtAge(state.healthUpdatedAt);
 }
 
 // ─── Render: Timeline ───

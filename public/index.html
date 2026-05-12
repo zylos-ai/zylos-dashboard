@@ -136,27 +136,28 @@
         <div class="gauge-grid">
           <article class="gauge">
             <span class="metric-label" data-i18n="label.pm2">PM2 Services</span>
-            <strong class="gauge-value" id="system-pm2">--</strong>
+            <div class="gauge-row"><span class="status-dot" id="pm2-dot"></span><strong class="gauge-value" id="system-pm2">--</strong></div>
+            <div class="gauge-detail" id="pm2-down-list"></div>
           </article>
           <article class="gauge">
             <span class="metric-label" data-i18n="label.cpu">CPU</span>
             <strong class="gauge-value" id="system-cpu">--</strong>
+            <div class="mini-bar"><div class="mini-bar-fill" id="cpu-bar"></div></div>
           </article>
           <article class="gauge">
             <span class="metric-label" data-i18n="label.memory">Memory</span>
             <strong class="gauge-value" id="system-memory">--</strong>
+            <div class="mini-bar"><div class="mini-bar-fill" id="mem-bar"></div></div>
           </article>
           <article class="gauge">
             <span class="metric-label" data-i18n="label.disk">Disk</span>
             <strong class="gauge-value" id="system-disk">--</strong>
+            <div class="mini-bar"><div class="mini-bar-fill" id="disk-bar"></div></div>
           </article>
-          <article class="gauge">
-            <span class="metric-label" data-i18n="label.c4">C4 Bridge</span>
-            <strong class="gauge-value" id="system-c4">--</strong>
-          </article>
-          <article class="gauge">
-            <span class="metric-label" data-i18n="label.otel">OTel Pipeline</span>
-            <strong class="gauge-value" id="system-otel">--</strong>
+          <article class="gauge gauge-wide">
+            <span class="metric-label" data-i18n="label.scheduler">Scheduler</span>
+            <strong class="gauge-value" id="system-scheduler">--</strong>
+            <div class="gauge-detail" id="scheduler-next"></div>
           </article>
         </div>
       </section>

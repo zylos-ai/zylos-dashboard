@@ -118,6 +118,31 @@ function readSchedulerTodayCount(zylosDir) {
   }
 }
 
+function readSchedulerStatus(zylosDir) {
+  const dbFile = path.join(zylosDir, 'scheduler', 'scheduler.db');
+  if (!fs.existsSync(dbFile)) return null;
+  try {
+    const db = new Database(dbFile, { readonly: true });
+    db.pragma('busy_timeout = 3000');
+    const counts = db.prepare(
+      `SELECT status, COUNT(*) as count FROM tasks WHERE status IN ('pending','paused','running') GROUP BY status`
+    ).all();
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const next = db.prepare(
+      `SELECT id, name, next_run_at FROM tasks WHERE status = 'pending' AND next_run_at >= ? ORDER BY next_run_at ASC LIMIT 1`
+    ).get(nowEpoch);
+    db.close();
+    const result = { pending: 0, paused: 0, running: 0 };
+    for (const r of counts) result[r.status] = r.count;
+    if (next) {
+      result.next_task = { id: next.id, name: next.name, run_at: new Date(next.next_run_at * 1000).toISOString() };
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 function dayBoundariesUTC(tz, daysBack = 0) {
   const now = new Date();
   const fmt = new Intl.DateTimeFormat('en-US', {
@@ -181,9 +206,11 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/system') {
     const pm2Data = pm2Collector.getLatestPM2Data();
     const sysData = systemCollector.getLatestSystemData();
+    const scheduler = readSchedulerStatus(config.zylosDir);
     sendJson(res, 200, {
       pm2: pm2Data ? pm2Data.processes : null,
       system: sysData || null,
+      scheduler: scheduler || null,
       collected_at: {
         pm2: pm2Data ? new Date(pm2Data.collectedAt).toISOString() : null,
         system: sysData ? new Date(sysData.collectedAt).toISOString() : null
