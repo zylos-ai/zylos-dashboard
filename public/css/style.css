@@ -992,6 +992,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 
 .timeline-dot[data-type="session"] { background: var(--green); }
+.timeline-dot[data-type="assistant"] { background: var(--purple, #6366f1); }
 .timeline-dot[data-type="permission"] { background: var(--state-possibly-stuck); }
 .timeline-dot[data-type="compact"] { background: var(--purple, #6366f1); }
 

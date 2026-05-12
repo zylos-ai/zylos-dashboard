@@ -62,7 +62,7 @@ export class Sanitizer {
         }
       }
 
-      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail, prompt_source);
+      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail, prompt_source, metadata.assistant_summary);
 
       return { session_id, duration_ms, summary, metadata };
     } catch {
@@ -93,7 +93,7 @@ export class Sanitizer {
     return result;
   }
 
-  buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource) {
+  buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource, assistantSummary) {
     const detail = toolDetail ? `: ${toolDetail}` : '';
     switch (hookEventName) {
       case 'PreToolUse':
@@ -103,7 +103,7 @@ export class Sanitizer {
       case 'UserPromptSubmit':
         return promptSource ? `Prompt from ${promptSource}` : 'Prompt received';
       case 'Stop':
-        return 'Turn ended';
+        return assistantSummary || 'Turn ended';
       case 'PermissionRequest':
         return `Permission requested: ${toolName || 'Unknown'}${detail}`;
       case 'SubagentStart':

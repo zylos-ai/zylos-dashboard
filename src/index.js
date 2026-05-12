@@ -90,6 +90,12 @@ async function startupSequence() {
   await stateEngine.initialize();
 }
 
+function extractFilePath(summary) {
+  if (!summary) return null;
+  const m = summary.match(/^(?:Read|Edit|Write|Bash):\s+(\S+)/);
+  return m ? m[1] : null;
+}
+
 function extractProject(filePath) {
   if (!filePath) return null;
   const parts = filePath.replace(/^\/+/, '').split('/');
@@ -296,7 +302,7 @@ function handleApi(req, res, pathname, url) {
 
     const projectBreakdown = {};
     for (const e of events) {
-      const fp = e.metadata?.file_path || '';
+      const fp = extractFilePath(e.summary);
       const project = extractProject(fp);
       if (project) projectBreakdown[project] = (projectBreakdown[project] || 0) + 1;
     }
