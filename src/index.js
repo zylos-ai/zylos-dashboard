@@ -127,10 +127,9 @@ function readSchedulerStatus(zylosDir) {
     const counts = db.prepare(
       `SELECT status, COUNT(*) as count FROM tasks WHERE status IN ('pending','paused','running') GROUP BY status`
     ).all();
-    const nowEpoch = Math.floor(Date.now() / 1000);
     const next = db.prepare(
-      `SELECT id, name, next_run_at FROM tasks WHERE status = 'pending' AND next_run_at >= ? ORDER BY next_run_at ASC LIMIT 1`
-    ).get(nowEpoch);
+      `SELECT id, name, next_run_at FROM tasks WHERE status = 'pending' ORDER BY next_run_at ASC LIMIT 1`
+    ).get();
     db.close();
     const result = { pending: 0, paused: 0, running: 0 };
     for (const r of counts) result[r.status] = r.count;
