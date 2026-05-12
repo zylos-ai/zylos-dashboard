@@ -503,18 +503,21 @@ function renderMetrics() {
 }
 
 // ─── Render: Health ───
-function barLevel(pctVal) {
+const RING_CIRCUMFERENCE = 2 * Math.PI * 34; // r=34 → ~213.63
+
+function ringLevel(pctVal) {
   if (pctVal >= 90) return 'level-danger';
   if (pctVal >= 70) return 'level-warn';
   return 'level-ok';
 }
 
-function setBar(id, pctVal) {
+function setRing(id, pctVal) {
   const el = $(`#${id}`);
   if (!el) return;
   const v = Math.max(0, Math.min(100, pctVal));
-  el.style.width = `${v}%`;
-  el.className = `mini-bar-fill ${barLevel(v)}`;
+  const offset = RING_CIRCUMFERENCE * (1 - v / 100);
+  el.style.strokeDashoffset = offset;
+  el.className.baseVal = `ring-fill ${ringLevel(v)}`;
 }
 
 function renderHealth() {
@@ -532,12 +535,10 @@ function renderHealth() {
   const memTotal = sys.memory?.total_bytes ?? sys.mem_total_bytes ?? sys.memory?.total;
   const diskVal = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
 
-  // PM2
-  $('#system-pm2').textContent = total ? t('label.running', { count: running, total }) : '--';
-  const dot = $('#pm2-dot');
-  if (dot) {
-    dot.className = 'status-dot ' + (!total ? '' : running === total ? 'ok' : running === 0 ? 'error' : 'warn');
-  }
+  // PM2 — ring shows fraction, detail shows down services
+  const pm2Pct = total ? (running / total) * 100 : 0;
+  $('#system-pm2').textContent = total ? `${running}/${total}` : '--';
+  setRing('pm2-ring', pm2Pct);
   const downList = $('#pm2-down-list');
   if (downList) {
     if (downSvcs.length > 0) {
@@ -552,21 +553,25 @@ function renderHealth() {
   // CPU
   const cpuPct = Number(cpuVal);
   $('#system-cpu').textContent = pct(cpuVal);
-  if (Number.isFinite(cpuPct)) setBar('cpu-bar', cpuPct < 1 ? cpuPct * 100 : cpuPct);
+  if (Number.isFinite(cpuPct)) setRing('cpu-ring', cpuPct < 1 ? cpuPct * 100 : cpuPct);
 
-  // Memory — show used / total
+  // Memory — ring shows %, detail shows used/total
+  const memDetail = $('#mem-detail');
   if (typeof memUsed === 'number' && memUsed > 100 && typeof memTotal === 'number' && memTotal > 0) {
-    $('#system-memory').textContent = `${bytes(memUsed)} / ${bytes(memTotal)}`;
-    setBar('mem-bar', (memUsed / memTotal) * 100);
+    const memPctVal = (memUsed / memTotal) * 100;
+    $('#system-memory').textContent = `${Math.round(memPctVal)}%`;
+    setRing('mem-ring', memPctVal);
+    if (memDetail) memDetail.textContent = `${bytes(memUsed)} / ${bytes(memTotal)}`;
   } else {
     $('#system-memory').textContent = typeof memUsed === 'number' && memUsed > 100 ? bytes(memUsed) : pct(memUsed);
-    setBar('mem-bar', 0);
+    setRing('mem-ring', 0);
+    if (memDetail) memDetail.textContent = '';
   }
 
   // Disk
   const diskPct = Number(diskVal);
   $('#system-disk').textContent = pct(diskVal);
-  if (Number.isFinite(diskPct)) setBar('disk-bar', diskPct < 1 ? diskPct * 100 : diskPct);
+  if (Number.isFinite(diskPct)) setRing('disk-ring', diskPct < 1 ? diskPct * 100 : diskPct);
 
   // Scheduler
   const sched = sysResp.scheduler;
