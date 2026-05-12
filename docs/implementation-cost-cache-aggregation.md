@@ -77,7 +77,7 @@ session_id: <active session_id from StateEngine, or NULL if unknown>
 
 No span-to-log correlation needed — cost and tokens are stored independently and aggregated separately. Cost aggregation uses `api_request_cost`; cache aggregation uses `api_request_tokens`.
 
-**Session ID binding:** When OTel data arrives at the ingest endpoint, the handler reads the current `session_id` from StateEngine and stamps it onto each metric. If StateEngine has no active session, `session_id` remains NULL and the data is still usable for today/7d aggregation (timestamp-based), but session-level aggregation falls back to statusline.
+**Session ID binding:** When OTel data arrives at the ingest endpoint, the handler reads the current session_id and stamps it onto each metric. Source: add a public `StateEngine.getCurrentSessionId()` method that returns `this._state.mainSessionId || this._currentSessionId()` (prefers event-derived session, falls back to env var). If no session is known, `session_id` remains NULL — data is still usable for today/7d aggregation (timestamp-based), but session-level aggregation falls back to statusline.
 
 ### 2. Aggregation Queries in Store
 
@@ -133,7 +133,7 @@ cache_hit_rate:
   2. statusline cache_hit_rate (fallback) — cumulative session ratio
 ```
 
-`currentSessionId` comes from `stateEngine.getState().session?.id` (the same session_id that statusline reports).
+`currentSessionId` comes from `stateEngine.getCurrentSessionId()` — new public method returning `this._state.mainSessionId || this._currentSessionId()`.
 
 ### 5. New API Endpoints
 
@@ -175,7 +175,7 @@ CREATE INDEX IF NOT EXISTS idx_metric_points_name_session_ts
 ON metric_points (metric_name, session_id, timestamp);
 ```
 
-This covers both session-filtered queries (`WHERE metric_name = ? AND session_id = ?`) and timestamp-range queries. Added as part of Store step (§2), validated with EXPLAIN QUERY PLAN before proceeding to API/frontend.
+This covers session-filtered queries (`WHERE metric_name = ? AND session_id = ? AND timestamp BETWEEN ...`). Timestamp-only aggregation (today/7d without session filter) reuses the existing `idx_metrics_name_ts(metric_name, timestamp)` index. Added as part of Store step (§2), both query shapes validated with EXPLAIN QUERY PLAN before proceeding to API/frontend.
 
 ### 8. Data Retention
 
