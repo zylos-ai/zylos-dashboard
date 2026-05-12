@@ -513,7 +513,7 @@ function renderMetrics() {
   $('#metric-tokens-cache').textContent = ts ? pctDecimal(ts.cache_rate) : '--';
 
   // Today / 7d rows
-  const tokLine = (t) => t ? `↓${tok(t.input)} ↑${tok(t.output)}` : '--';
+  const tokLine = (t) => t ? `↑${tok(t.input)} ↓${tok(t.output)}` : '--';
   $('#metric-tokens-today').textContent = tokLine(tt);
   $('#metric-tokens-7d').textContent = tokLine(t7);
   setTokenBar('tokens-bar-today', tt);
