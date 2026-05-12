@@ -838,6 +838,7 @@ function applySse(name, data) {
     state.dashboardState = data;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     renderState(); renderHealth();
+    refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
     if (mn) { state.metrics.set(mn, data); state.metricsUpdatedAt = new Date().toISOString(); renderMetrics(); }
