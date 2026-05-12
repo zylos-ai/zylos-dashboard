@@ -670,10 +670,12 @@ function renderTimeline() {
   container.replaceChildren(...events.slice(0, 50).map((e) => {
     const el = document.createElement('div');
     el.className = 'timeline-item';
+    const durStr = fmtDuration(e.duration_ms);
     el.innerHTML =
       `<span class="timeline-time">${fmtTime(e.timestamp)}</span>` +
       `<span class="timeline-dot" data-type="${timelineDotType(e.event_type)}"></span>` +
-      `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>`;
+      `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>` +
+      `<span class="timeline-duration">${esc(durStr)}</span>`;
     return el;
   }));
   $('#timeline-updated').textContent = fmtAge(state.timelineUpdatedAt);

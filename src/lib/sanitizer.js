@@ -99,7 +99,7 @@ export class Sanitizer {
       case 'PreToolUse':
         return `${toolName || 'Unknown'}${detail}`;
       case 'PostToolUse':
-        return `${toolName || 'Unknown'}${detail}${durationMs ? ` (${durationMs}ms)` : ''}`;
+        return `${toolName || 'Unknown'}${detail}`;
       case 'UserPromptSubmit':
         return promptSource ? `Prompt from ${promptSource}` : 'Prompt received';
       case 'Stop':
