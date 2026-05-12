@@ -670,12 +670,10 @@ function renderTimeline() {
   container.replaceChildren(...events.slice(0, 50).map((e) => {
     const el = document.createElement('div');
     el.className = 'timeline-item';
-    const durStr = fmtDuration(e.duration_ms);
     el.innerHTML =
       `<span class="timeline-time">${fmtTime(e.timestamp)}</span>` +
       `<span class="timeline-dot" data-type="${timelineDotType(e.event_type)}"></span>` +
-      `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>` +
-      `<span class="timeline-duration">${esc(durStr)}</span>`;
+      `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>`;
     return el;
   }));
   $('#timeline-updated').textContent = fmtAge(state.timelineUpdatedAt);
@@ -804,8 +802,8 @@ async function refreshHealth() {
 
 async function refreshTimeline() {
   const since = new Date(Date.now() - 30 * 60_000).toISOString();
-  const data = await fetchJson(`/api/timeline?since=${since}&limit=50`);
-  state.timeline = (data.events || []).reverse();
+  const data = await fetchJson(`/api/timeline?since=${since}&limit=100`);
+  state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use').reverse();
   state.timelineUpdatedAt = new Date().toISOString();
   renderTimeline();
 }
