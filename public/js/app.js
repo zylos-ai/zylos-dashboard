@@ -145,10 +145,19 @@ function confLabel(v) {
 
 function srcLabel(m) {
   if (!m) return t('confidence.unavailable');
-  const conf = m.confidence || m.selected_source?.confidence;
-  const src = m.selected_source?.source || m.selected_source || m.source || m.freshness?.source;
-  const ct = conf ? confLabel(conf) : t('confidence.unavailable');
-  return src ? `${ct} · ${src}` : ct;
+  const src = m.selected_source || m.source || '';
+  const friendly = {
+    statusline: 'current session',
+    statusline_current_usage: 'current session',
+    otel_cost_sum: 'OpenTelemetry',
+    otel_token_usage: 'OpenTelemetry',
+    otel_span: 'OpenTelemetry',
+    rollout: 'rollout',
+    token_price_estimated: 'estimated',
+    derived_token_estimate: 'estimated',
+    hook_postToolUse: 'tool hooks'
+  };
+  return friendly[src] || src || t('confidence.unavailable');
 }
 
 function metVal(m) {
