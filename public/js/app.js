@@ -60,6 +60,13 @@ function barColor(pctValue) {
   return 'bar-danger';
 }
 
+function pctDecimal(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  const p = n <= 1 ? n * 100 : n;
+  return `${p.toFixed(1)}%`;
+}
+
 function tok(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n === 0) return '--';
@@ -481,13 +488,11 @@ function renderMetrics() {
   const ts = agg.tokens_session;
   const tt = agg.tokens_today;
   const t7 = agg['tokens_7d'];
-  $('#metric-tokens-input').textContent = ts ? tok(ts.input) : '--';
-  $('#metric-tokens-output').textContent = ts ? tok(ts.output) : '--';
-  $('#metric-tokens-cache').textContent = ts ? pct(ts.cache_rate) : '--';
-  $('#metric-tokens-today-in').textContent = tt ? tok(tt.input) : '--';
-  $('#metric-tokens-today-out').textContent = tt ? tok(tt.output) : '--';
-  $('#metric-tokens-7d-in').textContent = t7 ? tok(t7.input) : '--';
-  $('#metric-tokens-7d-out').textContent = t7 ? tok(t7.output) : '--';
+  const tokLine = (t) => t ? `${tok(t.input)} in / ${tok(t.output)} out` : '--';
+  $('#metric-tokens-session').textContent = tokLine(ts);
+  $('#metric-tokens-cache').textContent = ts ? pctDecimal(ts.cache_rate) : '--';
+  $('#metric-tokens-today').textContent = tokLine(tt);
+  $('#metric-tokens-7d').textContent = tokLine(t7);
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
 
