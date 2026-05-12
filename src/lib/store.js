@@ -478,7 +478,7 @@ export class Store {
 
   aggregateTokenSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
-      SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,
+      SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
              COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
              COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
              COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) AS input_sum,
@@ -498,7 +498,7 @@ export class Store {
 
   aggregateCostSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
-      SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,
+      SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
              SUM(metric_value) AS cost_sum,
              COUNT(*) AS request_count
       FROM metric_points
@@ -510,7 +510,7 @@ export class Store {
 
   aggregateCacheRateSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
-      SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / @bucket * @bucket) AS bucket_start,
+      SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
              COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
              COALESCE(SUM(metric_value), 0) AS total_input_sum
       FROM metric_points
