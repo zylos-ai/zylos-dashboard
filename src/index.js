@@ -92,7 +92,7 @@ async function startupSequence() {
 
 function extractFilePath(summary) {
   if (!summary) return null;
-  const m = summary.match(/^(?:Read|Edit|Write|Bash):\s+(\S+)/);
+  const m = summary.match(/^(?:Read|Edit|Write):\s+(\S+)/);
   return m ? m[1] : null;
 }
 
