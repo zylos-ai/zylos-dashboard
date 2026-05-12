@@ -44,13 +44,13 @@ function initTheme(theme) {
 function pct(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
-  return `${Math.round(n <= 1 ? n * 100 : n)}%`;
+  return `${Math.round(n < 1 ? n * 100 : n)}%`;
 }
 
 function barPct(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, n <= 1 ? n * 100 : n));
+  return Math.max(0, Math.min(100, n < 1 ? n * 100 : n));
 }
 
 function barColor(pctValue) {
