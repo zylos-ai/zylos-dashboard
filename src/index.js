@@ -101,11 +101,8 @@ function extractProject(filePath) {
   const parts = filePath.replace(/^\/+/, '').split('/');
   const wsIdx = parts.indexOf('workspace');
   if (wsIdx >= 0 && parts[wsIdx + 1]) return parts[wsIdx + 1];
-  const srcIdx = parts.indexOf('src');
-  if (srcIdx >= 2) return parts[srcIdx - 1];
   const skillsIdx = parts.indexOf('skills');
   if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
-  if (parts.length >= 2) return parts[parts.length - 2];
   return null;
 }
 
