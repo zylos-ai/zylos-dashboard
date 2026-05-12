@@ -579,28 +579,27 @@ function renderHealth() {
   $('#system-disk').textContent = pct(diskVal);
   if (Number.isFinite(diskPct)) setRing('disk-ring', diskPct < 1 ? diskPct * 100 : diskPct);
 
-  // Scheduler
+  // Scheduler — timeline of upcoming tasks
   const sched = sysResp.scheduler;
-  const schedEl = $('#system-scheduler');
-  const schedNext = $('#scheduler-next');
-  if (schedEl) {
-    if (sched) {
-      const parts = [];
-      if (sched.pending) parts.push(`${sched.pending} pending`);
-      if (sched.paused) parts.push(`${sched.paused} paused`);
-      if (sched.running) parts.push(`${sched.running} running`);
-      schedEl.textContent = parts.length ? parts.join(' · ') : '0 tasks';
-    } else {
-      schedEl.textContent = '--';
-    }
+  const schedCount = $('#scheduler-count');
+  const schedTimeline = $('#scheduler-timeline');
+  if (schedCount) {
+    schedCount.textContent = sched?.pending ? `${sched.pending} pending` : '';
   }
-  if (schedNext) {
-    if (sched?.next_task) {
-      const t = new Date(sched.next_task.run_at);
-      const time = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      schedNext.textContent = `Next: ${time} ${sched.next_task.name}`;
+  if (schedTimeline) {
+    const tasks = sched?.upcoming || [];
+    if (tasks.length === 0) {
+      schedTimeline.innerHTML = '<span class="gauge-detail">No pending tasks</span>';
     } else {
-      schedNext.textContent = '';
+      const now = Date.now();
+      schedTimeline.innerHTML = tasks.map((task, i) => {
+        const runAt = new Date(task.run_at);
+        const isOverdue = runAt.getTime() < now;
+        const time = runAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const cls = isOverdue ? ' overdue' : '';
+        const line = i < tasks.length - 1 ? '<div class="sched-line"></div>' : '';
+        return `<div class="sched-item${cls}"><div class="sched-dot"></div><div class="sched-info"><div class="sched-time">${esc(time)}</div><div class="sched-name">${esc(task.name)}</div></div></div>${line}`;
+      }).join('');
     }
   }
 

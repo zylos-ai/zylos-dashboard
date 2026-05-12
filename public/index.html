@@ -176,10 +176,12 @@
               <strong class="ring-value" id="system-disk">--</strong>
             </div>
           </article>
-          <article class="gauge gauge-wide">
-            <span class="metric-label" data-i18n="label.scheduler">Scheduler</span>
-            <strong class="gauge-value" id="system-scheduler">--</strong>
-            <div class="gauge-detail" id="scheduler-next"></div>
+          <article class="gauge gauge-wide scheduler-card">
+            <div class="scheduler-head">
+              <span class="metric-label" data-i18n="label.scheduler">Scheduler</span>
+              <span class="scheduler-count" id="scheduler-count"></span>
+            </div>
+            <div class="scheduler-timeline" id="scheduler-timeline"></div>
           </article>
         </div>
       </section>
