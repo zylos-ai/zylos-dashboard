@@ -56,7 +56,7 @@ function barPct(v) {
 function barColor(pctValue) {
   const p = barPct(pctValue);
   if (p < 50) return '';
-  if (p < 75) return 'bar-warning';
+  if (p <= 75) return 'bar-warning';
   return 'bar-danger';
 }
 
