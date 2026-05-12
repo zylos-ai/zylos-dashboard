@@ -296,7 +296,8 @@ function handleApi(req, res, pathname, url) {
     const todayStart = `${today}T00:00:00.000Z`;
     const events = store.queryEvents({ since: todayStart, types: ['post_tool_use'], limit: 10000 });
     const toolCalls = events.length;
-    const activeTimeMs = events.reduce((sum, e) => sum + (e.duration_ms || 0), 0);
+    const stopEvents = store.queryEvents({ since: todayStart, types: ['stop'], limit: 10000 });
+    const sessions = stopEvents.length;
 
     const projectBreakdown = {};
     for (const e of events) {
@@ -308,17 +309,14 @@ function handleApi(req, res, pathname, url) {
 
     const c4Stats = c4Reader.getTodayStats();
     const messagesProcessed = c4Stats ? c4Stats.total_in + c4Stats.total_out : 0;
-    const schedulerTasks = readSchedulerTodayCount(config.zylosDir);
 
     sendJson(res, 200, {
       date: today,
       tool_calls: toolCalls,
-      active_time_ms: activeTimeMs,
-      active_time_h: Math.round(activeTimeMs / 36000) / 100,
+      sessions,
       top_project: topProject,
       project_breakdown: projectBreakdown,
-      messages_processed: messagesProcessed,
-      scheduler_tasks: schedulerTasks
+      messages_processed: messagesProcessed
     });
     return true;
   }

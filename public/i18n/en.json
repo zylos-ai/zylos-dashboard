@@ -69,7 +69,7 @@
   "block.communication": "Communication",
   "timeline.empty": "No recent activity",
   "summary.tool_calls": "Tool Calls",
-  "summary.active_time": "Active Time",
+  "summary.sessions": "Sessions",
   "summary.messages": "Messages",
   "summary.top_project": "Top Project",
   "summary.scheduler": "Scheduler Tasks",

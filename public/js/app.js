@@ -685,23 +685,24 @@ function renderTimeline() {
 function renderSummary() {
   const s = state.summary;
   $('#summary-tool-calls').textContent = s ? String(s.tool_calls) : '--';
-  $('#summary-active-time').textContent = s ? formatActiveTime(s.active_time_ms) : '--';
+  $('#summary-sessions').textContent = s ? String(s.sessions) : '--';
   $('#summary-messages').textContent = s ? String(s.messages_processed) : '--';
   $('#summary-top-project').textContent = s?.top_project || '--';
-  $('#summary-scheduler').textContent = s?.scheduler_tasks != null ? String(s.scheduler_tasks) : '--';
   $('#summary-updated').textContent = fmtAge(state.summaryUpdatedAt);
 }
 
-function formatActiveTime(ms) {
-  if (!ms) return '0m';
-  const totalMin = Math.floor(ms / 60000);
-  if (totalMin < 60) return `${totalMin}m`;
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return `${h}h ${m}m`;
+// ─── Render: Communication ───
+const COMM_COLORS = ['#0d9488', '#6366f1', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
+
+function ageClass(ts) {
+  const a = ageSec(ts);
+  if (a === null) return 'age-normal';
+  if (a < 60) return 'age-fresh';
+  if (a < 3600) return 'age-normal';
+  if (a < 86400) return 'age-stale';
+  return 'age-old';
 }
 
-// ─── Render: Communication ───
 function renderComm() {
   const c = state.communication;
   const container = $('#comm-channels');
@@ -712,15 +713,23 @@ function renderComm() {
   }
 
   const lastOb = c.last_outbound || {};
-  container.replaceChildren(...Object.entries(c.channels).map(([ch, counts]) => {
+  const entries = Object.entries(c.channels);
+  const maxTotal = Math.max(...entries.map(([, v]) => v.in + v.out), 1);
+
+  container.replaceChildren(...entries.map(([ch, counts], i) => {
     const el = document.createElement('div');
     el.className = 'comm-row';
     const lastTs = lastOb[ch];
     const ageStr = lastTs ? fmtAge(lastTs) : '--';
+    const total = counts.in + counts.out;
+    const inPct = total ? (counts.in / total) * 100 : 50;
+    const outPct = 100 - inPct;
+    const color = COMM_COLORS[i % COMM_COLORS.length];
     el.innerHTML =
+      `<span class="comm-dot" style="background:${color}"></span>` +
       `<span class="comm-channel">${esc(ch)}</span>` +
-      `<span class="comm-counts">${counts.in} ${t('comm.in')} / ${counts.out} ${t('comm.out')}</span>` +
-      `<span class="comm-age">${ageStr}</span>`;
+      `<span class="comm-bar-wrap">${counts.in}/${counts.out} <span class="comm-bar"><span class="comm-bar-in" style="width:${inPct}%"></span><span class="comm-bar-out" style="width:${outPct}%"></span></span></span>` +
+      `<span class="comm-age ${ageClass(lastTs)}">${ageStr}</span>`;
     return el;
   }));
 

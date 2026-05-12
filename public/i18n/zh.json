@@ -69,7 +69,7 @@
   "block.communication": "通信",
   "timeline.empty": "暂无近期活动",
   "summary.tool_calls": "工具调用",
-  "summary.active_time": "活跃时间",
+  "summary.sessions": "会话数",
   "summary.messages": "消息数",
   "summary.top_project": "Top 项目",
   "summary.scheduler": "调度任务",
