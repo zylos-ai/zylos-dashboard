@@ -631,6 +631,159 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .metric-multi .metric-value-sub { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 .metric-row-divider { border-top: 1px solid var(--border); margin: 4px 0; }
 
+/* Cost cards */
+.cost-cards { margin-bottom: var(--space-sm); }
+.cost-cards > .metric-label { display: block; margin-bottom: 6px; }
+
+.cost-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-sm);
+}
+
+.cost-card {
+  text-align: center;
+  padding: 12px 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.cost-amount {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.cost-card small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Tokens section */
+.tokens-section { }
+.tokens-section > .metric-label { display: block; margin-bottom: 6px; }
+
+.tokens-row {
+  display: flex;
+  gap: var(--space-md);
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.tokens-bar-wrap { flex: 1; min-width: 0; }
+
+.tokens-stacked-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.tokens-bar-input {
+  background: var(--accent);
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.tokens-bar-output {
+  background: var(--purple, #6366f1);
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.tokens-bar-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.tokens-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.legend-dot.input { background: var(--accent); }
+.legend-dot.output { background: var(--purple, #6366f1); }
+
+.tokens-bar-legend small {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tokens-cache-wrap {
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.tokens-cache-wrap small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.ring-sm { width: 56px; height: 56px; }
+.ring-value-sm { font-size: 11px; }
+
+.ring-cache {
+  stroke: var(--accent);
+  stroke-dasharray: 138.23;
+  stroke-dashoffset: 138.23;
+}
+
+.tokens-periods {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tokens-period-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tokens-period-row .metric-value-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 120px;
+}
+
+.tokens-mini-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+  flex: 1;
+  min-width: 0;
+}
+
+.tokens-mini-bar .tokens-bar-input { background: var(--accent); }
+.tokens-mini-bar .tokens-bar-output { background: var(--purple, #6366f1); }
+
+.tokens-period-row small {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 /* ─── ③ Health & System ─── */
 .gauge-grid {
   display: grid;

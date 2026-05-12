@@ -488,18 +488,51 @@ function renderMetrics() {
   $('#metric-cost-today').textContent = agg.cost_today != null ? usd(agg.cost_today) : '--';
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
 
-  const costSessionLabel = $('#metric-cost-session').closest('.metric-row')?.querySelector('small');
+  const costSessionLabel = $('#metric-cost-session-label');
   if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? 'session' : 'lifetime';
 
+  // Tokens — stacked bar + cache ring
   const ts = agg.tokens_session;
   const tt = agg.tokens_today;
   const t7 = agg['tokens_7d'];
-  const tokLine = (t) => t ? `↓${tok(t.input)} ↑${tok(t.output)}` : '--';
-  $('#metric-tokens-session').textContent = tokLine(ts);
+
+  // Session input/output stacked bar
+  $('#metric-tokens-input').textContent = ts ? tok(ts.input) : '--';
+  $('#metric-tokens-output').textContent = ts ? tok(ts.output) : '--';
+  setTokenBar('tokens-bar', ts);
+
+  // Cache hit ring
+  const CACHE_RING_C = 2 * Math.PI * 22;
+  const cacheEl = $('#cache-ring');
+  if (cacheEl) {
+    const cr = ts?.cache_rate;
+    const cv = cr != null ? (cr <= 1 ? cr * 100 : cr) : 0;
+    cacheEl.style.strokeDasharray = CACHE_RING_C;
+    cacheEl.style.strokeDashoffset = CACHE_RING_C * (1 - Math.min(100, cv) / 100);
+  }
   $('#metric-tokens-cache').textContent = ts ? pctDecimal(ts.cache_rate) : '--';
+
+  // Today / 7d rows
+  const tokLine = (t) => t ? `↓${tok(t.input)} ↑${tok(t.output)}` : '--';
   $('#metric-tokens-today').textContent = tokLine(tt);
   $('#metric-tokens-7d').textContent = tokLine(t7);
+  setTokenBar('tokens-bar-today', tt);
+  setTokenBar('tokens-bar-7d', t7);
+
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
+}
+
+function setTokenBar(id, tokData) {
+  const el = $(`#${id}`);
+  if (!el || !tokData) return;
+  const inp = Number(tokData.input) || 0;
+  const out = Number(tokData.output) || 0;
+  const total = inp + out;
+  if (total === 0) return;
+  const inputEl = el.querySelector('.tokens-bar-input');
+  const outputEl = el.querySelector('.tokens-bar-output');
+  if (inputEl) inputEl.style.width = `${(inp / total) * 100}%`;
+  if (outputEl) outputEl.style.width = `${(out / total) * 100}%`;
 }
 
 // ─── Render: Health ───

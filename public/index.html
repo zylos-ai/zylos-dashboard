@@ -108,21 +108,60 @@
             <div class="progress"><span class="progress-fill" id="metric-rate-7d-bar"></span></div>
             <span class="metric-reset" id="metric-rate-7d-reset"></span>
           </article>
-          <div class="metric-pair">
-            <article class="metric-text metric-multi">
-              <span class="metric-label" data-i18n="label.cost">Cost</span>
-              <div class="metric-row"><strong class="metric-value" id="metric-cost-session">--</strong><small>session</small></div>
-              <div class="metric-row"><span class="metric-value-sub" id="metric-cost-today">--</span><small>today</small></div>
-              <div class="metric-row"><span class="metric-value-sub" id="metric-cost-7d">--</span><small>7 days</small></div>
-            </article>
-            <article class="metric-text metric-multi">
-              <span class="metric-label">Tokens</span>
-              <div class="metric-row"><span class="metric-value-sub" id="metric-tokens-session">--</span><small>session</small></div>
-              <div class="metric-row"><span class="metric-value-sub" id="metric-tokens-cache">--</span><small>cache hit</small></div>
-              <div class="metric-row-divider"></div>
-              <div class="metric-row"><span class="metric-value-sub" id="metric-tokens-today">--</span><small>today</small></div>
-              <div class="metric-row"><span class="metric-value-sub" id="metric-tokens-7d">--</span><small>7 days</small></div>
-            </article>
+          <div class="cost-cards">
+            <span class="metric-label" data-i18n="label.cost">Cost</span>
+            <div class="cost-grid">
+              <div class="cost-card">
+                <strong class="cost-amount" id="metric-cost-session">--</strong>
+                <small id="metric-cost-session-label">session</small>
+              </div>
+              <div class="cost-card">
+                <strong class="cost-amount" id="metric-cost-today">--</strong>
+                <small>today</small>
+              </div>
+              <div class="cost-card">
+                <strong class="cost-amount" id="metric-cost-7d">--</strong>
+                <small>7 days</small>
+              </div>
+            </div>
+          </div>
+          <div class="tokens-section">
+            <span class="metric-label">Tokens</span>
+            <div class="tokens-row">
+              <div class="tokens-bar-wrap">
+                <div class="tokens-stacked-bar" id="tokens-bar">
+                  <div class="tokens-bar-input" id="tokens-bar-input"></div>
+                  <div class="tokens-bar-output" id="tokens-bar-output"></div>
+                </div>
+                <div class="tokens-bar-legend">
+                  <span class="tokens-legend-item"><span class="legend-dot input"></span>↓<span id="metric-tokens-input">--</span></span>
+                  <span class="tokens-legend-item"><span class="legend-dot output"></span>↑<span id="metric-tokens-output">--</span></span>
+                  <small>session</small>
+                </div>
+              </div>
+              <div class="tokens-cache-wrap">
+                <div class="ring-wrap ring-sm">
+                  <svg class="ring-svg" viewBox="0 0 56 56">
+                    <circle class="ring-bg" cx="28" cy="28" r="22"/>
+                    <circle class="ring-fill ring-cache" id="cache-ring" cx="28" cy="28" r="22"/>
+                  </svg>
+                  <span class="ring-value ring-value-sm" id="metric-tokens-cache">--</span>
+                </div>
+                <small>cache hit</small>
+              </div>
+            </div>
+            <div class="tokens-periods">
+              <div class="tokens-period-row">
+                <span class="metric-value-sub" id="metric-tokens-today">--</span>
+                <div class="tokens-mini-bar" id="tokens-bar-today"><div class="tokens-bar-input"></div><div class="tokens-bar-output"></div></div>
+                <small>today</small>
+              </div>
+              <div class="tokens-period-row">
+                <span class="metric-value-sub" id="metric-tokens-7d">--</span>
+                <div class="tokens-mini-bar" id="tokens-bar-7d"><div class="tokens-bar-input"></div><div class="tokens-bar-output"></div></div>
+                <small>7 days</small>
+              </div>
+            </div>
           </div>
         </div>
       </section>
