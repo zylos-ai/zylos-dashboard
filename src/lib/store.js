@@ -156,10 +156,24 @@ export class Store {
       LIMIT @limit OFFSET @offset
     `);
 
+    this._queryEventsDesc = this.db.prepare(`
+      SELECT * FROM runtime_events
+      WHERE timestamp >= @since AND timestamp <= @until
+      ORDER BY event_seq DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
     this._queryEventsByType = this.db.prepare(`
       SELECT * FROM runtime_events
       WHERE timestamp >= @since AND timestamp <= @until AND event_type = @event_type
       ORDER BY event_seq ASC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this._queryEventsByTypeDesc = this.db.prepare(`
+      SELECT * FROM runtime_events
+      WHERE timestamp >= @since AND timestamp <= @until AND event_type = @event_type
+      ORDER BY event_seq DESC
       LIMIT @limit OFFSET @offset
     `);
 
@@ -269,16 +283,18 @@ export class Store {
     return { inserted: info.changes > 0, event_seq: seq };
   }
 
-  queryEvents({ since, until, types, sessionId, limit = 100, offset = 0 }) {
+  queryEvents({ since, until, types, sessionId, limit = 100, offset = 0, order = 'asc' }) {
     const s = since || '1970-01-01T00:00:00Z';
     const u = until || '2099-12-31T23:59:59Z';
+    const desc = order === 'desc';
 
     if (types && types.length === 1) {
-      return this._queryEventsByType.all({ since: s, until: u, event_type: types[0], limit, offset })
+      const stmt = desc ? this._queryEventsByTypeDesc : this._queryEventsByType;
+      return stmt.all({ since: s, until: u, event_type: types[0], limit, offset })
         .map(this._parseEventRow);
     }
 
-    let rows = this._queryEvents.all({ since: s, until: u, limit, offset });
+    let rows = (desc ? this._queryEventsDesc : this._queryEvents).all({ since: s, until: u, limit, offset });
     if (types && types.length > 0) {
       const typeSet = new Set(types);
       rows = rows.filter(r => typeSet.has(r.event_type));

@@ -198,7 +198,8 @@ function handleApi(req, res, pathname, url) {
     const sessionId = url.searchParams.get('session_id') || undefined;
     const limit = parseInt(url.searchParams.get('limit') || '100', 10);
     const offset = parseInt(url.searchParams.get('offset') || '0', 10);
-    const events = store.queryEvents({ since, until, types, sessionId, limit, offset });
+    const order = url.searchParams.get('order') === 'desc' ? 'desc' : 'asc';
+    const events = store.queryEvents({ since, until, types, sessionId, limit, offset, order });
     sendJson(res, 200, { events, count: events.length });
     return true;
   }
