@@ -564,7 +564,7 @@ export class StateEngine {
     const pm2 = this._state.pm2;
     if (!pm2) return null;
     const procs = Array.isArray(pm2) ? pm2 : (pm2.processes || pm2.services || []);
-    const am = procs.find(p => p.name === 'zylos-activity-monitor');
+    const am = procs.find(p => p.name === 'activity-monitor' || p.name === 'zylos-activity-monitor');
     if (!am) return null;
     const status = String(am.pm2_env?.status || am.status || '').toLowerCase();
     return ['online', 'running'].includes(status);
