@@ -812,7 +812,6 @@ async function refreshTimeline() {
 async function refreshSummary() {
   state.summary = await fetchJson('/api/summary');
   state.summaryUpdatedAt = new Date().toISOString();
-  renderSummary();
 }
 
 async function refreshComm() {
