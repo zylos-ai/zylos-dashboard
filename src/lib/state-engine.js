@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const STALE_TOOL_THRESHOLD_MS = 300_000;
+const STALE_SUBAGENT_THRESHOLD_MS = 1_800_000;
 const STALE_PERMISSION_THRESHOLD_MS = 600_000;
 const POSSIBLY_STUCK_THRESHOLD_S = 120;
 const STUCK_CONFIRMATION_THRESHOLD_S = 600;
@@ -253,6 +254,7 @@ export class StateEngine {
             if (!tool.agent_id) this._state.runningTools.delete(id);
           }
         }
+        this._cleanupStaleTools();
         this._state.openTurn = null;
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
@@ -305,6 +307,7 @@ export class StateEngine {
             }
           }
         }
+        this._cleanupStaleTools();
         this._state.lastProgressAt = now;
         break;
     }
@@ -458,6 +461,11 @@ export class StateEngine {
     for (const [id, tool] of this._state.runningTools) {
       if ((now - new Date(tool.started_at).getTime()) > STALE_TOOL_THRESHOLD_MS) {
         this._state.runningTools.delete(id);
+      }
+    }
+    for (const [id, agent] of this._state.activeSubagents) {
+      if ((now - new Date(agent.started_at).getTime()) > STALE_SUBAGENT_THRESHOLD_MS) {
+        this._state.activeSubagents.delete(id);
       }
     }
     if (this._state.pendingPermission) {
@@ -647,6 +655,11 @@ export class StateEngine {
     for (const [id, tool] of this._state.runningTools) {
       if ((now - new Date(tool.started_at).getTime()) > STALE_TOOL_THRESHOLD_MS) {
         this._state.runningTools.delete(id);
+      }
+    }
+    for (const [id, agent] of this._state.activeSubagents) {
+      if ((now - new Date(agent.started_at).getTime()) > STALE_SUBAGENT_THRESHOLD_MS) {
+        this._state.activeSubagents.delete(id);
       }
     }
   }
