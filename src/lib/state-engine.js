@@ -4,7 +4,7 @@ import path from 'node:path';
 const STALE_TOOL_THRESHOLD_MS = 300_000;
 const STALE_SUBAGENT_THRESHOLD_MS = 1_800_000;
 const STALE_PERMISSION_THRESHOLD_MS = 600_000;
-const POSSIBLY_STUCK_THRESHOLD_S = 120;
+const POSSIBLY_STUCK_THRESHOLD_S = 300;
 const STUCK_CONFIRMATION_THRESHOLD_S = 600;
 const COLLECTOR_FRESHNESS_MS = 30_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
@@ -35,30 +35,19 @@ export function deriveAgentState(signals) {
 
   evidence.push(`am:${signals.amState}:health=${signals.amHealth}`);
 
-  if (signals.amState === 'offline' || signals.amHealth !== 'ok') {
+  if (signals.amState === 'offline') {
     return {
       state: 'OFFLINE',
       confidence: 'HIGH',
       evidence,
       missing_evidence: missing,
-      reason: signals.amState === 'offline'
-        ? 'Agent session is not responding'
-        : `AM health degraded: ${signals.amHealth}`,
+      reason: 'Agent session is not responding',
       suggested_action: 'Check if the agent session is running'
     };
   }
 
-  if (signals.pendingPermission) {
-    const ageSec = Math.floor(signals.pendingPermission.age);
-    evidence.push(`permission_pending:${signals.pendingPermission.tool_name}:${ageSec}s`);
-    return {
-      state: 'WAITING_HUMAN',
-      confidence: 'HIGH',
-      evidence,
-      missing_evidence: missing,
-      reason: `Permission requested for ${signals.pendingPermission.tool_name}`,
-      suggested_action: 'Grant or deny the permission request'
-    };
+  if (signals.amHealth !== 'ok') {
+    evidence.push(`am_health_degraded:${signals.amHealth}`);
   }
 
   if (signals.runningTool) {
@@ -107,17 +96,6 @@ export function deriveAgentState(signals) {
   if (signals.openTurn) {
     const ageSec = Math.floor(signals.openTurn.age);
     evidence.push(`open_turn:${ageSec}s`);
-
-    if (signals.lastProgressAge < 60) {
-      return {
-        state: 'BUSY',
-        confidence: 'MEDIUM',
-        evidence,
-        missing_evidence: missing,
-        reason: `Thinking (${ageSec}s)`,
-        suggested_action: null
-      };
-    }
 
     if (ageSec > POSSIBLY_STUCK_THRESHOLD_S) {
       if (signals.possiblyStuckSince) {
@@ -582,7 +560,26 @@ export class StateEngine {
     }
   }
 
+  _isAMProcessOnline() {
+    const pm2 = this._state.pm2;
+    if (!pm2) return null;
+    const procs = Array.isArray(pm2) ? pm2 : (pm2.processes || pm2.services || []);
+    const am = procs.find(p => p.name === 'zylos-activity-monitor');
+    if (!am) return null;
+    const status = String(am.pm2_env?.status || am.status || '').toLowerCase();
+    return ['online', 'running'].includes(status);
+  }
+
   _readAMHeartbeat() {
+    const amOnline = this._isAMProcessOnline();
+    if (amOnline === false) {
+      this._state.amHeartbeat = null;
+      this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'stale', {
+        reason: 'AM process not online in PM2'
+      });
+      return;
+    }
+
     try {
       const amStatusPath = path.join(
         this._config.zylosDir,
@@ -590,16 +587,6 @@ export class StateEngine {
       );
       const raw = fs.readFileSync(amStatusPath, 'utf8');
       const data = JSON.parse(raw);
-      const lastCheckMs = (data.last_check || 0) * 1000;
-      const stale = (this._now() - lastCheckMs) > AM_HEARTBEAT_STALE_MS;
-      if (stale) {
-        this._state.amHeartbeat = null;
-        this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'stale', {
-          last_check: data.last_check,
-          age_s: Math.floor((this._now() - lastCheckMs) / 1000)
-        });
-        return;
-      }
       this._state.amHeartbeat = {
         state: data.state,
         health: data.health,

@@ -539,7 +539,7 @@ if (isMain && process.argv.includes('--smoke')) {
   });
 
   // Start periodic collectors
-  pm2Collector.start(15_000);
+  pm2Collector.start(10_000);
   systemCollector.start(30_000);
   otelCollector.start(10_000);
   statuslineCollector.start();
