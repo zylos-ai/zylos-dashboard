@@ -78,6 +78,7 @@
   "block.summary": "Work History",
   "block.summary_sub": "(today)",
   "block.communication": "Communication",
+  "block.communication_sub": "(today)",
   "timeline.empty": "No recent activity",
   "summary.tool_calls": "Tool Calls",
   "summary.sessions": "Sessions",

@@ -78,6 +78,7 @@
   "block.summary": "今日摘要",
   "block.summary_sub": "（今日）",
   "block.communication": "通信",
+  "block.communication_sub": "（今日）",
   "timeline.empty": "暂无近期活动",
   "summary.tool_calls": "工具调用",
   "summary.sessions": "会话数",

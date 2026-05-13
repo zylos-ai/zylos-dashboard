@@ -110,7 +110,11 @@ function fmtAge(ts) {
   const a = ageSec(ts);
   if (a === null) return '--';
   if (a < 2) return t('time.just_now');
-  return t('time.seconds', { count: a });
+  if (a < 60) return `${a}s ago`;
+  if (a < 3600) return `${Math.floor(a / 60)}m ${a % 60}s ago`;
+  const h = Math.floor(a / 3600);
+  const m = Math.floor((a % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m ago` : `${h}h ago`;
 }
 
 function fmtResetTime(unixSeconds) {

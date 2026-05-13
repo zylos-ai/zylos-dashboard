@@ -1080,7 +1080,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 
 /* ─── Communication (inside Runtime) ─── */
-.comm-channels { display: grid; gap: 1px; }
+.comm-channels { display: grid; gap: 1px; max-height: 156px; overflow-y: auto; }
 
 .comm-row {
   display: grid;
