@@ -229,10 +229,12 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   font-family: "JetBrains Mono", ui-monospace, monospace;
   letter-spacing: 0.01em;
   min-height: 28px;
+  min-width: 0;
+  overflow: hidden;
 }
 .info-bar:empty { display: none; }
 
-.info-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.info-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 
 .info-bar-gear {
   flex-shrink: 0;
