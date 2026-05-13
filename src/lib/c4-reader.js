@@ -121,21 +121,26 @@ export class C4Reader {
     const db = this._open();
     if (!db) return { points: [], total: { in: 0, out: 0 } };
     try {
+      const sinceEpoch = Math.floor(new Date(since).getTime() / 1000);
+      const untilEpoch = Math.floor(new Date(until).getTime() / 1000);
+
       const sql = `
         SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
                SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) AS msg_in,
                SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) AS msg_out
         FROM conversations
-        WHERE timestamp >= @since AND timestamp <= @until
+        WHERE CAST(strftime('%s', timestamp) AS INTEGER) >= @sinceEpoch
+          AND CAST(strftime('%s', timestamp) AS INTEGER) <= @untilEpoch
         GROUP BY bucket_start ORDER BY bucket_start`;
-      const points = db.prepare(sql).all({ since, until, bucket: bucketSeconds });
+      const points = db.prepare(sql).all({ sinceEpoch, untilEpoch, bucket: bucketSeconds });
 
       const totalSql = `
         SELECT SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) AS total_in,
                SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) AS total_out
         FROM conversations
-        WHERE timestamp >= @since AND timestamp <= @until`;
-      const totRow = db.prepare(totalSql).get({ since, until });
+        WHERE CAST(strftime('%s', timestamp) AS INTEGER) >= @sinceEpoch
+          AND CAST(strftime('%s', timestamp) AS INTEGER) <= @untilEpoch`;
+      const totRow = db.prepare(totalSql).get({ sinceEpoch, untilEpoch });
 
       return {
         points,
