@@ -21,6 +21,7 @@ import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
+import { handleAction, getActionsMeta } from './lib/actions.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
@@ -113,6 +114,14 @@ async function startupSequence() {
 
   // State engine initialize (snapshot restore + replay)
   await stateEngine.initialize();
+}
+
+function loadZylosConfig(zylosDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(zylosDir, '.zylos', 'config.json'), 'utf8'));
+  } catch {
+    return {};
+  }
 }
 
 function extractFilePath(summary) {
@@ -384,6 +393,15 @@ function handleApi(req, res, pathname, url) {
     return true;
   }
 
+  if (pathname === '/api/actions/meta') {
+    const zylosConfig = loadZylosConfig(config.zylosDir);
+    const meta = getActionsMeta(zylosConfig);
+    meta.zylos_version = zylosVersion;
+    meta.cc_version = statuslineCollector.getRuntimeInfo()?.cc_version || null;
+    sendJson(res, 200, meta);
+    return true;
+  }
+
   if (pathname === '/api/stream') {
     sse.addClient(res);
     return true;
@@ -522,6 +540,18 @@ export function createServer() {
     if (pathname === '/api/stream') {
       handleApi(req, res, pathname, url);
       return;
+    }
+
+    if (pathname.startsWith('/api/actions/') && req.method === 'POST') {
+      const action = pathname.slice('/api/actions/'.length);
+      if (action && action !== 'meta') {
+        let body = {};
+        try { body = await readJsonBody(req, 4096); } catch { /* no body is ok for some actions */ }
+        const zylosConfig = loadZylosConfig(config.zylosDir);
+        const result = await handleAction(action, body, zylosConfig);
+        sendJson(res, result.ok ? 200 : 400, result);
+        return;
+      }
     }
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {

@@ -1223,6 +1223,210 @@ function initTrendControls() {
   }
 }
 
+// ─── Actions Modal ───
+let actionsModal = null;
+
+function createActionsModal() {
+  if (actionsModal) return actionsModal;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'actions-modal';
+  overlay.hidden = true;
+  overlay.innerHTML = `
+<div class="modal">
+  <div class="modal-head">
+    <h2>Actions</h2>
+    <button class="modal-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div class="modal-body">
+    <div class="action-group">
+      <span class="action-group-label">Agent Control</span>
+      <div class="action-row">
+        <button class="action-btn" data-action="interrupt" type="button">Interrupt</button>
+        <button class="action-btn action-warn" data-action="restart-session" type="button">Restart Session</button>
+      </div>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Configuration</span>
+      <div class="action-field">
+        <label class="action-field-label">Runtime</label>
+        <select id="action-runtime" class="action-select">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </div>
+      <div class="action-field">
+        <label class="action-field-label">Model</label>
+        <div class="action-model-wrap">
+          <select id="action-model" class="action-select"></select>
+          <input id="action-model-custom" class="action-input" type="text" placeholder="e.g. claude-opus-4-7" hidden />
+        </div>
+      </div>
+      <div class="action-field" id="action-effort-field">
+        <label class="action-field-label">Effort</label>
+        <select id="action-effort" class="action-select"></select>
+      </div>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Upgrade</span>
+      <div class="action-row">
+        <button class="action-btn" data-action="upgrade-zylos" type="button">
+          Upgrade zylos<span class="action-ver" id="action-zylos-ver"></span>
+        </button>
+        <button class="action-btn" data-action="upgrade-cc" type="button">
+          Upgrade CC<span class="action-ver" id="action-cc-ver"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-status" id="action-status" hidden></div>
+</div>`;
+  document.body.appendChild(overlay);
+  actionsModal = overlay;
+
+  overlay.querySelector('.modal-close').addEventListener('click', closeActionsModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeActionsModal(); });
+
+  overlay.querySelectorAll('.action-btn[data-action]').forEach((btn) => {
+    btn.addEventListener('click', () => execAction(btn.dataset.action));
+  });
+
+  const modelSel = overlay.querySelector('#action-model');
+  const modelCustom = overlay.querySelector('#action-model-custom');
+  modelSel.addEventListener('change', () => {
+    if (modelSel.value === '__custom__') {
+      modelCustom.hidden = false;
+      modelCustom.focus();
+    } else {
+      modelCustom.hidden = true;
+      execAction('switch-model', { model: modelSel.value });
+    }
+  });
+  modelCustom.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && modelCustom.value.trim()) {
+      execAction('switch-model', { model: modelCustom.value.trim() });
+    }
+  });
+
+  const runtimeSel = overlay.querySelector('#action-runtime');
+  runtimeSel.addEventListener('change', () => {
+    execAction('switch-runtime', { runtime: runtimeSel.value });
+  });
+
+  const effortSel = overlay.querySelector('#action-effort');
+  effortSel.addEventListener('change', () => {
+    execAction('switch-effort', { effort: effortSel.value });
+  });
+
+  return overlay;
+}
+
+async function openActionsModal() {
+  const modal = createActionsModal();
+  modal.hidden = false;
+
+  const statusEl = modal.querySelector('#action-status');
+  statusEl.hidden = true;
+
+  try {
+    const meta = await fetchJson('/api/actions/meta');
+    const runtimeSel = modal.querySelector('#action-runtime');
+    runtimeSel.value = meta.runtime;
+
+    const modelSel = modal.querySelector('#action-model');
+    modelSel.innerHTML = '';
+    for (const m of meta.models || []) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === meta.current_model) opt.selected = true;
+      modelSel.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = 'Custom...';
+    modelSel.appendChild(customOpt);
+    modal.querySelector('#action-model-custom').hidden = true;
+
+    const effortField = modal.querySelector('#action-effort-field');
+    const effortSel = modal.querySelector('#action-effort');
+    if (meta.efforts?.length) {
+      effortField.hidden = false;
+      effortSel.innerHTML = '';
+      for (const e of meta.efforts) {
+        const opt = document.createElement('option');
+        opt.value = e;
+        opt.textContent = e.charAt(0).toUpperCase() + e.slice(1);
+        if (e === meta.current_effort) opt.selected = true;
+        effortSel.appendChild(opt);
+      }
+    } else {
+      effortField.hidden = true;
+    }
+
+    const zylosVer = modal.querySelector('#action-zylos-ver');
+    const ccVer = modal.querySelector('#action-cc-ver');
+    zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
+    ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
+  } catch { /* meta unavailable, modal still usable */ }
+}
+
+function closeActionsModal() {
+  if (actionsModal) actionsModal.hidden = true;
+}
+
+const CONFIRM_ACTIONS = new Set(['restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
+
+async function execAction(action, body) {
+  if (CONFIRM_ACTIONS.has(action)) {
+    const labels = {
+      'restart-session': 'Restart the agent session? Current context will be lost.',
+      'switch-runtime': `Switch runtime to ${body?.runtime}? Session will restart.`,
+      'switch-model': `Switch model to ${body?.model}? Session will restart.`,
+      'switch-effort': `Switch effort to ${body?.effort}? Session will restart.`,
+      'upgrade-zylos': 'Upgrade zylos-core? All services will restart.',
+      'upgrade-cc': 'Upgrade Claude Code?'
+    };
+    if (!confirm(labels[action] || `Execute ${action}?`)) return;
+  }
+
+  const statusEl = actionsModal?.querySelector('#action-status');
+  if (statusEl) {
+    statusEl.hidden = false;
+    statusEl.className = 'modal-status running';
+    statusEl.textContent = 'Executing...';
+  }
+
+  try {
+    const r = await fetch(api(`/api/actions/${action}`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    const result = await r.json();
+    if (statusEl) {
+      statusEl.className = result.ok ? 'modal-status success' : 'modal-status error';
+      statusEl.textContent = result.message || (result.ok ? 'Done' : result.error);
+      if (result.ok) setTimeout(() => { statusEl.hidden = true; }, 5000);
+    }
+    if (result.ok && result.requires_restart) {
+      setTimeout(() => refreshState(), 3000);
+    }
+  } catch (err) {
+    if (statusEl) {
+      statusEl.className = 'modal-status error';
+      statusEl.textContent = `Failed: ${err.message}`;
+    }
+  }
+}
+
+function initActionsGear() {
+  document.addEventListener('click', (e) => {
+    const gear = e.target.closest('#gear-btn, .info-bar-gear');
+    if (gear) { e.preventDefault(); openActionsModal(); }
+  });
+}
+
 // ─── Timers ───
 function startTimers() {
   state.timer = setInterval(() => { renderState(); renderMetrics(); renderHealth(); }, 1000);
@@ -1243,6 +1447,7 @@ initTabs();
 initLocaleToggle();
 initLogout();
 initTips();
+initActionsGear();
 renderAll();
 initCharts();
 initTrendControls();
