@@ -166,10 +166,10 @@
         </div>
       </section>
 
-      <!-- ③ Health & System -->
+      <!-- ③ Runtime -->
       <section class="card" aria-labelledby="health-title">
         <div class="card-head">
-          <h2 id="health-title" data-i18n="block.health">Health & System</h2>
+          <h2 id="health-title" data-i18n="block.health">Runtime</h2>
           <time class="freshness" id="health-updated">--</time>
         </div>
         <div class="gauge-grid">
@@ -223,6 +223,41 @@
             <div class="scheduler-timeline" id="scheduler-timeline"></div>
           </article>
         </div>
+        <div class="runtime-subsection">
+          <div class="subsection-head">
+            <h3 id="comm-title" data-i18n="block.communication">Communication</h3>
+            <time class="freshness" id="comm-updated">--</time>
+          </div>
+          <div class="comm-channels" id="comm-channels"></div>
+          <div class="comm-pending" id="comm-pending"></div>
+        </div>
+        <div class="runtime-subsection">
+          <div class="subsection-head">
+            <h3 id="summary-title"><span data-i18n="block.summary">Work History</span> <span class="card-sub" data-i18n="block.summary_sub">(today)</span></h3>
+            <time class="freshness" id="summary-updated">--</time>
+          </div>
+          <div class="summary-grid" id="summary-stats">
+            <article class="stat-item">
+              <span class="stat-icon">🔧</span>
+              <strong class="stat-value" id="summary-tool-calls">--</strong>
+              <span class="stat-label" data-i18n="summary.tool_calls">Tool Calls</span>
+            </article>
+            <article class="stat-item">
+              <span class="stat-icon">🔄</span>
+              <strong class="stat-value" id="summary-sessions">--</strong>
+              <span class="stat-label" data-i18n="summary.sessions">Sessions</span>
+            </article>
+            <article class="stat-item">
+              <span class="stat-icon">💬</span>
+              <strong class="stat-value" id="summary-messages">--</strong>
+              <span class="stat-label" data-i18n="summary.messages">Messages</span>
+            </article>
+            <article class="stat-item">
+              <strong class="stat-value stat-value-text" id="summary-top-project">--</strong>
+              <span class="stat-label" data-i18n="summary.top_project">Top Project</span>
+            </article>
+          </div>
+        </div>
       </section>
 
       <!-- ④ Current Work Timeline -->
@@ -234,45 +269,6 @@
         <div class="timeline-list" id="timeline-list">
           <p class="empty-state" data-i18n="timeline.empty">No recent activity</p>
         </div>
-      </section>
-
-      <!-- ⑤ Work History -->
-      <section class="card" aria-labelledby="summary-title">
-        <div class="card-head">
-          <h2 id="summary-title"><span data-i18n="block.summary">Work History</span> <span class="card-sub" data-i18n="block.summary_sub">(today)</span></h2>
-          <time class="freshness" id="summary-updated">--</time>
-        </div>
-        <div class="summary-grid" id="summary-stats">
-          <article class="stat-item">
-            <span class="stat-icon">🔧</span>
-            <strong class="stat-value" id="summary-tool-calls">--</strong>
-            <span class="stat-label" data-i18n="summary.tool_calls">Tool Calls</span>
-          </article>
-          <article class="stat-item">
-            <span class="stat-icon">🔄</span>
-            <strong class="stat-value" id="summary-sessions">--</strong>
-            <span class="stat-label" data-i18n="summary.sessions">Sessions</span>
-          </article>
-          <article class="stat-item">
-            <span class="stat-icon">💬</span>
-            <strong class="stat-value" id="summary-messages">--</strong>
-            <span class="stat-label" data-i18n="summary.messages">Messages</span>
-          </article>
-          <article class="stat-item">
-            <strong class="stat-value stat-value-text" id="summary-top-project">--</strong>
-            <span class="stat-label" data-i18n="summary.top_project">Top Project</span>
-          </article>
-        </div>
-      </section>
-
-      <!-- ⑥ Communication -->
-      <section class="card" aria-labelledby="comm-title">
-        <div class="card-head">
-          <h2 id="comm-title" data-i18n="block.communication">Communication</h2>
-          <time class="freshness" id="comm-updated">--</time>
-        </div>
-        <div class="comm-channels" id="comm-channels"></div>
-        <div class="comm-pending" id="comm-pending"></div>
       </section>
 
     </div>

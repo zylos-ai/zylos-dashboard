@@ -4,7 +4,7 @@
   "tab.trends": "趋势",
   "block.runtime": "实时运行状态",
   "block.capacity": "容量与成本",
-  "block.health": "健康与系统",
+  "block.health": "Runtime",
   "state.offline": "离线",
   "state.idle": "空闲",
   "state.busy": "正在执行 {tool}",

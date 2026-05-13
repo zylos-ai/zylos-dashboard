@@ -473,10 +473,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   line-height: 1.5;
   color: var(--text-muted);
   animation: tool-enter 200ms ease;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 
 .assistant-message[hidden] { display: none; }
@@ -784,7 +781,27 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   flex-shrink: 0;
 }
 
-/* ─── ③ Health & System ─── */
+/* ─── ③ Runtime ─── */
+.runtime-subsection {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+
+.subsection-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--space-sm);
+}
+
+.subsection-head h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
 .gauge-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -1017,7 +1034,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   padding: var(--space-lg) 0;
 }
 
-/* ─── ⑤ Work History ─── */
+/* ─── Work History (inside Runtime) ─── */
 .summary-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1062,12 +1079,12 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   word-break: break-word;
 }
 
-/* ─── ⑥ Communication ─── */
+/* ─── Communication (inside Runtime) ─── */
 .comm-channels { display: grid; gap: 1px; }
 
 .comm-row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto 1fr minmax(110px, auto) minmax(75px, auto);
   gap: 8px;
   align-items: center;
   padding: var(--space-sm) 0;
@@ -1087,6 +1104,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .comm-bar-wrap {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
   white-space: nowrap;
   color: var(--text-dim);
@@ -1114,7 +1132,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   transition: width 0.3s ease;
 }
 
-.comm-age { font-size: 11px; white-space: nowrap; }
+.comm-age { font-size: 11px; white-space: nowrap; text-align: right; }
 .comm-age.age-fresh { color: var(--green, #059669); }
 .comm-age.age-normal { color: var(--text-muted); }
 .comm-age.age-stale { color: #f59e0b; }

@@ -4,7 +4,7 @@
   "tab.trends": "Trends",
   "block.runtime": "Live Runtime State",
   "block.capacity": "Capacity & Cost",
-  "block.health": "Health & System",
+  "block.health": "Runtime",
   "state.offline": "Offline",
   "state.idle": "Idle",
   "state.busy": "Executing {tool}",

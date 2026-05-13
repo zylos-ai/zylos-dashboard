@@ -681,7 +681,7 @@ function renderTimeline() {
   $('#timeline-updated').textContent = fmtAge(state.timelineUpdatedAt);
 }
 
-// ─── Render: Summary ───
+// ─── Render: Work History (inside Runtime) ───
 function renderSummary() {
   const s = state.summary;
   $('#summary-tool-calls').textContent = s ? String(s.tool_calls) : '--';
@@ -691,7 +691,7 @@ function renderSummary() {
   $('#summary-updated').textContent = fmtAge(state.summaryUpdatedAt);
 }
 
-// ─── Render: Communication ───
+// ─── Render: Communication (inside Runtime) ───
 const COMM_COLORS = ['#0d9488', '#6366f1', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
 
 function ageClass(ts) {
