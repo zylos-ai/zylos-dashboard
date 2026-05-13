@@ -216,6 +216,43 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .freshness { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
 .card-sub { font-weight: 400; font-size: 12px; color: var(--text-muted); }
 
+/* ─── Info Bar ─── */
+.info-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 6px var(--space-md);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.01em;
+  min-height: 28px;
+}
+.info-bar:empty { display: none; }
+
+.info-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.info-bar-gear {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.info-bar-gear:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
+.info-bar-gear:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+
 /* ─── ① Runtime State ─── */
 .runtime-split {
   display: grid;

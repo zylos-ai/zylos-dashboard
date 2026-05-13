@@ -186,6 +186,26 @@ function metVal(m) {
   return m.value ?? m.current ?? m.percent ?? null;
 }
 
+// ─── Render: Info Bar ───
+function renderInfoBar() {
+  const bar = $('#info-bar');
+  if (!bar) return;
+  const ri = state.dashboardState?.runtime_info;
+  if (!ri) { bar.textContent = ''; return; }
+
+  const parts = [];
+  if (ri.zylos_version) parts.push(`zylos v${ri.zylos_version}`);
+  if (ri.runtime) parts.push(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1));
+  if (ri.model) {
+    const short = ri.model.replace(/\s*\([^)]*\)/, '');
+    parts.push(short);
+  }
+  if (ri.effort) parts.push(ri.effort.charAt(0).toUpperCase() + ri.effort.slice(1));
+  if (ri.cc_version) parts.push(`CC v${ri.cc_version}`);
+
+  bar.innerHTML = `<span class="info-bar-text">${esc(parts.join(' · '))}</span><button class="info-bar-gear" id="gear-btn" type="button" aria-label="Actions">⚙️</button>`;
+}
+
 // ─── Render: State ───
 const FEED_MAX = 5;
 const prevToolIds = new Set();
@@ -747,6 +767,7 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  renderInfoBar();
   renderState();
   renderMetrics();
   renderHealth();
@@ -768,6 +789,7 @@ async function fetchJson(path) {
 async function refreshState() {
   state.dashboardState = await fetchJson('/api/state');
   state.sourceUpdatedAt = state.dashboardState.updated_at || new Date().toISOString();
+  renderInfoBar();
   renderState();
   renderHealth();
 }
@@ -837,9 +859,11 @@ async function refreshAll() {
 // ─── SSE ───
 function applySse(name, data) {
   if (name === 'state_change') {
+    const prevRi = state.dashboardState?.runtime_info;
     state.dashboardState = data;
+    if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
-    renderState(); renderHealth();
+    renderInfoBar(); renderState(); renderHealth();
     refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;

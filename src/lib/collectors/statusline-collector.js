@@ -9,6 +9,7 @@ export class StatuslineCollector {
     this._debounceTimer = null;
     this._lastHash = null;
     this._statusFilePath = path.join(config.zylosDir, 'activity-monitor', 'statusline.json');
+    this._runtimeInfo = null;
   }
 
   async collect() {
@@ -85,6 +86,12 @@ export class StatuslineCollector {
       }
     }
 
+    this._runtimeInfo = {
+      model: data.model?.display_name || data.model?.id || null,
+      effort: data.effort?.level || null,
+      cc_version: data.version || null
+    };
+
     if (written > 0) {
       this.store.upsertSourceHealth('statusline', 'collector_liveness', 'healthy', {
         last_success: now, metrics_written: written
@@ -115,6 +122,10 @@ export class StatuslineCollector {
       }, 30_000);
       this._watcher.unref?.();
     }
+  }
+
+  getRuntimeInfo() {
+    return this._runtimeInfo;
   }
 
   stop() {
