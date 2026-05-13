@@ -681,15 +681,6 @@ function renderTimeline() {
   $('#timeline-updated').textContent = fmtAge(state.timelineUpdatedAt);
 }
 
-// ─── Render: Work History (inside Runtime) ───
-function renderSummary() {
-  const s = state.summary;
-  $('#summary-tool-calls').textContent = s ? String(s.tool_calls) : '--';
-  $('#summary-sessions').textContent = s ? String(s.sessions) : '--';
-  $('#summary-messages').textContent = s ? String(s.messages_processed) : '--';
-  $('#summary-top-project').textContent = s?.top_project || '--';
-  $('#summary-updated').textContent = fmtAge(state.summaryUpdatedAt);
-}
 
 // ─── Render: Communication (inside Runtime) ───
 const COMM_COLORS = ['#0d9488', '#6366f1', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
@@ -713,7 +704,7 @@ function renderComm() {
   }
 
   const lastOb = c.last_outbound || {};
-  const entries = Object.entries(c.channels);
+  const entries = Object.entries(c.channels).sort(([, a], [, b]) => (b.in + b.out) - (a.in + a.out));
   const maxTotal = Math.max(...entries.map(([, v]) => v.in + v.out), 1);
 
   container.replaceChildren(...entries.map(([ch, counts], i) => {
@@ -756,7 +747,6 @@ function renderAll() {
   renderMetrics();
   renderHealth();
   renderTimeline();
-  renderSummary();
   renderComm();
 }
 
