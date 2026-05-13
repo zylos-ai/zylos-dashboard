@@ -537,6 +537,80 @@ export class Store {
     return rows.map(r => ({ ...r, rate: r.total_input_sum > 0 ? r.cache_read_sum / r.total_input_sum : null }));
   }
 
+  getProjectDistribution({ since, until } = {}) {
+    const s = since || '1970-01-01T00:00:00Z';
+    const u = until || '2099-12-31T23:59:59Z';
+
+    // Count tool calls per event, extract project from summary file paths
+    const events = this.db.prepare(`
+      SELECT summary, metadata FROM runtime_events
+      WHERE event_type = 'post_tool_use' AND timestamp >= @since AND timestamp <= @until
+    `).all({ since: s, until: u });
+
+    // Get token totals for the period
+    const tokenRow = this.db.prepare(`
+      SELECT COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
+             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
+             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) +
+             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS total_tokens
+      FROM metric_points
+      WHERE metric_name = 'api_request_tokens'
+        AND timestamp >= @since AND timestamp <= @until
+    `).get({ since: s, until: u });
+    const totalTokens = tokenRow?.total_tokens || 0;
+
+    const costRow = this.db.prepare(`
+      SELECT COALESCE(SUM(metric_value), 0) AS total_cost
+      FROM metric_points
+      WHERE metric_name = 'api_request_cost'
+        AND timestamp >= @since AND timestamp <= @until
+    `).get({ since: s, until: u });
+    const totalCost = costRow?.total_cost || 0;
+
+    // Count tool calls per project
+    const projectCounts = {};
+    for (const e of events) {
+      const fp = this._extractFilePath(e.summary);
+      const project = this._extractProject(fp);
+      if (project) {
+        projectCounts[project] = (projectCounts[project] || 0) + 1;
+      }
+    }
+
+    const totalCalls = Object.values(projectCounts).reduce((a, b) => a + b, 0) || 1;
+    const items = Object.entries(projectCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, calls]) => {
+        const pct = calls / totalCalls;
+        return {
+          name,
+          calls,
+          tokens: Math.round(totalTokens * pct),
+          cost: +(totalCost * pct).toFixed(4),
+          percentage: +(pct * 100).toFixed(1)
+        };
+      });
+
+    return { items, totalTokens, totalCost };
+  }
+
+  _extractFilePath(summary) {
+    if (!summary) return null;
+    const m = summary.match(/^(?:Read|Edit|Write):\s+(\S+)/);
+    return m ? m[1] : null;
+  }
+
+  _extractProject(filePath) {
+    if (!filePath) return null;
+    const parts = filePath.replace(/^\/+/, '').split('/');
+    const wsIdx = parts.indexOf('workspace');
+    if (wsIdx >= 0 && parts[wsIdx + 1]) return parts[wsIdx + 1];
+    const skillsIdx = parts.indexOf('skills');
+    if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
+    return null;
+  }
+
   close() {
     this.db.close();
   }

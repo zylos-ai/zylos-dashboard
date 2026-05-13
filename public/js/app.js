@@ -958,21 +958,54 @@ function initTips() {
 // ─── Charts ───
 const CHART_COLORS = {
   accent: '#0d9488',
-  accentBg: 'rgba(13, 148, 136, 0.08)',
+  accentBg: 'rgba(13, 148, 136, 0.35)',
   purple: '#6366f1',
-  purpleBg: 'rgba(99, 102, 241, 0.08)',
+  purpleBg: 'rgba(99, 102, 241, 0.35)',
   green: '#059669',
-  greenBg: 'rgba(5, 150, 105, 0.08)',
+  greenBg: 'rgba(5, 150, 105, 0.35)',
   orange: '#ea580c',
-  orangeBg: 'rgba(234, 88, 12, 0.08)',
+  orangeBg: 'rgba(234, 88, 12, 0.35)',
+  blue: '#3b82f6',
+  blueBg: 'rgba(59, 130, 246, 0.35)',
+  pink: '#ec4899',
+  pinkBg: 'rgba(236, 72, 153, 0.35)',
   grid: 'rgba(15, 118, 110, 0.06)',
   text: '#7a8794'
 };
 
-function chartOpts(yLabel, yMax, yCallback) {
+function barChartOpts(yCallback, stacked) {
   return {
     responsive: true,
     maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: true, position: 'top', labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } },
+      tooltip: { backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6 }
+    },
+    scales: {
+      x: {
+        type: 'time',
+        time: { tooltipFormat: 'MMM d HH:mm', displayFormats: { hour: 'HH:mm', day: 'MMM d' } },
+        grid: { display: false },
+        ticks: { font: { size: 10 }, color: CHART_COLORS.text, maxTicksLimit: 8 },
+        stacked: !!stacked
+      },
+      y: {
+        min: 0,
+        grid: { color: CHART_COLORS.grid },
+        ticks: { font: { size: 10 }, color: CHART_COLORS.text, callback: yCallback || undefined },
+        border: { display: false },
+        stacked: !!stacked
+      }
+    }
+  };
+}
+
+function horizontalBarOpts() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    indexAxis: 'y',
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { display: false },
@@ -980,103 +1013,186 @@ function chartOpts(yLabel, yMax, yCallback) {
     },
     scales: {
       x: {
-        type: 'time',
-        time: { tooltipFormat: 'HH:mm', displayFormats: { minute: 'HH:mm', hour: 'HH:mm', day: 'MMM d' } },
-        grid: { display: false },
-        ticks: { font: { size: 10 }, color: CHART_COLORS.text, maxTicksLimit: 8 }
+        min: 0,
+        grid: { color: CHART_COLORS.grid },
+        ticks: { font: { size: 10 }, color: CHART_COLORS.text },
+        border: { display: false }
       },
       y: {
-        min: 0,
-        max: yMax,
-        grid: { color: CHART_COLORS.grid },
-        ticks: { font: { size: 10 }, color: CHART_COLORS.text, callback: yCallback || undefined },
-        border: { display: false }
+        grid: { display: false },
+        ticks: { font: { size: 11 }, color: CHART_COLORS.text }
       }
-    },
-    elements: { point: { radius: 0, hoverRadius: 3 }, line: { tension: 0.3, borderWidth: 2 } }
+    }
   };
-}
-
-function createChart(canvasId, label, color, bgColor, yMax, yCallback) {
-  const ctx = document.getElementById(canvasId);
-  if (!ctx || !window.Chart) return null;
-  return new Chart(ctx, {
-    type: 'line',
-    data: {
-      datasets: [{ label, data: [], borderColor: color, backgroundColor: bgColor, fill: true }]
-    },
-    options: chartOpts(label, yMax, yCallback)
-  });
 }
 
 function initCharts() {
   if (!window.Chart) return;
   try {
-    state.charts.context = createChart('chart-context', t('label.context'), CHART_COLORS.accent, CHART_COLORS.accentBg, 100, (v) => `${v}%`);
-    state.charts.cost = createChart('chart-cost', t('label.cost'), CHART_COLORS.purple, CHART_COLORS.purpleBg, undefined, (v) => `$${v}`);
-    state.charts.rate = createChart('chart-rate', t('trends.rate'), CHART_COLORS.orange, CHART_COLORS.orangeBg, 100, (v) => `${v}%`);
-    state.charts.tools = createChart('chart-tools', t('trends.tools'), CHART_COLORS.green, CHART_COLORS.greenBg, undefined);
+    // 1. Token Usage — stacked bar (input vs output)
+    const tokensCtx = document.getElementById('chart-tokens');
+    if (tokensCtx) {
+      state.charts.tokens = new Chart(tokensCtx, {
+        type: 'bar',
+        data: {
+          datasets: [
+            { label: t('trends.input'), data: [], backgroundColor: CHART_COLORS.accent, stack: 'tokens' },
+            { label: t('trends.output'), data: [], backgroundColor: CHART_COLORS.purple, stack: 'tokens' }
+          ]
+        },
+        options: barChartOpts((v) => tok(v), true)
+      });
+    }
+
+    // 2. Cost — bar chart
+    const costCtx = document.getElementById('chart-cost');
+    if (costCtx) {
+      state.charts.cost = new Chart(costCtx, {
+        type: 'bar',
+        data: {
+          datasets: [{ label: t('trends.cost'), data: [], backgroundColor: CHART_COLORS.orange }]
+        },
+        options: barChartOpts((v) => `$${v}`)
+      });
+    }
+
+    // 3. Message Throughput — stacked bar (in vs out)
+    const msgCtx = document.getElementById('chart-messages');
+    if (msgCtx) {
+      state.charts.messages = new Chart(msgCtx, {
+        type: 'bar',
+        data: {
+          datasets: [
+            { label: t('trends.msg_in'), data: [], backgroundColor: CHART_COLORS.blue, stack: 'msgs' },
+            { label: t('trends.msg_out'), data: [], backgroundColor: CHART_COLORS.pink, stack: 'msgs' }
+          ]
+        },
+        options: barChartOpts(undefined, true)
+      });
+    }
+
+    // 4. Project Distribution — horizontal bar
+    const projCtx = document.getElementById('chart-projects');
+    if (projCtx) {
+      state.charts.projects = new Chart(projCtx, {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [{ label: 'Tokens', data: [], backgroundColor: CHART_COLORS.green }]
+        },
+        options: horizontalBarOpts()
+      });
+    }
   } catch { /* chart init failed — overview still works */ }
 }
 
+function getTrendRange() {
+  const active = document.querySelector('.range-btn.active[data-range]');
+  return active ? active.dataset.range : '24h';
+}
+
 function rangeToSince() {
-  const range = $('#trend-range')?.value || '6h';
+  const range = getTrendRange();
   const now = Date.now();
-  const ms = { '1h': 3600000, '6h': 21600000, '24h': 86400000, '7d': 604800000 };
-  return new Date(now - (ms[range] || ms['6h'])).toISOString();
+  const ms = { '24h': 86400000, '7d': 604800000, '30d': 2592000000 };
+  return new Date(now - (ms[range] || ms['24h'])).toISOString();
+}
+
+function autoBucket(sinceMs, untilMs) {
+  const diffDays = (untilMs - sinceMs) / 86400000;
+  if (diffDays <= 2) return 3600;
+  if (diffDays <= 60) return 86400;
+  return 604800;
 }
 
 async function refreshCharts() {
   if (!window.Chart) return;
-  const since = rangeToSince();
-  const until = new Date().toISOString();
-  const qp = `?since=${since}&until=${until}`;
 
-  const [contextData, costData, rateData, toolData] = await Promise.allSettled([
-    fetchJson(`/api/metrics/history/context_pct${qp}`),
-    fetchJson(`/api/metrics/history/session_cost${qp}`),
-    fetchJson(`/api/metrics/history/rate_limit${qp}`),
-    fetchJson(`/api/timeline${qp}&types=pre_tool_use&limit=500`)
-  ]);
+  let since, until, bucket;
+  const customStart = $('#trend-start')?.value;
+  const customEnd = $('#trend-end')?.value;
+  const isCustom = customStart && customEnd;
 
-  if (state.charts.context && contextData.status === 'fulfilled') {
-    const pts = (contextData.value.points || []).map((p) => ({ x: new Date(p.timestamp), y: p.value <= 1 ? p.value * 100 : p.value }));
-    state.charts.context.data.datasets[0].data = pts;
-    state.charts.context.update('none');
+  if (isCustom) {
+    since = new Date(customStart + 'T00:00:00').toISOString();
+    until = new Date(customEnd + 'T23:59:59').toISOString();
+    bucket = autoBucket(new Date(since).getTime(), new Date(until).getTime());
+  } else {
+    since = rangeToSince();
+    until = new Date().toISOString();
+    const range = getTrendRange();
+    bucket = { '24h': 3600, '7d': 86400, '30d': 86400 }[range] || 3600;
   }
 
+  const qp = `since=${since}&until=${until}&bucket=${bucket}`;
+
+  const [tokensData, costData, msgData, projData] = await Promise.allSettled([
+    fetchJson(`/api/metrics/series?metric=tokens&${qp}`),
+    fetchJson(`/api/metrics/series?metric=cost&${qp}`),
+    fetchJson(`/api/metrics/series?metric=messages&${qp}`),
+    fetchJson(`/api/metrics/series?metric=projects&since=${since}&until=${until}`)
+  ]);
+
+  // 1. Token Usage — stacked bar
+  if (state.charts.tokens && tokensData.status === 'fulfilled') {
+    const pts = tokensData.value.points || [];
+    state.charts.tokens.data.datasets[0].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.input_sum }));
+    state.charts.tokens.data.datasets[1].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.output_sum }));
+    state.charts.tokens.update('none');
+  }
+
+  // 2. Cost — bar
   if (state.charts.cost && costData.status === 'fulfilled') {
-    const pts = (costData.value.points || []).map((p) => ({ x: new Date(p.timestamp), y: p.value }));
-    state.charts.cost.data.datasets[0].data = pts;
-    state.charts.cost.options.scales.y.max = undefined;
+    const pts = costData.value.points || [];
+    state.charts.cost.data.datasets[0].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.cost_sum }));
     state.charts.cost.update('none');
   }
 
-  if (state.charts.rate && rateData.status === 'fulfilled') {
-    const pts = (rateData.value.points || []).map((p) => ({ x: new Date(p.timestamp), y: p.value <= 1 ? p.value * 100 : p.value }));
-    state.charts.rate.data.datasets[0].data = pts;
-    state.charts.rate.update('none');
+  // 3. Message Throughput — stacked bar
+  if (state.charts.messages && msgData.status === 'fulfilled') {
+    const pts = msgData.value.points || [];
+    state.charts.messages.data.datasets[0].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.msg_in }));
+    state.charts.messages.data.datasets[1].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.msg_out }));
+    state.charts.messages.update('none');
   }
 
-  if (state.charts.tools && toolData.status === 'fulfilled') {
-    const events = toolData.value.events || [];
-    const buckets = new Map();
-    const bucketSize = getBucketSize();
-    for (const e of events) {
-      const ts = new Date(e.timestamp).getTime();
-      const key = Math.floor(ts / bucketSize) * bucketSize;
-      buckets.set(key, (buckets.get(key) || 0) + 1);
-    }
-    const pts = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([k, v]) => ({ x: new Date(k), y: v }));
-    state.charts.tools.data.datasets[0].data = pts;
-    state.charts.tools.options.scales.y.max = undefined;
-    state.charts.tools.update('none');
+  // 4. Project Distribution — horizontal bar
+  if (state.charts.projects && projData.status === 'fulfilled') {
+    const items = projData.value.items || [];
+    state.charts.projects.data.labels = items.map((i) => i.name);
+    state.charts.projects.data.datasets[0].data = items.map((i) => i.tokens);
+    state.charts.projects.update('none');
   }
 }
 
-function getBucketSize() {
-  const range = $('#trend-range')?.value || '6h';
-  return { '1h': 60000, '6h': 300000, '24h': 900000, '7d': 3600000 }[range] || 300000;
+function initTrendControls() {
+  // Range buttons
+  document.querySelectorAll('.range-btn[data-range]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.range-btn[data-range]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      // Clear custom date inputs when a preset is selected
+      const startEl = $('#trend-start');
+      const endEl = $('#trend-end');
+      if (startEl) startEl.value = '';
+      if (endEl) endEl.value = '';
+      refreshCharts();
+    });
+  });
+
+  // Custom date range
+  const customBtn = $('#trend-custom');
+  if (customBtn) {
+    customBtn.addEventListener('click', () => {
+      const startEl = $('#trend-start');
+      const endEl = $('#trend-end');
+      if (startEl?.value && endEl?.value) {
+        // Deactivate preset buttons
+        document.querySelectorAll('.range-btn[data-range]').forEach((b) => b.classList.remove('active'));
+        refreshCharts();
+      }
+    });
+  }
 }
 
 // ─── Timers ───
@@ -1101,8 +1217,7 @@ initLogout();
 initTips();
 renderAll();
 initCharts();
+initTrendControls();
 connectSse();
 await refreshAll();
 startTimers();
-
-$('#trend-range')?.addEventListener('change', refreshCharts);

@@ -249,29 +249,34 @@
   <section class="tab-panel" id="tab-trends" hidden>
     <div class="trends-layout">
       <div class="trends-controls">
-        <select class="range-select" id="trend-range">
-          <option value="1h" data-i18n-value="trends.1h">Last 1 hour</option>
-          <option value="6h" data-i18n-value="trends.6h" selected>Last 6 hours</option>
-          <option value="24h" data-i18n-value="trends.24h">Last 24 hours</option>
-          <option value="7d" data-i18n-value="trends.7d">Last 7 days</option>
-        </select>
+        <div class="range-buttons">
+          <button class="range-btn active" data-range="24h" data-i18n="trends.24h_short">24h</button>
+          <button class="range-btn" data-range="7d" data-i18n="trends.7d_short">7d</button>
+          <button class="range-btn" data-range="30d" data-i18n="trends.30d_short">30d</button>
+        </div>
+        <div class="date-picker">
+          <input type="date" id="trend-start" />
+          <span class="date-sep">&mdash;</span>
+          <input type="date" id="trend-end" />
+          <button class="range-btn" id="trend-custom" data-i18n="trends.apply">Apply</button>
+        </div>
       </div>
       <div class="chart-grid">
         <section class="card chart-card">
-          <h2 data-i18n="trends.context">Context Usage</h2>
-          <div class="chart-wrap"><canvas id="chart-context"></canvas></div>
+          <h2 data-i18n="trends.tokens">Token Usage</h2>
+          <div class="chart-wrap"><canvas id="chart-tokens"></canvas></div>
         </section>
         <section class="card chart-card">
-          <h2 data-i18n="trends.cost">Session Cost</h2>
+          <h2 data-i18n="trends.cost">Cost</h2>
           <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
         </section>
         <section class="card chart-card">
-          <h2 data-i18n="trends.rate">Rate Limit Usage</h2>
-          <div class="chart-wrap"><canvas id="chart-rate"></canvas></div>
+          <h2 data-i18n="trends.messages">Message Throughput</h2>
+          <div class="chart-wrap"><canvas id="chart-messages"></canvas></div>
         </section>
         <section class="card chart-card">
-          <h2 data-i18n="trends.tools">Tool Activity</h2>
-          <div class="chart-wrap"><canvas id="chart-tools"></canvas></div>
+          <h2 data-i18n="trends.projects">Project Distribution</h2>
+          <div class="chart-wrap"><canvas id="chart-projects"></canvas></div>
         </section>
       </div>
     </div>

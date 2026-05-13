@@ -267,12 +267,23 @@ function handleApi(req, res, pathname, url) {
     const since = url.searchParams.get('since');
     const until = url.searchParams.get('until') || new Date().toISOString();
     const bucket = parseInt(url.searchParams.get('bucket') || '3600', 10);
-    if (!metric || !['cost', 'cache', 'tokens'].includes(metric)) {
-      sendJson(res, 400, { error: 'metric must be "cost", "cache", or "tokens"' });
+    if (!metric || !['cost', 'cache', 'tokens', 'messages', 'projects'].includes(metric)) {
+      sendJson(res, 400, { error: 'metric must be "cost", "cache", "tokens", "messages", or "projects"' });
+      return true;
+    }
+    if (metric === 'projects') {
+      const s = since || new Date(Date.now() - 7 * 86400_000).toISOString();
+      const result = store.getProjectDistribution({ since: s, until });
+      sendJson(res, 200, { metric, since: s, until, items: result.items, totalTokens: result.totalTokens, totalCost: result.totalCost });
       return true;
     }
     if (!since) { sendJson(res, 400, { error: 'since is required' }); return true; }
     let points, total;
+    if (metric === 'messages') {
+      const result = c4Reader.getMessageSeries({ since, until, bucketSeconds: bucket });
+      sendJson(res, 200, { metric, since, until, bucket, points: result.points, total: result.total });
+      return true;
+    }
     if (metric === 'cost') { points = store.aggregateCostSeries({ since, until, bucketSeconds: bucket }); total = store.aggregateCost({ since, until }); }
     else if (metric === 'cache') { points = store.aggregateCacheRateSeries({ since, until, bucketSeconds: bucket }); total = store.aggregateCacheRate({ since, until }); }
     else { points = store.aggregateTokenSeries({ since, until, bucketSeconds: bucket }); total = store.aggregateTokens({ since, until }); }
