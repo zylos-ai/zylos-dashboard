@@ -234,7 +234,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .info-bar:empty { display: none; }
 
-.info-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.info-bar-text { min-width: 0; flex: 1; }
 
 .info-bar-gear {
   flex-shrink: 0;
