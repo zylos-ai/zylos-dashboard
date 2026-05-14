@@ -65,6 +65,7 @@ pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);
 systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
 otelCollector._stateEngine = stateEngine;
 conversationCollector._stateEngine = stateEngine;
+conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
 
 // 8. Metric resolver
 const metricResolver = new MetricResolver(store, collectors, config, { stateEngine });

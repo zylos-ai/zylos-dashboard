@@ -249,6 +249,14 @@ export class StateEngine {
         }
         break;
 
+      case 'assistant_message':
+        this._state.lastAssistantMessage = {
+          text: event.summary,
+          timestamp: event.timestamp
+        };
+        this._state.lastProgressAt = now;
+        break;
+
       case 'permission_request':
         this._state.pendingPermission = {
           tool_name: event.metadata?.tool_name,

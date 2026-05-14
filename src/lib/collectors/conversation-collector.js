@@ -11,6 +11,7 @@ export class ConversationCollector {
     this._lastByteOffset = 0;
     this._currentFile = null;
     this._seenUuids = new Set();
+    this._onEvent = null;
   }
 
   _resolveJsonlPath() {
@@ -75,7 +76,7 @@ export class ConversationCollector {
       const eventId = crypto.randomUUID();
 
       try {
-        this.store.insertEvent({
+        const event = {
           id: eventId,
           ingest_id: ingestId,
           timestamp: msg.timestamp || now,
@@ -92,7 +93,11 @@ export class ConversationCollector {
           }),
           source: 'conversation',
           confidence: 'actual'
-        });
+        };
+        this.store.insertEvent(event);
+        if (this._onEvent) {
+          this._onEvent({ ...event, metadata: JSON.parse(event.metadata) });
+        }
         written++;
       } catch (err) {
         if (!err.message?.includes('UNIQUE constraint')) {
