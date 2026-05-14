@@ -14,12 +14,19 @@ export class ConversationCollector {
     this._onEvent = null;
   }
 
+  _resolveProjectSlug() {
+    const zylosDir = this.config.zylosDir || path.join(process.env.HOME, 'zylos');
+    const resolved = fs.realpathSync(zylosDir);
+    return '-' + resolved.replace(/\//g, '-').replace(/^-/, '');
+  }
+
   _resolveJsonlPath() {
     const sessionId = this._stateEngine?.getCurrentSessionId?.();
     if (!sessionId) return null;
+    const projectSlug = this._resolveProjectSlug();
     const projectDir = path.join(
       this.config.homeDir || process.env.HOME,
-      '.claude', 'projects', '-home-howard-zylos'
+      '.claude', 'projects', projectSlug
     );
     const jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
     return fs.existsSync(jsonlPath) ? jsonlPath : null;
@@ -43,10 +50,13 @@ export class ConversationCollector {
     const fd = fs.openSync(jsonlPath, 'r');
     fs.readSync(fd, buf, 0, buf.length, this._lastByteOffset);
     fs.closeSync(fd);
-    this._lastByteOffset = stat.size;
 
     const chunk = buf.toString('utf8');
-    const lines = chunk.split('\n').filter(l => l.trim());
+    const lastNewline = chunk.lastIndexOf('\n');
+    if (lastNewline === -1) return 0;
+    this._lastByteOffset += Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
+
+    const lines = chunk.slice(0, lastNewline).split('\n').filter(l => l.trim());
 
     let written = 0;
     const now = new Date().toISOString();
@@ -94,11 +104,13 @@ export class ConversationCollector {
           source: 'conversation',
           confidence: 'actual'
         };
-        this.store.insertEvent(event);
-        if (this._onEvent) {
-          this._onEvent({ ...event, metadata: JSON.parse(event.metadata) });
+        const result = this.store.insertEvent(event);
+        if (result?.inserted) {
+          if (this._onEvent) {
+            this._onEvent({ ...event, metadata: JSON.parse(event.metadata) });
+          }
+          written++;
         }
-        written++;
       } catch (err) {
         if (!err.message?.includes('UNIQUE constraint')) {
           process.stderr.write(`[conversation-collector] ${err.message}\n`);
