@@ -1298,6 +1298,15 @@ function createActionsModal() {
     btn.addEventListener('click', () => execAction(btn.dataset.action));
   });
 
+  async function selectAction(sel, action, key) {
+    const prev = sel._prevValue || sel.value;
+    const val = sel.value;
+    if (val === prev) return;
+    const ok = await execAction(action, { [key]: val });
+    if (ok === false) sel.value = prev;
+    else sel._prevValue = val;
+  }
+
   const modelSel = overlay.querySelector('#action-model');
   const modelCustom = overlay.querySelector('#action-model-custom');
   modelSel.addEventListener('change', () => {
@@ -1306,7 +1315,7 @@ function createActionsModal() {
       modelCustom.focus();
     } else {
       modelCustom.hidden = true;
-      execAction('switch-model', { model: modelSel.value });
+      selectAction(modelSel, 'switch-model', 'model');
     }
   });
   modelCustom.addEventListener('keydown', (e) => {
@@ -1317,12 +1326,12 @@ function createActionsModal() {
 
   const runtimeSel = overlay.querySelector('#action-runtime');
   runtimeSel.addEventListener('change', () => {
-    execAction('switch-runtime', { runtime: runtimeSel.value });
+    selectAction(runtimeSel, 'switch-runtime', 'runtime');
   });
 
   const effortSel = overlay.querySelector('#action-effort');
   effortSel.addEventListener('change', () => {
-    execAction('switch-effort', { effort: effortSel.value });
+    selectAction(effortSel, 'switch-effort', 'effort');
   });
 
   return overlay;
@@ -1375,6 +1384,10 @@ async function openActionsModal() {
     const ccVer = modal.querySelector('#action-cc-ver');
     zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
+
+    runtimeSel._prevValue = runtimeSel.value;
+    modelSel._prevValue = modelSel.value;
+    effortSel._prevValue = effortSel.value;
   } catch { /* meta unavailable, modal still usable */ }
 }
 
@@ -1418,7 +1431,7 @@ async function execAction(action, body) {
       'upgrade-zylos': 'Upgrade zylos-core? All services will restart.',
       'upgrade-cc': 'Upgrade Claude Code?'
     };
-    if (!(await showConfirm(labels[action] || `Execute ${action}?`))) return;
+    if (!(await showConfirm(labels[action] || `Execute ${action}?`))) return false;
   }
 
   const statusEl = actionsModal?.querySelector('#action-status');
