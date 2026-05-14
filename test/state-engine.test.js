@@ -697,6 +697,108 @@ test('snapshot restore preserves last_prompt', () => {
   assert.equal(state.last_prompt.summary, 'Prompt from telegram (8101553026)');
 });
 
+test('long-running tool with recent progress stays BUSY, not POSSIBLY_STUCK', () => {
+  const signals = {
+    amAvailable: true,
+    amState: 'busy',
+    amHealth: 'ok',
+    runningTool: { tool_name: 'Read', age: 400 },
+    openTurn: null,
+    pendingPermission: null,
+    lastProgressAge: 10,
+    lastProgressType: null,
+    collectorLivenessFresh: true,
+    collectorLivenessAvailable: true,
+    activeOtelSpan: false,
+    possiblyStuckSince: null,
+    runtime: 'claude',
+    now: () => Date.now()
+  };
+
+  const result = deriveAgentState(signals);
+  assert.equal(result.state, 'BUSY', 'should be BUSY when recent progress exists despite long tool');
+});
+
+test('long-running tool without recent progress is POSSIBLY_STUCK', () => {
+  const signals = {
+    amAvailable: true,
+    amState: 'busy',
+    amHealth: 'ok',
+    runningTool: { tool_name: 'Read', age: 400 },
+    openTurn: null,
+    pendingPermission: null,
+    lastProgressAge: 120,
+    lastProgressType: null,
+    collectorLivenessFresh: true,
+    collectorLivenessAvailable: true,
+    activeOtelSpan: false,
+    possiblyStuckSince: null,
+    runtime: 'claude',
+    now: () => Date.now()
+  };
+
+  const result = deriveAgentState(signals);
+  assert.equal(result.state, 'POSSIBLY_STUCK');
+});
+
+test('open turn with recent progress stays BUSY', () => {
+  const signals = {
+    amAvailable: true,
+    amState: 'busy',
+    amHealth: 'ok',
+    runningTool: null,
+    openTurn: { age: 400 },
+    pendingPermission: null,
+    lastProgressAge: 15,
+    lastProgressType: null,
+    collectorLivenessFresh: true,
+    collectorLivenessAvailable: true,
+    activeOtelSpan: false,
+    possiblyStuckSince: null,
+    runtime: 'claude',
+    now: () => Date.now()
+  };
+
+  const result = deriveAgentState(signals);
+  assert.equal(result.state, 'BUSY', 'should be BUSY when turn is old but progress is recent');
+});
+
+test('post_tool_use resets possibly-stuck via lastProgressAt', () => {
+  const { engine, advance } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'sess-1'
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-long', tool_name: 'Read' }
+  });
+
+  advance(310_000);
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1310000).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-new', tool_name: 'Bash' }
+  });
+
+  engine.onEvent({
+    event_type: 'post_tool_use',
+    timestamp: new Date(1310100).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-new', tool_name: 'Bash' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.state, 'BUSY', 'should be BUSY after new tool completed even with long-running tool');
+});
+
 test('Stop assistant_summary is redacted and truncated', () => {
   const sanitizer = new Sanitizer('/tmp/zylos-test');
   const longMsg = 'Fixed the config. Key was sk-abcdefghijklmnopqrstuvwx. ' + 'x'.repeat(300);

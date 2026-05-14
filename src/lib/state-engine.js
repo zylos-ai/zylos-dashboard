@@ -6,6 +6,7 @@ const STALE_SUBAGENT_THRESHOLD_MS = 1_800_000;
 const STALE_PERMISSION_THRESHOLD_MS = 600_000;
 const POSSIBLY_STUCK_THRESHOLD_S = 300;
 const STUCK_CONFIRMATION_THRESHOLD_S = 600;
+const RECENT_PROGRESS_THRESHOLD_S = 60;
 const COLLECTOR_FRESHNESS_MS = 30_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const AM_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -54,7 +55,9 @@ export function deriveAgentState(signals) {
     const ageSec = Math.floor(signals.runningTool.age);
     evidence.push(`tool_running:${signals.runningTool.tool_name}:${ageSec}s`);
 
-    if (ageSec > POSSIBLY_STUCK_THRESHOLD_S) {
+    const recentProgress = signals.lastProgressAge < RECENT_PROGRESS_THRESHOLD_S;
+
+    if (ageSec > POSSIBLY_STUCK_THRESHOLD_S && !recentProgress) {
       if (signals.possiblyStuckSince) {
         const stuckDuration = (signals.now() - new Date(signals.possiblyStuckSince).getTime()) / 1000;
         if (stuckDuration >= STUCK_CONFIRMATION_THRESHOLD_S && signals.collectorLivenessFresh) {
@@ -96,8 +99,9 @@ export function deriveAgentState(signals) {
   if (signals.openTurn) {
     const ageSec = Math.floor(signals.openTurn.age);
     evidence.push(`open_turn:${ageSec}s`);
+    const recentTurnProgress = signals.lastProgressAge < RECENT_PROGRESS_THRESHOLD_S;
 
-    if (ageSec > POSSIBLY_STUCK_THRESHOLD_S) {
+    if (ageSec > POSSIBLY_STUCK_THRESHOLD_S && !recentTurnProgress) {
       if (signals.possiblyStuckSince) {
         const stuckDuration = (signals.now() - new Date(signals.possiblyStuckSince).getTime()) / 1000;
         if (stuckDuration >= STUCK_CONFIRMATION_THRESHOLD_S && signals.collectorLivenessFresh) {
