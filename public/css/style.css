@@ -1415,6 +1415,17 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .modal-status.running { color: var(--accent); }
 .modal-status.success { color: var(--green, #059669); }
 .modal-status.error { color: #ef4444; }
+.modal-confirm {
+  padding: var(--space-md) var(--space-lg);
+  border-top: 1px solid var(--border);
+  background: var(--bg-card, #f9fafb);
+}
+.modal-confirm[hidden] { display: none; }
+.modal-confirm p { margin: 0 0 var(--space-md); font-size: 14px; color: var(--text-secondary); }
+.modal-confirm-buttons { display: flex; gap: var(--space-sm); justify-content: flex-end; }
+.modal-confirm-buttons .action-btn { min-width: 80px; font-size: 13px; padding: 6px 16px; }
+.modal-confirm-buttons .action-btn.danger { background: #ef4444; color: #fff; border-color: #ef4444; }
+.modal-confirm-buttons .action-btn.danger:hover { background: #dc2626; }
 
 /* ─── Responsive ─── */
 @media (min-width: 640px) {

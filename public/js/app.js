@@ -1280,6 +1280,13 @@ function createActionsModal() {
     </div>
   </div>
   <div class="modal-status" id="action-status" hidden></div>
+  <div class="modal-confirm" id="action-confirm" hidden>
+    <p id="action-confirm-text"></p>
+    <div class="modal-confirm-buttons">
+      <button class="action-btn" id="action-confirm-cancel" type="button">Cancel</button>
+      <button class="action-btn danger" id="action-confirm-ok" type="button">Confirm</button>
+    </div>
+  </div>
 </div>`;
   document.body.appendChild(overlay);
   actionsModal = overlay;
@@ -1377,6 +1384,29 @@ function closeActionsModal() {
 
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
+function showConfirm(text) {
+  return new Promise((resolve) => {
+    const box = actionsModal?.querySelector('#action-confirm');
+    const msg = actionsModal?.querySelector('#action-confirm-text');
+    const okBtn = actionsModal?.querySelector('#action-confirm-ok');
+    const cancelBtn = actionsModal?.querySelector('#action-confirm-cancel');
+    if (!box || !msg || !okBtn || !cancelBtn) { resolve(false); return; }
+
+    msg.textContent = text;
+    box.hidden = false;
+
+    function cleanup() {
+      box.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+    }
+    function onOk() { cleanup(); resolve(true); }
+    function onCancel() { cleanup(); resolve(false); }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+  });
+}
+
 async function execAction(action, body) {
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
@@ -1388,7 +1418,7 @@ async function execAction(action, body) {
       'upgrade-zylos': 'Upgrade zylos-core? All services will restart.',
       'upgrade-cc': 'Upgrade Claude Code?'
     };
-    if (!confirm(labels[action] || `Execute ${action}?`)) return;
+    if (!(await showConfirm(labels[action] || `Execute ${action}?`))) return;
   }
 
   const statusEl = actionsModal?.querySelector('#action-status');

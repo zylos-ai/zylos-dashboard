@@ -22,6 +22,7 @@ function writeSettings(settings) {
 }
 
 export async function handleAction(action, body, config) {
+  process.stderr.write(`[actions] ${action}${body ? ' ' + JSON.stringify(body) : ''}\n`);
   switch (action) {
     case 'interrupt': return interrupt();
     case 'restart-session': return restartSession(config);
