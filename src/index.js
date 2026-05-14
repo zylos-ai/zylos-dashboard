@@ -15,6 +15,7 @@ import { PM2Collector } from './lib/collectors/pm2-collector.js';
 import { SystemCollector } from './lib/collectors/system-collector.js';
 import { OTelCollector } from './lib/collectors/otel-collector.js';
 import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
+import { ConversationCollector } from './lib/collectors/conversation-collector.js';
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
@@ -47,7 +48,9 @@ const systemCollector = new SystemCollector(store, config);
 const otelCollector = new OTelCollector(store, config);
 const statuslineCollector = new StatuslineCollector(store, config);
 
-const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelCollector, statusline: statuslineCollector };
+const conversationCollector = new ConversationCollector(store, config);
+
+const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelCollector, statusline: statuslineCollector, conversation: conversationCollector };
 
 // SSE hub
 const sse = new SseHub(15_000);
@@ -61,6 +64,7 @@ const stateEngine = new StateEngine(store, collectors, config, {
 pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);
 systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
 otelCollector._stateEngine = stateEngine;
+conversationCollector._stateEngine = stateEngine;
 
 // 8. Metric resolver
 const metricResolver = new MetricResolver(store, collectors, config, { stateEngine });
@@ -84,6 +88,9 @@ async function startupSequence() {
   }
   try { await statuslineCollector.collect(); } catch (err) {
     process.stderr.write(`[startup] StatusLine collector initial run failed: ${err.message}\n`);
+  }
+  try { conversationCollector.collect(); } catch (err) {
+    process.stderr.write(`[startup] Conversation collector initial run failed: ${err.message}\n`);
   }
 
   // State engine initialize (snapshot restore + replay)
@@ -543,6 +550,7 @@ if (isMain && process.argv.includes('--smoke')) {
   systemCollector.start(30_000);
   otelCollector.start(10_000);
   statuslineCollector.start();
+  conversationCollector.start(5_000);
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();
