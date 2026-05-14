@@ -1375,11 +1375,12 @@ function closeActionsModal() {
   if (actionsModal) actionsModal.hidden = true;
 }
 
-const CONFIRM_ACTIONS = new Set(['restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
+const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
 async function execAction(action, body) {
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
+      'interrupt': 'Interrupt the agent? This will cancel the current operation.',
       'restart-session': 'Restart the agent session? Current context will be lost.',
       'switch-runtime': `Switch runtime to ${body?.runtime}? Session will restart.`,
       'switch-model': `Switch model to ${body?.model}? Session will restart.`,
