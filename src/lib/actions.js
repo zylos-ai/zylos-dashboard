@@ -8,22 +8,27 @@ import os from 'node:os';
 
 const execFileAsync = promisify(execFile);
 
-const SETTINGS_PATH = path.join(os.homedir(), 'zylos', '.claude', 'settings.json');
-const C4_CONTROL = path.join(os.homedir(), 'zylos', '.claude', 'skills', 'comm-bridge', 'scripts', 'c4-control.js');
+function settingsPath(zylosDir) {
+  return path.join(zylosDir, '.claude', 'settings.json');
+}
+
+function c4ControlPath(zylosDir) {
+  return path.join(zylosDir, '.claude', 'skills', 'comm-bridge', 'scripts', 'c4-control.js');
+}
 
 const DEDUP_WINDOW_MS = 2000;
 const recentInvocations = new Map();
 
-function readSettings() {
+function readSettings(zylosDir) {
   try {
-    return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    return JSON.parse(fs.readFileSync(settingsPath(zylosDir), 'utf8'));
   } catch {
     return {};
   }
 }
 
-function writeSettings(settings) {
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
+function writeSettings(zylosDir, settings) {
+  fs.writeFileSync(settingsPath(zylosDir), JSON.stringify(settings, null, 2) + '\n');
 }
 
 function log(reqId, msg) {
@@ -48,6 +53,7 @@ function isDuplicate(action, body) {
 
 export async function handleAction(action, body, config) {
   const reqId = crypto.randomBytes(3).toString('hex');
+  const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
   log(reqId, `=> ${action} ${JSON.stringify(body || {})}`);
 
   if (isDuplicate(action, body)) {
@@ -58,11 +64,11 @@ export async function handleAction(action, body, config) {
   let result;
   try {
     switch (action) {
-      case 'interrupt': result = await interrupt(reqId); break;
+      case 'interrupt': result = await interrupt(reqId, zylosDir); break;
       case 'restart-session': result = await restartSession(reqId, config); break;
       case 'switch-runtime': result = await switchRuntime(reqId, body, config); break;
-      case 'switch-model': result = await switchModel(reqId, body, config); break;
-      case 'switch-effort': result = await switchEffort(reqId, body, config); break;
+      case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
+      case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
       case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
       case 'upgrade-cc': result = await upgradeCc(reqId); break;
       default: result = { ok: false, error: 'unknown_action' };
@@ -76,12 +82,13 @@ export async function handleAction(action, body, config) {
   return result;
 }
 
-async function interrupt(reqId) {
-  log(reqId, `enqueue control: [KEYSTROKE]Escape (priority=0, bypass-state) via ${C4_CONTROL}`);
+async function interrupt(reqId, zylosDir) {
+  const c4Control = c4ControlPath(zylosDir);
+  log(reqId, `enqueue control: [KEYSTROKE]Escape (priority=0, bypass-state) via ${c4Control}`);
   try {
     const { stdout, stderr } = await execFileAsync(
       'node',
-      [C4_CONTROL, 'enqueue', '--content', '[KEYSTROKE]Escape', '--priority', '0', '--bypass-state', '--no-ack-suffix'],
+      [c4Control, 'enqueue', '--content', '[KEYSTROKE]Escape', '--priority', '0', '--bypass-state', '--no-ack-suffix'],
       { timeout: 5000 }
     );
     const out = (stdout || '').trim() + (stderr ? ` | stderr: ${stderr.trim()}` : '');
@@ -139,7 +146,7 @@ async function switchRuntime(reqId, body, config) {
   return { ok: true, message: `Switching to ${target}. Dashboard will restart momentarily.`, detached: true };
 }
 
-async function switchModel(reqId, body, config) {
+async function switchModel(reqId, body, config, zylosDir) {
   const model = body?.model;
   if (!model || typeof model !== 'string') {
     return { ok: false, error: 'invalid_model', message: 'model is required' };
@@ -148,15 +155,15 @@ async function switchModel(reqId, body, config) {
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
 
   if (runtime === 'claude') {
-    const settings = readSettings();
+    const settings = readSettings(zylosDir);
     const prev = settings.model;
     if (prev === model) {
       log(reqId, `no-op: settings.model already "${model}"`);
       return { ok: false, error: 'already_set', message: `Model already set to ${model}` };
     }
     settings.model = model;
-    log(reqId, `write ${SETTINGS_PATH}: model "${prev ?? '(unset)'}" → "${model}"`);
-    writeSettings(settings);
+    log(reqId, `write ${settingsPath(zylosDir)}: model "${prev ?? '(unset)'}" → "${model}"`);
+    writeSettings(zylosDir, settings);
 
     return { ok: true, message: `Model changed to ${model}.`, previous: prev, requires_restart: true };
   }
@@ -171,12 +178,12 @@ function effortsForModel(model) {
   return ['low', 'medium', 'high'];
 }
 
-async function switchEffort(reqId, body, config) {
+async function switchEffort(reqId, body, config, zylosDir) {
   const effort = body?.effort;
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
 
   if (runtime === 'claude') {
-    const settings = readSettings();
+    const settings = readSettings(zylosDir);
     const valid = effortsForModel(settings.model || '');
     if (!effort || !valid.includes(effort)) {
       return { ok: false, error: 'invalid_effort', message: `effort must be one of: ${valid.join(', ')}` };
@@ -188,8 +195,8 @@ async function switchEffort(reqId, body, config) {
       return { ok: false, error: 'already_set', message: `Effort already set to ${effort}` };
     }
     settings.effortLevel = effort;
-    log(reqId, `write ${SETTINGS_PATH}: effortLevel "${prev ?? '(unset)'}" → "${effort}"`);
-    writeSettings(settings);
+    log(reqId, `write ${settingsPath(zylosDir)}: effortLevel "${prev ?? '(unset)'}" → "${effort}"`);
+    writeSettings(zylosDir, settings);
 
     return { ok: true, message: `Effort changed to ${effort}.`, previous: prev, requires_restart: true };
   }
@@ -292,7 +299,8 @@ export function getActionsMeta(config, runtimeInfo) {
       }
     : {};
 
-  const settings = runtime === 'claude' ? readSettings() : {};
+  const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
+  const settings = runtime === 'claude' ? readSettings(zylosDir) : {};
 
   return {
     runtime,

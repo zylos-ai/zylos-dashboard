@@ -1328,6 +1328,7 @@ function createActionsModal() {
       modelCustom.focus();
     } else {
       modelCustom.hidden = true;
+      renderEffortOptions(modelSel.value);
       selectAction(modelSel, 'switch-model', 'model');
     }
   });

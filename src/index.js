@@ -29,7 +29,6 @@ const startedAt = new Date();
 
 let zylosVersion = null;
 let ccInstalledVersion = null;
-let pendingRestart = false;
 try {
   zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
 } catch { /* zylos CLI not available */ }
@@ -97,10 +96,24 @@ const versionChecker = new VersionChecker({
 });
 versionChecker.start();
 
+function readClaudeSettings() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(config.zylosDir, '.claude', 'settings.json'), 'utf8'));
+  } catch { return {}; }
+}
+
 function buildRuntimeInfo() {
   const slInfo = statuslineCollector.getRuntimeInfo();
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
+
+  // Derive pending_restart from settings vs running state
+  const settings = readClaudeSettings();
+  const needsRestart =
+    (settings.model && slInfo?.model && settings.model !== slInfo.model) ||
+    (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
+    (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning);
+
   const info = {
     zylos_version: zylosVersion,
     runtime: process.env.ZYLOS_RUNTIME || 'claude',
@@ -108,7 +121,7 @@ function buildRuntimeInfo() {
     effort: slInfo?.effort || null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
-    pending_restart: pendingRestart,
+    pending_restart: !!needsRestart,
   };
   // info bar: running != installed → show restart hint
   if (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning) {
@@ -444,6 +457,7 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/actions/meta') {
     const zylosConfig = loadZylosConfig(config.zylosDir);
+    zylosConfig.zylosDir = config.zylosDir;
     const slMeta = statuslineCollector.getRuntimeInfo();
     const meta = getActionsMeta(zylosConfig, slMeta);
     meta.zylos_version = zylosVersion;
@@ -598,13 +612,8 @@ export function createServer() {
         let body = {};
         try { body = await readJsonBody(req, 4096); } catch { /* no body is ok for some actions */ }
         const zylosConfig = loadZylosConfig(config.zylosDir);
+        zylosConfig.zylosDir = config.zylosDir;
         const result = await handleAction(action, body, zylosConfig);
-        if (result.ok && result.requires_restart) {
-          pendingRestart = true;
-        }
-        if (result.ok && action === 'restart-session') {
-          pendingRestart = false;
-        }
         if (result.ok && (action === 'upgrade-cc' || action === 'upgrade-zylos')) {
           refreshInstalledVersions();
         }
