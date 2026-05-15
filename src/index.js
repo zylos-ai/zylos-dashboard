@@ -107,10 +107,10 @@ function buildRuntimeInfo() {
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
 
-  // Derive pending_restart from settings vs running state
+  // Derive pending_restart from settings vs running state (compare IDs, not display names)
   const settings = readClaudeSettings();
   const needsRestart =
-    (settings.model && slInfo?.model && settings.model !== slInfo.model) ||
+    (settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
     (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning);
 

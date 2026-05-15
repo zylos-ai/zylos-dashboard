@@ -88,6 +88,7 @@ export class StatuslineCollector {
 
     this._runtimeInfo = {
       model: data.model?.display_name || data.model?.id || null,
+      model_id: data.model?.id || null,
       effort: data.effort?.level || null,
       cc_version: data.version || null
     };

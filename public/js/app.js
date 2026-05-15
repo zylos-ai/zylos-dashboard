@@ -1328,7 +1328,7 @@ function createActionsModal() {
       modelCustom.focus();
     } else {
       modelCustom.hidden = true;
-      renderEffortOptions(modelSel.value);
+      if (actionsModal?._renderEffortOptions) actionsModal._renderEffortOptions(modelSel.value);
       selectAction(modelSel, 'switch-model', 'model');
     }
   });
@@ -1382,7 +1382,7 @@ async function openActionsModal() {
     const effortField = modal.querySelector('#action-effort-field');
     const effortSel = modal.querySelector('#action-effort');
     const effortsByModel = meta.efforts_by_model || {};
-    const renderEffortOptions = (modelId) => {
+    modal._renderEffortOptions = (modelId) => {
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
       if (!list.length) {
         effortField.hidden = true;
@@ -1399,7 +1399,7 @@ async function openActionsModal() {
       }
       effortSel._prevValue = effortSel.value;
     };
-    renderEffortOptions(meta.current_model);
+    modal._renderEffortOptions(meta.current_model);
 
     const ri = state.dashboardState?.runtime_info;
     const zylosVer = modal.querySelector('#action-zylos-ver');
