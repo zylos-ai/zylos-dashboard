@@ -22,14 +22,36 @@ import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
 import { handleAction, getActionsMeta } from './lib/actions.js';
+import { VersionChecker } from './lib/version-checker.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
 
 let zylosVersion = null;
+let ccInstalledVersion = null;
+let pendingRestart = false;
 try {
   zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
 } catch { /* zylos CLI not available */ }
+try {
+  const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
+  ccInstalledVersion = raw.replace(/\s.*$/, '');
+} catch { /* claude CLI not available */ }
+
+function refreshInstalledVersions() {
+  try {
+    zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
+  } catch { /* ignore */ }
+  try {
+    const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
+    ccInstalledVersion = raw.replace(/\s.*$/, '');
+  } catch { /* ignore */ }
+  const st = stateEngine?.getState();
+  if (st) {
+    st.runtime_info = buildRuntimeInfo();
+    sse.broadcast('state_change', st);
+  }
+}
 
 const config = loadConfig();
 ensureDataDirs(config);
@@ -63,17 +85,51 @@ const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelColle
 // SSE hub
 const sse = new SseHub(15_000);
 
+// 6b. Version checker (polls GitHub every 12h)
+const versionChecker = new VersionChecker({
+  onUpdate: () => {
+    if (stateEngine) {
+      const st = stateEngine.getState();
+      st.runtime_info = buildRuntimeInfo();
+      sse.broadcast('state_change', st);
+    }
+  },
+});
+versionChecker.start();
+
+function buildRuntimeInfo() {
+  const slInfo = statuslineCollector.getRuntimeInfo();
+  const latest = versionChecker.getLatest();
+  const ccRunning = slInfo?.cc_version || null;
+  const info = {
+    zylos_version: zylosVersion,
+    runtime: process.env.ZYLOS_RUNTIME || 'claude',
+    model: slInfo?.model || null,
+    effort: slInfo?.effort || null,
+    cc_version: ccRunning,
+    cc_installed: ccInstalledVersion || null,
+    pending_restart: pendingRestart,
+  };
+  // info bar: running != installed → show restart hint
+  if (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning) {
+    info.cc_restart = ccInstalledVersion;
+  }
+  // upgrade button: installed != GitHub latest → show upgrade dot
+  const ccEffective = ccInstalledVersion || ccRunning;
+  if (latest.cc && ccEffective && latest.cc !== ccEffective) {
+    info.cc_update = latest.cc;
+  }
+  // same pattern for zylos
+  if (latest.zylos && zylosVersion && latest.zylos !== zylosVersion) {
+    info.zylos_update = latest.zylos;
+  }
+  return info;
+}
+
 // 7. State engine
 const stateEngine = new StateEngine(store, collectors, config, {
   onStateChange: (st) => {
-    const slInfo = statuslineCollector.getRuntimeInfo();
-    st.runtime_info = {
-      zylos_version: zylosVersion,
-      runtime: process.env.ZYLOS_RUNTIME || 'claude',
-      model: slInfo?.model || null,
-      effort: slInfo?.effort || null,
-      cc_version: slInfo?.cc_version || null
-    };
+    st.runtime_info = buildRuntimeInfo();
     sse.broadcast('state_change', st);
   }
 });
@@ -222,14 +278,7 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/state') {
     const stateData = stateEngine.getState();
-    const slInfo = statuslineCollector.getRuntimeInfo();
-    stateData.runtime_info = {
-      zylos_version: zylosVersion,
-      runtime: process.env.ZYLOS_RUNTIME || 'claude',
-      model: slInfo?.model || null,
-      effort: slInfo?.effort || null,
-      cc_version: slInfo?.cc_version || null
-    };
+    stateData.runtime_info = buildRuntimeInfo();
     sendJson(res, 200, stateData);
     return true;
   }
@@ -395,9 +444,10 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/actions/meta') {
     const zylosConfig = loadZylosConfig(config.zylosDir);
-    const meta = getActionsMeta(zylosConfig);
+    const slMeta = statuslineCollector.getRuntimeInfo();
+    const meta = getActionsMeta(zylosConfig, slMeta);
     meta.zylos_version = zylosVersion;
-    meta.cc_version = statuslineCollector.getRuntimeInfo()?.cc_version || null;
+    meta.cc_version = ccInstalledVersion || slMeta?.cc_version || null;
     sendJson(res, 200, meta);
     return true;
   }
@@ -549,6 +599,15 @@ export function createServer() {
         try { body = await readJsonBody(req, 4096); } catch { /* no body is ok for some actions */ }
         const zylosConfig = loadZylosConfig(config.zylosDir);
         const result = await handleAction(action, body, zylosConfig);
+        if (result.ok && result.requires_restart) {
+          pendingRestart = true;
+        }
+        if (result.ok && action === 'restart-session') {
+          pendingRestart = false;
+        }
+        if (result.ok && (action === 'upgrade-cc' || action === 'upgrade-zylos')) {
+          refreshInstalledVersions();
+        }
         sendJson(res, result.ok ? 200 : 400, result);
         return;
       }
