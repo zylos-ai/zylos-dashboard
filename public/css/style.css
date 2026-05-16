@@ -651,6 +651,44 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   background: linear-gradient(90deg, #ef4444, #dc2626);
 }
 
+.progress { position: relative; }
+.threshold-marker {
+  position: absolute;
+  right: 0;
+  top: -2px;
+  width: 2px;
+  height: 10px;
+  background: var(--text-dim);
+  border-radius: 1px;
+  opacity: 0.6;
+}
+.threshold-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: var(--space-xs);
+}
+
+.tip-btn-inline { margin-left: var(--space-xs); vertical-align: middle; }
+
+.action-threshold-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.action-threshold-input {
+  width: 64px;
+  text-align: center;
+}
+.action-threshold-unit {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.action-btn-sm {
+  height: 28px;
+  padding: 0 var(--space-sm);
+  font-size: 12px;
+}
+
 .metric-pair {
   display: flex;
   flex-wrap: wrap;
@@ -1274,6 +1312,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .chart-card { padding: var(--space-md) var(--space-lg) var(--space-lg); }
 .chart-card h2 { margin-bottom: var(--space-md); }
+.chart-head-row { display: flex; align-items: center; gap: var(--space-xs); margin-bottom: var(--space-md); }
+.chart-head-row h2 { margin-bottom: 0; }
+.chart-total { font-size: 13px; color: var(--text-dim); font-weight: 500; margin-bottom: var(--space-sm); }
 .chart-wrap { position: relative; height: 200px; }
 .chart-wrap canvas { width: 100% !important; height: 100% !important; }
 

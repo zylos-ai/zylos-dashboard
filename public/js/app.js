@@ -494,8 +494,19 @@ function renderMetrics() {
 
   $('#metric-context-value').textContent = pct(cv);
   const ctxBar = $('#metric-context-bar');
-  ctxBar.style.width = `${barPct(cv)}%`;
-  ctxBar.className = `progress-fill ${barColor(cv)}`;
+  const threshold = state.newSessionThreshold || 70;
+  const cvNum = Number(cv);
+  const ctxRelative = Number.isFinite(cvNum) ? Math.min(100, (cvNum < 1 ? cvNum * 100 : cvNum) / threshold * 100) : 0;
+  ctxBar.style.width = `${ctxRelative}%`;
+  const ctxColorClass = ctxRelative < 50 ? '' : ctxRelative <= 75 ? 'bar-warning' : 'bar-danger';
+  ctxBar.className = `progress-fill ${ctxColorClass}`;
+  const thresholdMarker = $('#metric-context-threshold');
+  if (thresholdMarker) {
+    thresholdMarker.hidden = false;
+    thresholdMarker.title = `New Session @ ${threshold}%`;
+  }
+  const thresholdLabel = $('#metric-context-threshold-label');
+  if (thresholdLabel) thresholdLabel.textContent = `/ ${threshold}%`;
   $('#metric-context-source').textContent = srcLabel(ctx);
 
   $('#metric-rate-5h-value').textContent = pct(r5);
@@ -796,6 +807,9 @@ async function fetchJson(path) {
 async function refreshState() {
   state.dashboardState = await fetchJson('/api/state');
   state.sourceUpdatedAt = state.dashboardState.updated_at || new Date().toISOString();
+  if (state.dashboardState.new_session_threshold) {
+    state.newSessionThreshold = state.dashboardState.new_session_threshold;
+  }
   renderInfoBar();
   renderState();
   renderHealth();
@@ -869,6 +883,7 @@ function applySse(name, data) {
     const prevRi = state.dashboardState?.runtime_info;
     state.dashboardState = data;
     if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
+    if (data.new_session_threshold) state.newSessionThreshold = data.new_session_threshold;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
     refreshTimeline();
@@ -964,30 +979,42 @@ function initLogout() {
 }
 
 function initTips() {
-  const btn = $('#confidence-tip');
-  const srcPop = $('#confidence-popover');
-  if (!btn || !srcPop) return;
+  const tipPairs = [
+    ['#confidence-tip', '#confidence-popover'],
+    ['#cost-tip', '#cost-popover'],
+    ['#cost-trend-tip', '#cost-trend-popover'],
+    ['#threshold-tip', '#threshold-popover']
+  ];
+  const allPops = [];
 
-  const pop = srcPop.cloneNode(true);
-  pop.removeAttribute('id');
-  pop.hidden = true;
-  document.body.appendChild(pop);
-  srcPop.remove();
+  for (const [btnSel, popSel] of tipPairs) {
+    const btn = $(btnSel);
+    const srcPop = $(popSel);
+    if (!btn || !srcPop) continue;
 
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (pop.hidden) {
-      const rect = btn.getBoundingClientRect();
-      pop.style.top = `${rect.bottom + 6}px`;
-      const left = Math.max(8, rect.left - 120);
-      const maxLeft = window.innerWidth - 280 - 8;
-      pop.style.left = `${Math.min(left, Math.max(8, maxLeft))}px`;
-      pop.hidden = false;
-    } else {
-      pop.hidden = true;
-    }
-  });
-  document.addEventListener('click', () => { pop.hidden = true; });
+    const pop = srcPop.cloneNode(true);
+    pop.removeAttribute('id');
+    pop.hidden = true;
+    document.body.appendChild(pop);
+    srcPop.remove();
+    allPops.push(pop);
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasHidden = pop.hidden;
+      allPops.forEach((p) => { p.hidden = true; });
+      if (wasHidden) {
+        const rect = btn.getBoundingClientRect();
+        pop.style.top = `${rect.bottom + 6}px`;
+        const left = Math.max(8, rect.left - 120);
+        const maxLeft = window.innerWidth - 280 - 8;
+        pop.style.left = `${Math.min(left, Math.max(8, maxLeft))}px`;
+        pop.hidden = false;
+      }
+    });
+  }
+
+  document.addEventListener('click', () => { allPops.forEach((p) => { p.hidden = true; }); });
 }
 
 // ─── Charts ───
@@ -1174,6 +1201,10 @@ async function refreshCharts() {
     state.charts.tokens.data.datasets[0].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.input_sum }));
     state.charts.tokens.data.datasets[1].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.output_sum }));
     state.charts.tokens.update('none');
+    const totalInput = pts.reduce((s, p) => s + (p.input_sum || 0), 0);
+    const totalOutput = pts.reduce((s, p) => s + (p.output_sum || 0), 0);
+    const tokensTotalEl = $('#chart-tokens-total');
+    if (tokensTotalEl) tokensTotalEl.textContent = `Total: ${tok(totalInput + totalOutput)} (↑${tok(totalInput)} ↓${tok(totalOutput)})`;
   }
 
   // 2. Cost — bar
@@ -1181,6 +1212,9 @@ async function refreshCharts() {
     const pts = costData.value.points || [];
     state.charts.cost.data.datasets[0].data = pts.map((p) => ({ x: p.bucket_start * 1000, y: p.cost_sum }));
     state.charts.cost.update('none');
+    const totalCost = pts.reduce((s, p) => s + (p.cost_sum || 0), 0);
+    const costTotalEl = $('#chart-cost-total');
+    if (costTotalEl) costTotalEl.textContent = `Total: ${usd(totalCost)}`;
   }
 
   // 3. Message Throughput — stacked bar
@@ -1273,6 +1307,20 @@ function createActionsModal() {
         <label class="action-field-label">Effort</label>
         <select id="action-effort" class="action-select"></select>
       </div>
+      <div class="action-field">
+        <label class="action-field-label">New Session Threshold</label>
+        <button class="tip-btn tip-btn-inline" id="threshold-tip" type="button" aria-label="Threshold info">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <div class="tip-popover" id="threshold-popover" hidden>
+          <p>200K context: recommend 70%. 1M context: recommend ≤40%.</p>
+        </div>
+        <div class="action-threshold-wrap">
+          <input id="action-threshold" class="action-input action-threshold-input" type="number" min="10" max="95" step="5" />
+          <span class="action-threshold-unit">%</span>
+          <button class="action-btn action-btn-sm" id="action-threshold-apply" type="button">Apply</button>
+        </div>
+      </div>
     </div>
     <div class="action-group">
       <span class="action-group-label">Upgrade</span>
@@ -1348,6 +1396,21 @@ function createActionsModal() {
     selectAction(effortSel, 'switch-effort', 'effort');
   });
 
+  const thresholdApply = overlay.querySelector('#action-threshold-apply');
+  const thresholdInput = overlay.querySelector('#action-threshold');
+  thresholdApply.addEventListener('click', async () => {
+    const val = parseInt(thresholdInput.value, 10);
+    if (!val || val < 10 || val > 95) return;
+    const result = await execAction('set-threshold', { value: val });
+    if (result !== false) {
+      state.newSessionThreshold = val;
+      renderMetrics();
+    }
+  });
+  thresholdInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') thresholdApply.click();
+  });
+
   return overlay;
 }
 
@@ -1414,6 +1477,9 @@ async function openActionsModal() {
     runtimeSel._prevValue = runtimeSel.value;
     modelSel._prevValue = modelSel.value;
     effortSel._prevValue = effortSel.value;
+
+    const thresholdInput = modal.querySelector('#action-threshold');
+    if (thresholdInput) thresholdInput.value = meta.new_session_threshold || state.newSessionThreshold || 70;
   } catch { /* meta unavailable, modal still usable */ }
 }
 

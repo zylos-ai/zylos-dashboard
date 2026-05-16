@@ -292,6 +292,10 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/state') {
     const stateData = stateEngine.getState();
     stateData.runtime_info = buildRuntimeInfo();
+    const zylosCfg = loadZylosConfig(config.zylosDir);
+    const runtime = zylosCfg.runtime || 'claude';
+    const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
+    stateData.new_session_threshold = parseInt(zylosCfg[thresholdKey], 10) || (runtime === 'codex' ? 75 : 70);
     sendJson(res, 200, stateData);
     return true;
   }

@@ -69,6 +69,7 @@ export async function handleAction(action, body, config) {
       case 'switch-runtime': result = await switchRuntime(reqId, body, config); break;
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
+      case 'set-threshold': result = await setThreshold(reqId, body, zylosDir); break;
       case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
       case 'upgrade-cc': result = await upgradeCc(reqId); break;
       default: result = { ok: false, error: 'unknown_action' };
@@ -274,6 +275,22 @@ async function upgradeCc(reqId) {
   }
 }
 
+async function setThreshold(reqId, body, zylosDir) {
+  const value = parseInt(body?.value, 10);
+  if (!value || value < 10 || value > 95) {
+    return { ok: false, error: 'invalid_value', message: 'Threshold must be between 10 and 95' };
+  }
+  log(reqId, `exec: zylos config set new_session_threshold ${value}`);
+  try {
+    const { stdout } = await execFileAsync('zylos', ['config', 'set', 'new_session_threshold', String(value)], { timeout: 5000 });
+    log(reqId, `threshold set: ${stdout.trim()}`);
+    return { ok: true, message: `New session threshold set to ${value}%` };
+  } catch (err) {
+    log(reqId, `set threshold failed: ${err.message}`);
+    return { ok: false, error: 'set_failed', message: err.message };
+  }
+}
+
 export function getActionsMeta(config, runtimeInfo) {
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
 
@@ -302,11 +319,16 @@ export function getActionsMeta(config, runtimeInfo) {
   const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
   const settings = runtime === 'claude' ? readSettings(zylosDir) : {};
 
+  const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
+  const defaultThreshold = runtime === 'codex' ? 75 : 70;
+  const newSessionThreshold = parseInt(config[thresholdKey], 10) || defaultThreshold;
+
   return {
     runtime,
     current_model: settings.model || null,
     current_effort: runtimeInfo?.effort || settings.effortLevel || null,
     models,
-    efforts_by_model
+    efforts_by_model,
+    new_session_threshold: newSessionThreshold
   };
 }

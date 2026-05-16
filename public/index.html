@@ -88,9 +88,13 @@
           <article class="metric-bar-row">
             <div class="metric-bar-head">
               <span class="metric-label" data-i18n="label.context">Context</span>
+              <span class="threshold-label" id="metric-context-threshold-label"></span>
               <strong class="metric-value" id="metric-context-value">--</strong>
             </div>
-            <div class="progress"><span class="progress-fill" id="metric-context-bar"></span></div>
+            <div class="progress">
+              <span class="progress-fill" id="metric-context-bar"></span>
+              <span class="threshold-marker" id="metric-context-threshold" hidden></span>
+            </div>
             <small class="metric-source" id="metric-context-source">--</small>
           </article>
           <article class="metric-bar-row">
@@ -111,6 +115,12 @@
           </article>
           <div class="cost-cards">
             <span class="metric-label" data-i18n="label.cost">Cost</span>
+            <button class="tip-btn" id="cost-tip" type="button" aria-label="Cost info">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+            <div class="tip-popover" id="cost-popover" hidden>
+              <p data-i18n="tip.cost">Estimated cost based on token pricing for the current model. Calculated from actual input/output token consumption.</p>
+            </div>
             <div class="cost-grid">
               <div class="cost-card">
                 <strong class="cost-amount" id="metric-cost-session">--</strong>
@@ -266,10 +276,20 @@
       <div class="chart-grid">
         <section class="card chart-card">
           <h2 data-i18n="trends.tokens">Token Usage</h2>
+          <div class="chart-total" id="chart-tokens-total"></div>
           <div class="chart-wrap"><canvas id="chart-tokens"></canvas></div>
         </section>
         <section class="card chart-card">
-          <h2 data-i18n="trends.cost">Cost</h2>
+          <div class="chart-head-row">
+            <h2 data-i18n="trends.cost">Cost</h2>
+            <button class="tip-btn" id="cost-trend-tip" type="button" aria-label="Cost info">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+            <div class="tip-popover" id="cost-trend-popover" hidden>
+              <p data-i18n="tip.cost">Estimated cost based on token pricing for the current model. Calculated from actual input/output token consumption.</p>
+            </div>
+          </div>
+          <div class="chart-total" id="chart-cost-total"></div>
           <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
         </section>
         <section class="card chart-card">
