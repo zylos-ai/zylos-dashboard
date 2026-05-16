@@ -416,7 +416,8 @@ export class Store {
       possibly_stuck_since: snapshot.possibly_stuck_since || null,
       last_progress_cursor: snapshot.last_progress_cursor,
       last_message: snapshot.last_message || null,
-      last_prompt: snapshot.last_prompt || null
+      last_prompt: snapshot.last_prompt || null,
+      last_progress_at: snapshot.last_progress_at || null
     });
   }
 
