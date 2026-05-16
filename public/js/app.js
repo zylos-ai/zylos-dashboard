@@ -496,13 +496,16 @@ function renderMetrics() {
   const ctxBar = $('#metric-context-bar');
   const threshold = state.newSessionThreshold || 70;
   const cvNum = Number(cv);
-  const ctxRelative = Number.isFinite(cvNum) ? Math.min(100, (cvNum < 1 ? cvNum * 100 : cvNum) / threshold * 100) : 0;
-  ctxBar.style.width = `${ctxRelative}%`;
-  const ctxColorClass = ctxRelative < 50 ? '' : ctxRelative <= 75 ? 'bar-warning' : 'bar-danger';
+  const cvAbs = Number.isFinite(cvNum) ? (cvNum < 1 ? cvNum * 100 : cvNum) : 0;
+  ctxBar.style.width = `${barPct(cv)}%`;
+  const ctxRatio = threshold > 0 ? cvAbs / threshold : 0;
+  const ctxColorClass = ctxRatio < 0.5 ? '' : ctxRatio <= 0.75 ? 'bar-warning' : 'bar-danger';
   ctxBar.className = `progress-fill ${ctxColorClass}`;
   const thresholdMarker = $('#metric-context-threshold');
   if (thresholdMarker) {
     thresholdMarker.hidden = false;
+    thresholdMarker.style.left = `${threshold}%`;
+    thresholdMarker.style.right = 'auto';
     thresholdMarker.title = `New Session @ ${threshold}%`;
   }
   const thresholdLabel = $('#metric-context-threshold-label');
