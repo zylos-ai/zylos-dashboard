@@ -697,6 +697,37 @@ test('snapshot restore preserves last_prompt', () => {
   assert.equal(state.last_prompt.summary, 'Prompt from telegram (8101553026)');
 });
 
+test('snapshot restore preserves lastProgressAt', () => {
+  let snapshotData = null;
+  const store = {
+    ...makeMockStore(),
+    saveSnapshot(data) { snapshotData = data; },
+    latestSnapshot() { return snapshotData; }
+  };
+  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  let clock = 1000000;
+  const engine1 = new StateEngine(store, {}, config, { now: () => clock });
+  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+
+  engine1.onEvent({
+    event_type: 'post_tool_use',
+    timestamp: new Date(clock).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-1', tool_name: 'Bash' }
+  });
+
+  assert.ok(engine1._state.lastProgressAt, 'lastProgressAt set after post_tool_use');
+  engine1._saveSnapshot();
+  assert.ok(snapshotData.last_progress_at, 'last_progress_at included in snapshot');
+
+  const engine2 = new StateEngine(store, {}, config, { now: () => clock });
+  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+  engine2.initialize();
+
+  assert.ok(engine2._state.lastProgressAt, 'lastProgressAt restored from snapshot');
+  assert.equal(engine2._state.lastProgressAt.toISOString(), new Date(clock).toISOString());
+});
+
 test('long-running tool with recent progress stays BUSY, not POSSIBLY_STUCK', () => {
   const signals = {
     amAvailable: true,

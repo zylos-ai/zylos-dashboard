@@ -424,6 +424,9 @@ export class StateEngine {
         this._state.possiblyStuckSince = snapshot.possibly_stuck_since
           ? new Date(snapshot.possibly_stuck_since)
           : null;
+        this._state.lastProgressAt = snapshot.last_progress_at
+          ? new Date(snapshot.last_progress_at)
+          : null;
         this._state.lastSnapshotCursor = snapshot.last_progress_cursor || 0;
         if (snapshot.last_message) {
           this._state.lastAssistantMessage = typeof snapshot.last_message === 'string'
@@ -677,7 +680,8 @@ export class StateEngine {
       possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,
       last_progress_cursor: this._getMaxEventSeq(),
       last_message: JSON.stringify(this._state.lastAssistantMessage),
-      last_prompt: JSON.stringify(this._state.lastPrompt || null)
+      last_prompt: JSON.stringify(this._state.lastPrompt || null),
+      last_progress_at: this._state.lastProgressAt?.toISOString() || null
     });
   }
 

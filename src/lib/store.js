@@ -137,6 +137,13 @@ export class Store {
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(5);
     }
+    if (currentVersion < 6) {
+      const cols = this.db.pragma('table_info(state_snapshots)').map(c => c.name);
+      if (!cols.includes('last_progress_at')) {
+        this.db.exec('ALTER TABLE state_snapshots ADD COLUMN last_progress_at TEXT');
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(6);
+    }
   }
 
   _prepareStatements() {
@@ -235,9 +242,9 @@ export class Store {
 
     this._saveSnapshot = this.db.prepare(`
       INSERT INTO state_snapshots
-        (runtime, session_id, running_tool, open_turn, pending_permission, possibly_stuck_since, last_progress_cursor, last_message, last_prompt)
+        (runtime, session_id, running_tool, open_turn, pending_permission, possibly_stuck_since, last_progress_cursor, last_message, last_prompt, last_progress_at)
       VALUES
-        (@runtime, @session_id, @running_tool, @open_turn, @pending_permission, @possibly_stuck_since, @last_progress_cursor, @last_message, @last_prompt)
+        (@runtime, @session_id, @running_tool, @open_turn, @pending_permission, @possibly_stuck_since, @last_progress_cursor, @last_message, @last_prompt, @last_progress_at)
     `);
 
     this._latestSnapshot = this.db.prepare(`
