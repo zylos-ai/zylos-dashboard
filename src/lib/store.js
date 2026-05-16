@@ -560,12 +560,14 @@ export class Store {
       SELECT COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
              COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
              COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS total_tokens
+             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS total_tokens,
+             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS total_output
       FROM metric_points
       WHERE metric_name = 'api_request_tokens'
         AND timestamp >= @since AND timestamp <= @until
     `).get({ since: s, until: u });
     const totalTokens = tokenRow?.total_tokens || 0;
+    const totalOutput = tokenRow?.total_output || 0;
 
     const costRow = this.db.prepare(`
       SELECT COALESCE(SUM(metric_value), 0) AS total_cost
@@ -595,12 +597,13 @@ export class Store {
           name,
           calls,
           tokens: Math.round(totalTokens * pct),
+          outputTokens: Math.round(totalOutput * pct),
           cost: +(totalCost * pct).toFixed(4),
           percentage: +(pct * 100).toFixed(1)
         };
       });
 
-    return { items, totalTokens, totalCost };
+    return { items, totalTokens, totalOutput, totalCost };
   }
 
   _extractFilePath(summary) {

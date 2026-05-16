@@ -100,5 +100,7 @@
   "source.stale": "stale",
   "source.unavailable": "unavailable",
   "tip.confidence": "How certain is this state? High = multiple data sources agree; Medium = derived from partial signals; Low = inferred from stale or indirect data.",
+  "tip.cost": "Estimated cost based on token pricing for the current model. Calculated from actual input/output token consumption.",
+  "tip.projects": "Ranked by tool call count (Read, Edit, Write, etc.) per project in the selected period.",
   "action.logout": "Logout"
 }

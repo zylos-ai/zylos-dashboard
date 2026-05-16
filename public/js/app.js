@@ -987,7 +987,8 @@ function initTips() {
   const tipPairs = [
     ['#confidence-tip', '#confidence-popover'],
     ['#cost-tip', '#cost-popover'],
-    ['#cost-trend-tip', '#cost-trend-popover']
+    ['#cost-trend-tip', '#cost-trend-popover'],
+    ['#projects-tip', '#projects-popover']
   ];
   const allPops = [];
 
@@ -1144,7 +1145,7 @@ function initCharts() {
         type: 'bar',
         data: {
           labels: [],
-          datasets: [{ label: 'Tokens', data: [], backgroundColor: CHART_COLORS.green }]
+          datasets: [{ label: 'Tool Calls', data: [], backgroundColor: CHART_COLORS.green }]
         },
         options: horizontalBarOpts()
       });
@@ -1232,8 +1233,9 @@ async function refreshCharts() {
   // 4. Project Distribution — horizontal bar
   if (state.charts.projects && projData.status === 'fulfilled') {
     const items = projData.value.items || [];
+    items.sort((a, b) => (b.calls || 0) - (a.calls || 0));
     state.charts.projects.data.labels = items.map((i) => i.name);
-    state.charts.projects.data.datasets[0].data = items.map((i) => i.tokens);
+    state.charts.projects.data.datasets[0].data = items.map((i) => i.calls || 0);
     state.charts.projects.update('none');
   }
 }

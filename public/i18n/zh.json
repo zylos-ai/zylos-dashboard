@@ -100,5 +100,7 @@
   "source.stale": "过期",
   "source.unavailable": "不可用",
   "tip.confidence": "状态判定的可信度。高 = 多数据源一致确认；中 = 基于部分信号推导；低 = 从过期或间接数据推断。",
+  "tip.cost": "基于当前模型 token 价格的费用估算，根据实际输入/输出 token 用量计算。",
+  "tip.projects": "按所选时间段内各项目的工具调用次数（Read、Edit、Write 等）排序。",
   "action.logout": "退出"
 }
