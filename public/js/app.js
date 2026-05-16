@@ -505,11 +505,13 @@ function renderMetrics() {
   if (thresholdMarker) {
     thresholdMarker.hidden = false;
     thresholdMarker.style.left = `${threshold}%`;
-    thresholdMarker.style.right = 'auto';
     thresholdMarker.title = `New Session @ ${threshold}%`;
   }
   const thresholdLabel = $('#metric-context-threshold-label');
-  if (thresholdLabel) thresholdLabel.textContent = `/ ${threshold}%`;
+  if (thresholdLabel) {
+    thresholdLabel.textContent = `${threshold}%`;
+    thresholdLabel.style.left = `${threshold}%`;
+  }
   $('#metric-context-source').textContent = srcLabel(ctx);
 
   $('#metric-rate-5h-value').textContent = pct(r5);

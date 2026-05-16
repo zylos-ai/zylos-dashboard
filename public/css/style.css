@@ -651,11 +651,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   background: linear-gradient(90deg, #ef4444, #dc2626);
 }
 
-.progress { position: relative; }
+.progress-wrap {
+  position: relative;
+  padding-top: 16px;
+}
 .threshold-marker {
   position: absolute;
-  right: 0;
-  top: -2px;
+  top: 14px;
   width: 2px;
   height: 10px;
   background: var(--text-dim);
@@ -663,9 +665,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   opacity: 0.6;
 }
 .threshold-label {
-  font-size: 11px;
+  position: absolute;
+  top: 1px;
+  font-size: 10px;
+  line-height: 1;
   color: var(--text-dim);
-  margin-left: var(--space-xs);
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 .tip-btn-inline { margin-left: var(--space-xs); vertical-align: middle; }
