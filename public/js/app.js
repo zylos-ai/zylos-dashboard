@@ -982,8 +982,7 @@ function initTips() {
   const tipPairs = [
     ['#confidence-tip', '#confidence-popover'],
     ['#cost-tip', '#cost-popover'],
-    ['#cost-trend-tip', '#cost-trend-popover'],
-    ['#threshold-tip', '#threshold-popover']
+    ['#cost-trend-tip', '#cost-trend-popover']
   ];
   const allPops = [];
 
@@ -1410,6 +1409,30 @@ function createActionsModal() {
   thresholdInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') thresholdApply.click();
   });
+
+  const thresholdTipBtn = overlay.querySelector('#threshold-tip');
+  const thresholdPop = overlay.querySelector('#threshold-popover');
+  if (thresholdTipBtn && thresholdPop) {
+    const pop = thresholdPop.cloneNode(true);
+    pop.removeAttribute('id');
+    pop.hidden = true;
+    document.body.appendChild(pop);
+    thresholdPop.remove();
+    thresholdTipBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (pop.hidden) {
+        const rect = thresholdTipBtn.getBoundingClientRect();
+        pop.style.top = `${rect.bottom + 6}px`;
+        const left = Math.max(8, rect.left - 120);
+        const maxLeft = window.innerWidth - 280 - 8;
+        pop.style.left = `${Math.min(left, Math.max(8, maxLeft))}px`;
+        pop.hidden = false;
+      } else {
+        pop.hidden = true;
+      }
+    });
+    document.addEventListener('click', () => { pop.hidden = true; });
+  }
 
   return overlay;
 }

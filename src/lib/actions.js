@@ -69,7 +69,7 @@ export async function handleAction(action, body, config) {
       case 'switch-runtime': result = await switchRuntime(reqId, body, config); break;
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
-      case 'set-threshold': result = await setThreshold(reqId, body, zylosDir); break;
+      case 'set-threshold': result = await setThreshold(reqId, body, config, zylosDir); break;
       case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
       case 'upgrade-cc': result = await upgradeCc(reqId); break;
       default: result = { ok: false, error: 'unknown_action' };
@@ -275,14 +275,16 @@ async function upgradeCc(reqId) {
   }
 }
 
-async function setThreshold(reqId, body, zylosDir) {
+async function setThreshold(reqId, body, config, zylosDir) {
   const value = parseInt(body?.value, 10);
   if (!value || value < 10 || value > 95) {
     return { ok: false, error: 'invalid_value', message: 'Threshold must be between 10 and 95' };
   }
-  log(reqId, `exec: zylos config set new_session_threshold ${value}`);
+  const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
+  const key = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
+  log(reqId, `exec: zylos config set ${key} ${value}`);
   try {
-    const { stdout } = await execFileAsync('zylos', ['config', 'set', 'new_session_threshold', String(value)], { timeout: 5000 });
+    const { stdout } = await execFileAsync('zylos', ['config', 'set', key, String(value)], { timeout: 5000 });
     log(reqId, `threshold set: ${stdout.trim()}`);
     return { ok: true, message: `New session threshold set to ${value}%` };
   } catch (err) {
