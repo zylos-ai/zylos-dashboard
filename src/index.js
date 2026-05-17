@@ -14,7 +14,6 @@ import { IngestHandler } from './lib/ingest-handler.js';
 import { SpoolDrainer } from './lib/spool-drainer.js';
 import { PM2Collector } from './lib/collectors/pm2-collector.js';
 import { SystemCollector } from './lib/collectors/system-collector.js';
-import { OTelCollector } from './lib/collectors/otel-collector.js';
 import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
 import { ConversationCollector } from './lib/collectors/conversation-collector.js';
 import { StateEngine } from './lib/state-engine.js';
@@ -74,12 +73,11 @@ if (spoolResult.processed > 0) {
 // 5-6. Collectors
 const pm2Collector = new PM2Collector(store, config);
 const systemCollector = new SystemCollector(store, config);
-const otelCollector = new OTelCollector(store, config);
 const statuslineCollector = new StatuslineCollector(store, config);
 
 const conversationCollector = new ConversationCollector(store, config);
 
-const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelCollector, statusline: statuslineCollector, conversation: conversationCollector };
+const collectors = { pm2: pm2Collector, system: systemCollector, statusline: statuslineCollector, conversation: conversationCollector };
 
 // SSE hub
 const sse = new SseHub(15_000);
@@ -150,7 +148,6 @@ const stateEngine = new StateEngine(store, collectors, config, {
 // Wire collector updates to state engine
 pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);
 systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
-otelCollector._stateEngine = stateEngine;
 conversationCollector._stateEngine = stateEngine;
 conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
 
@@ -170,9 +167,6 @@ async function startupSequence() {
   }
   try { await systemCollector.collect(); } catch (err) {
     process.stderr.write(`[startup] System collector initial run failed: ${err.message}\n`);
-  }
-  try { await otelCollector.collect(); } catch (err) {
-    process.stderr.write(`[startup] OTel collector initial run failed: ${err.message}\n`);
   }
   try { await statuslineCollector.collect(); } catch (err) {
     process.stderr.write(`[startup] StatusLine collector initial run failed: ${err.message}\n`);
@@ -478,26 +472,6 @@ function handleApi(req, res, pathname, url) {
   return false;
 }
 
-async function handleOtlpIngest(req, res, pathname) {
-  let body;
-  try {
-    body = await readJsonBody(req, 512 * 1024);
-  } catch (err) {
-    sendJson(res, err.status || 400, { error: err.message });
-    return;
-  }
-
-  let processed = 0;
-  if (pathname.includes('/v1/traces')) {
-    processed = otelCollector.ingestTraces(body.resourceSpans);
-  } else if (pathname.includes('/v1/logs')) {
-    processed = otelCollector.ingestLogs(body.resourceLogs);
-  } else if (pathname.includes('/v1/metrics')) {
-    processed = otelCollector.ingestMetrics(body.resourceMetrics);
-  }
-
-  sendJson(res, 200, { partialSuccess: {} });
-}
 
 async function handleStatuslineIngest(req, res) {
   const remote = req.socket.remoteAddress;
@@ -583,16 +557,6 @@ export function createServer() {
       return;
     }
 
-    // OTLP HTTP/JSON receiver (localhost only)
-    if (pathname.startsWith('/v1/') && req.method === 'POST') {
-      const remote = req.socket.remoteAddress;
-      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
-        sendJson(res, 403, { error: 'forbidden' });
-        return;
-      }
-      await handleOtlpIngest(req, res, pathname);
-      return;
-    }
 
     // Reject ingest under base-path prefix
     const prefix = req.headers['x-forwarded-prefix'];
@@ -677,7 +641,6 @@ if (isMain && process.argv.includes('--smoke')) {
   // Start periodic collectors
   pm2Collector.start(10_000);
   systemCollector.start(30_000);
-  otelCollector.start(10_000);
   statuslineCollector.start();
   conversationCollector.start(5_000);
 
@@ -707,7 +670,6 @@ if (isMain && process.argv.includes('--smoke')) {
     process.on(signal, () => {
       pm2Collector.stop();
       systemCollector.stop();
-      otelCollector.stop();
       statuslineCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();

@@ -33,20 +33,19 @@ const METRIC_CHAINS = {
   ],
   session_cost: [
     { source: 'statusline', confidence: 'actual' },
-    { source: 'otel_cost_sum', confidence: 'actual' },
+    { source: 'jsonl_usage', confidence: 'actual' },
     { source: 'token_price_estimated', confidence: 'estimated' }
   ],
   daily_cost: [
-    { source: 'otel_cost_sum', confidence: 'actual' },
+    { source: 'jsonl_usage', confidence: 'actual' },
     { source: 'statusline_delta', confidence: 'inferred' },
     { source: 'token_price_estimated', confidence: 'estimated' }
   ],
   cache_hit_rate: [
     { source: 'statusline_current_usage', confidence: 'actual' },
-    { source: 'otel_token_usage', confidence: 'actual' }
+    { source: 'jsonl_usage', confidence: 'actual' }
   ],
   tool_duration: [
-    { source: 'otel_span', confidence: 'actual' },
     { source: 'hook_postToolUse', confidence: 'actual' }
   ]
 };

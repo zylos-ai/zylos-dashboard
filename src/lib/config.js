@@ -25,6 +25,11 @@ export function loadConfig() {
       enabled: true,
       password: null,
       allowUrlTokenOnLocalhost: false
+    },
+    modelPrices: {
+      'claude-opus-4': { input: 15, output: 75, cacheRead: 1.50, cacheCreation: 18.75 },
+      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 3.75 },
+      'claude-haiku-4': { input: 0.80, output: 4, cacheRead: 0.08, cacheCreation: 1.00 }
     }
   };
 
@@ -48,6 +53,10 @@ export function loadConfig() {
     auth: {
       ...defaults.auth,
       ...(loaded.auth || {})
+    },
+    modelPrices: {
+      ...defaults.modelPrices,
+      ...(loaded.modelPrices || {})
     },
     configPath,
     configError: loaded.configError || null
