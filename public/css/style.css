@@ -234,7 +234,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .info-bar:empty { display: none; }
 
-.info-bar-text { min-width: 0; flex: 1; }
+.info-bar-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.info-bar-buttons { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
 
 .info-bar-gear {
   flex-shrink: 0;
@@ -1561,3 +1563,41 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   .action-field { flex-wrap: wrap; }
   .action-field-label { min-width: auto; }
 }
+
+/* ─── Info Bar Actions Button ─── */
+.info-bar-actions-btn {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.info-bar-actions-btn:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
+
+/* ─── Settings Modal ─── */
+.settings-price-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+.settings-price-table th { text-align: left; padding: 4px 6px; font-weight: 500; color: var(--text-secondary); border-bottom: 1px solid var(--border); font-size: 12px; }
+.settings-price-table td { padding: 3px 4px; }
+.settings-price-table th:last-child, .settings-price-table td:last-child { width: 28px; text-align: center; }
+
+.settings-input { width: 100%; padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-primary); color: var(--text-primary); font-size: 13px; }
+.settings-input:focus { border-color: var(--border-focus); outline: none; }
+.settings-input[readonly] { background: var(--bg-secondary); color: var(--text-secondary); }
+
+.settings-num { width: 70px; text-align: right; }
+.settings-prefix { width: 100%; min-width: 100px; }
+
+.settings-remove-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: var(--radius-xs); }
+.settings-remove-btn:hover { color: #ef4444; background: var(--bg-elevated); }
+
+.settings-footer { display: flex; justify-content: flex-end; gap: 8px; padding: var(--space-sm) var(--space-lg); border-top: 1px solid var(--border); }
+.action-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.action-btn-primary:hover { background: #2563eb; border-color: #2563eb; }
+
+.settings-status-ok { color: #22c55e; }

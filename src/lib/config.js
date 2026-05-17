@@ -30,7 +30,8 @@ export function loadConfig() {
       'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
       'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
       'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.10, cacheCreation: 2 }
-    }
+    },
+    fastModeMultiplier: 6
   };
 
   let loaded = {};
@@ -58,6 +59,7 @@ export function loadConfig() {
       ...defaults.modelPrices,
       ...(loaded.modelPrices || {})
     },
+    fastModeMultiplier: Number(loaded.fastModeMultiplier ?? defaults.fastModeMultiplier),
     configPath,
     configError: loaded.configError || null
   };

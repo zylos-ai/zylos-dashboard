@@ -195,7 +195,7 @@ function renderInfoBar() {
   const parts = [];
   if (ri.zylos_version) {
     let zv = `zylos v${ri.zylos_version}`;
-    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="v${esc(ri.zylos_update)} available — click ⚙️ to upgrade">↑${esc(ri.zylos_update)}</span>`;
+    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="v${esc(ri.zylos_update)} available — click Actions to upgrade">↑${esc(ri.zylos_update)}</span>`;
     parts.push(zv);
   }
   if (ri.runtime) parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
@@ -207,11 +207,11 @@ function renderInfoBar() {
   if (ri.cc_version) {
     let cv = `CC v${esc(ri.cc_version)}`;
     if (ri.cc_restart) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_restart)} installed — restart to apply">↑${esc(ri.cc_restart)}</span>`;
-    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_update)} available — click ⚙️ to upgrade">↑${esc(ri.cc_update)}</span>`;
+    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_update)} available — click Actions to upgrade">↑${esc(ri.cc_update)}</span>`;
     parts.push(cv);
   }
 
-  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><button class="info-bar-gear" id="gear-btn" type="button" aria-label="Actions">⚙️</button>`;
+  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-gear" id="settings-btn" type="button" aria-label="Settings">⚙️</button><button class="info-bar-actions-btn" id="actions-btn" type="button">Actions</button></span>`;
 }
 
 // ─── Render: State ───
@@ -1267,6 +1267,146 @@ function initTrendControls() {
   }
 }
 
+// ─── Settings Modal ───
+const BUILT_IN_MODELS = ['claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'];
+let settingsModal = null;
+
+function createSettingsModal() {
+  if (settingsModal) return settingsModal;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'settings-modal';
+  overlay.hidden = true;
+  overlay.innerHTML = `
+<div class="modal">
+  <div class="modal-head">
+    <h2>Settings</h2>
+    <button class="modal-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div class="modal-body">
+    <div class="action-group">
+      <span class="action-group-label">Model Pricing (USD / MTok)</span>
+      <table class="settings-price-table" id="settings-price-table">
+        <thead>
+          <tr><th>Model Prefix</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th></th></tr>
+        </thead>
+        <tbody id="settings-price-rows"></tbody>
+      </table>
+      <button class="action-btn action-btn-sm" id="settings-add-model" type="button">+ Add Model</button>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Fast Mode</span>
+      <div class="action-field">
+        <label class="action-field-label">Price Multiplier</label>
+        <div class="action-threshold-wrap">
+          <input id="settings-fast-multiplier" class="action-input action-threshold-input" type="number" min="0.1" step="0.1" />
+          <span class="action-threshold-unit">x</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="modal-status" id="settings-status" hidden></div>
+  <div class="settings-footer">
+    <button class="action-btn" id="settings-cancel" type="button">Cancel</button>
+    <button class="action-btn action-btn-primary" id="settings-save" type="button">Save</button>
+  </div>
+</div>`;
+  document.body.appendChild(overlay);
+  settingsModal = overlay;
+
+  overlay.querySelector('.modal-close').addEventListener('click', closeSettingsModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSettingsModal(); });
+  overlay.querySelector('#settings-cancel').addEventListener('click', closeSettingsModal);
+  overlay.querySelector('#settings-save').addEventListener('click', saveSettings);
+  overlay.querySelector('#settings-add-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false));
+
+  return overlay;
+}
+
+function addPriceRow(prefix, prices, builtIn) {
+  const tbody = document.getElementById('settings-price-rows');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="settings-input settings-prefix" type="text" value="${esc(prefix)}" ${builtIn ? 'readonly' : ''} /></td>
+    <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.input}" /></td>
+    <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.output}" /></td>
+    <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.cacheRead}" /></td>
+    <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.cacheCreation}" /></td>
+    <td>${builtIn ? '' : '<button class="settings-remove-btn" type="button" title="Remove">&times;</button>'}</td>`;
+  if (!builtIn) {
+    tr.querySelector('.settings-remove-btn').addEventListener('click', () => tr.remove());
+  }
+  tbody.appendChild(tr);
+}
+
+async function openSettingsModal() {
+  const modal = createSettingsModal();
+  const status = modal.querySelector('#settings-status');
+  status.hidden = true;
+
+  try {
+    const resp = await fetch(api('/api/settings'));
+    if (!resp.ok) throw new Error('Failed to load settings');
+    const data = await resp.json();
+
+    const tbody = document.getElementById('settings-price-rows');
+    tbody.innerHTML = '';
+    for (const [prefix, prices] of Object.entries(data.modelPrices || {})) {
+      addPriceRow(prefix, prices, BUILT_IN_MODELS.includes(prefix));
+    }
+
+    document.getElementById('settings-fast-multiplier').value = data.fastModeMultiplier ?? 6;
+  } catch (err) {
+    status.textContent = err.message;
+    status.hidden = false;
+  }
+
+  modal.hidden = false;
+}
+
+function closeSettingsModal() {
+  if (settingsModal) settingsModal.hidden = true;
+}
+
+async function saveSettings() {
+  const status = settingsModal.querySelector('#settings-status');
+  status.hidden = true;
+
+  const modelPrices = {};
+  const rows = document.querySelectorAll('#settings-price-rows tr');
+  for (const row of rows) {
+    const inputs = row.querySelectorAll('input');
+    const prefix = inputs[0].value.trim();
+    if (!prefix) continue;
+    modelPrices[prefix] = {
+      input: Number(inputs[1].value),
+      output: Number(inputs[2].value),
+      cacheRead: Number(inputs[3].value),
+      cacheCreation: Number(inputs[4].value)
+    };
+  }
+
+  const fastModeMultiplier = Number(document.getElementById('settings-fast-multiplier').value);
+
+  try {
+    const resp = await fetch(api('/api/settings'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPrices, fastModeMultiplier })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Save failed');
+    status.textContent = 'Settings saved';
+    status.className = 'modal-status settings-status-ok';
+    status.hidden = false;
+    setTimeout(() => closeSettingsModal(), 1200);
+  } catch (err) {
+    status.textContent = err.message;
+    status.className = 'modal-status';
+    status.hidden = false;
+  }
+}
+
 // ─── Actions Modal ───
 let actionsModal = null;
 
@@ -1602,10 +1742,10 @@ async function execAction(action, body) {
   }
 }
 
-function initActionsGear() {
+function initInfoBarButtons() {
   document.addEventListener('click', (e) => {
-    const gear = e.target.closest('#gear-btn, .info-bar-gear, .info-bar-update');
-    if (gear) { e.preventDefault(); openActionsModal(); }
+    if (e.target.closest('#settings-btn')) { e.preventDefault(); openSettingsModal(); return; }
+    if (e.target.closest('#actions-btn, .info-bar-update')) { e.preventDefault(); openActionsModal(); }
   });
 }
 
@@ -1629,7 +1769,7 @@ initTabs();
 initLocaleToggle();
 initLogout();
 initTips();
-initActionsGear();
+initInfoBarButtons();
 renderAll();
 initCharts();
 initTrendControls();

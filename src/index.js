@@ -473,6 +473,93 @@ function handleApi(req, res, pathname, url) {
 }
 
 
+const BUILT_IN_MODELS = ['claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'];
+
+async function handleSettingsUpdate(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req, 16 * 1024);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+
+  const errors = [];
+
+  if (body.modelPrices !== undefined) {
+    if (typeof body.modelPrices !== 'object' || body.modelPrices === null || Array.isArray(body.modelPrices)) {
+      errors.push('modelPrices must be an object');
+    } else {
+      for (const builtIn of BUILT_IN_MODELS) {
+        if (!(builtIn in body.modelPrices)) {
+          errors.push(`Cannot remove built-in model: ${builtIn}`);
+        }
+      }
+      const prefixes = Object.keys(body.modelPrices);
+      if (new Set(prefixes).size !== prefixes.length) {
+        errors.push('Duplicate model prefixes');
+      }
+      for (const [prefix, prices] of Object.entries(body.modelPrices)) {
+        if (!prefix || typeof prefix !== 'string') {
+          errors.push('Model prefix must be a non-empty string');
+          continue;
+        }
+        for (const field of ['input', 'output', 'cacheRead', 'cacheCreation']) {
+          const v = prices?.[field];
+          if (v == null || typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+            errors.push(`${prefix}.${field} must be a finite number >= 0`);
+          }
+        }
+      }
+    }
+  }
+
+  if (body.fastModeMultiplier !== undefined) {
+    const fm = body.fastModeMultiplier;
+    if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
+      errors.push('fastModeMultiplier must be a finite number > 0');
+    }
+  }
+
+  const allowedKeys = ['modelPrices', 'fastModeMultiplier'];
+  const unknownKeys = Object.keys(body).filter(k => !allowedKeys.includes(k));
+  if (unknownKeys.length > 0) {
+    errors.push(`Unknown keys not allowed: ${unknownKeys.join(', ')}`);
+  }
+
+  if (errors.length > 0) {
+    sendJson(res, 400, { error: errors.join('; ') });
+    return;
+  }
+
+  try {
+    let existing = {};
+    try {
+      if (fs.existsSync(config.configPath)) {
+        existing = JSON.parse(fs.readFileSync(config.configPath, 'utf8'));
+      }
+    } catch { /* start fresh if corrupt */ }
+
+    if (body.modelPrices !== undefined) existing.modelPrices = body.modelPrices;
+    if (body.fastModeMultiplier !== undefined) existing.fastModeMultiplier = body.fastModeMultiplier;
+
+    const tmpPath = config.configPath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n', { mode: 0o600 });
+    fs.renameSync(tmpPath, config.configPath);
+
+    if (body.modelPrices !== undefined) config.modelPrices = body.modelPrices;
+    if (body.fastModeMultiplier !== undefined) config.fastModeMultiplier = body.fastModeMultiplier;
+
+    sendJson(res, 200, {
+      ok: true,
+      modelPrices: config.modelPrices,
+      fastModeMultiplier: config.fastModeMultiplier
+    });
+  } catch (err) {
+    sendJson(res, 500, { error: `Failed to save settings: ${err.message}` });
+  }
+}
+
 async function handleStatuslineIngest(req, res) {
   const remote = req.socket.remoteAddress;
   if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
@@ -588,6 +675,19 @@ export function createServer() {
         sendJson(res, result.ok ? 200 : 400, result);
         return;
       }
+    }
+
+    if (pathname === '/api/settings' && req.method === 'GET') {
+      sendJson(res, 200, {
+        modelPrices: config.modelPrices,
+        fastModeMultiplier: config.fastModeMultiplier
+      });
+      return;
+    }
+
+    if (pathname === '/api/settings' && req.method === 'PUT') {
+      await handleSettingsUpdate(req, res);
+      return;
     }
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
