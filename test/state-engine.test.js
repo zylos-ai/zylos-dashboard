@@ -920,6 +920,42 @@ test('Bash tool_detail shortens paths and strips noise', () => {
   }
 });
 
+test('Bash tool_detail prefers description over command parsing', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+  const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+    session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+    tool_input: { command: 'python3 -c "\nimport json\nprint(json.dumps({}))\n"', description: 'Check JSON output format' }
+  });
+  assert.equal(result.metadata.tool_detail, 'Check JSON output format');
+});
+
+test('Bash tool_detail falls back to command when no description', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+  const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+    session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+    tool_input: { command: 'npm test 2>&1' }
+  });
+  assert.equal(result.metadata.tool_detail, 'npm test');
+});
+
+test('Skill tool_detail shows skill name', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+  const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+    session_id: 's', tool_name: 'Skill', tool_use_id: 't',
+    tool_input: { skill: 'issue-triage', args: '84' }
+  });
+  assert.equal(result.metadata.tool_detail, 'issue-triage');
+});
+
+test('Skill tool_detail handles missing skill name', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+  const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+    session_id: 's', tool_name: 'Skill', tool_use_id: 't',
+    tool_input: {}
+  });
+  assert.equal(result.metadata.tool_detail, undefined);
+});
+
 test('c4-send.js produces friendly labels with target extraction', () => {
   const sanitizer = new Sanitizer('/home/howard/zylos');
 

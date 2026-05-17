@@ -123,7 +123,11 @@ export class Sanitizer {
         return fp ? this.sanitizePath(fp) : null;
       }
       if (toolName === 'Bash') {
+        if (toolInput.description) return toolInput.description;
         return this._summarizeBashCommand(toolInput.command);
+      }
+      if (toolName === 'Skill') {
+        return toolInput.skill || null;
       }
       if (toolName === 'Agent' || toolName === 'Task') {
         return toolInput.description || null;
