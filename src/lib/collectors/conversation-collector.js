@@ -75,12 +75,13 @@ export class ConversationCollector {
     return null;
   }
 
-  _calculateCost(usage, price) {
+  _calculateCost(usage, price, speed) {
     if (!price) return null;
-    const input = (usage.input_tokens || 0) * price.input / PER_MTOK;
-    const output = (usage.output_tokens || 0) * price.output / PER_MTOK;
-    const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead / PER_MTOK;
-    const cacheCreation = (usage.cache_creation_input_tokens || 0) * price.cacheCreation / PER_MTOK;
+    const multiplier = speed === 'fast' ? 6 : 1;
+    const input = (usage.input_tokens || 0) * price.input * multiplier / PER_MTOK;
+    const output = (usage.output_tokens || 0) * price.output * multiplier / PER_MTOK;
+    const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead * multiplier / PER_MTOK;
+    const cacheCreation = (usage.cache_creation_input_tokens || 0) * price.cacheCreation * multiplier / PER_MTOK;
     return input + output + cacheRead + cacheCreation;
   }
 
@@ -134,7 +135,8 @@ export class ConversationCollector {
       const sessionId = msg.sessionId || null;
 
       if (usage) {
-        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid);
+        const speed = usage.speed || 'standard';
+        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid, speed);
       }
 
       if (!Array.isArray(content)) continue;
@@ -198,7 +200,7 @@ export class ConversationCollector {
     return written;
   }
 
-  _ingestUsage(usage, model, sessionId, timestamp, uuid) {
+  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed) {
     const inputTokens = usage.input_tokens || 0;
     const outputTokens = usage.output_tokens || 0;
     const cacheRead = usage.cache_read_input_tokens || 0;
@@ -213,7 +215,7 @@ export class ConversationCollector {
     this.store.insertMetric({
       timestamp, runtime: 'claude', session_id: sessionId,
       metric_name: 'api_request_tokens', metric_value: totalInput,
-      dimensions: { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, uuid },
+      dimensions: { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, speed, uuid },
       source: 'jsonl_usage', confidence: 'actual'
     });
     written++;
@@ -229,12 +231,12 @@ export class ConversationCollector {
     }
 
     const price = this._resolveModelPrice(model);
-    const cost = this._calculateCost(usage, price);
+    const cost = this._calculateCost(usage, price, speed);
     if (cost != null) {
       this.store.insertMetric({
         timestamp, runtime: 'claude', session_id: sessionId,
         metric_name: 'api_request_cost', metric_value: cost,
-        dimensions: { model, uuid },
+        dimensions: { model, speed, uuid },
         source: 'jsonl_usage', confidence: 'actual'
       });
       written++;
