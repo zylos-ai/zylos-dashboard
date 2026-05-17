@@ -82,8 +82,8 @@ function makeCollector(store, tmpDir, sessionId = 'test-session-123') {
     zylosDir: tmpDir,
     homeDir: tmpDir,
     modelPrices: {
-      'claude-opus-4': { input: 15, output: 75, cacheRead: 1.50, cacheCreation: 18.75 },
-      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 3.75 }
+      'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
+      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
     }
   };
   const stateEngine = { getCurrentSessionId: () => sessionId };
@@ -118,7 +118,8 @@ test('extracts usage metrics from assistant messages', () => {
 
   const costMetrics = store.metrics.filter(m => m.metric_name === 'api_request_cost');
   assert.equal(costMetrics.length, 1);
-  const expectedCost = (100 * 15 + 50 * 75 + 5000 * 1.50 + 2000 * 18.75) / 1_000_000;
+  // (100 * 5 + 50 * 25 + 5000 * 0.50 + 2000 * 10) / 1_000_000
+  const expectedCost = (500 + 1250 + 2500 + 20000) / 1_000_000;
   assert.ok(Math.abs(costMetrics[0].metric_value - expectedCost) < 0.000001);
 
   const cacheMetrics = store.metrics.filter(m => m.metric_name === 'cache_hit_rate');
@@ -354,7 +355,7 @@ test('session file switch resets offset', () => {
     zylosDir: tmpDir,
     homeDir: tmpDir,
     modelPrices: {
-      'claude-opus-4': { input: 15, output: 75, cacheRead: 1.50, cacheCreation: 18.75 }
+      'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 }
     }
   };
 
