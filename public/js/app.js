@@ -211,7 +211,7 @@ function renderInfoBar() {
     parts.push(cv);
   }
 
-  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-gear" id="settings-btn" type="button" aria-label="Settings">⚙️</button><button class="info-bar-actions-btn" id="actions-btn" type="button">Actions</button></span>`;
+  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">Actions</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="Settings">⚙️</button></span>`;
 }
 
 // ─── Render: State ───
