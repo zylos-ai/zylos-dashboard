@@ -498,9 +498,7 @@ function renderMetrics() {
   const cvNum = Number(cv);
   const cvAbs = Number.isFinite(cvNum) ? (cvNum < 1 ? cvNum * 100 : cvNum) : 0;
   ctxBar.style.width = `${barPct(cv)}%`;
-  const ctxRatio = threshold > 0 ? cvAbs / threshold : 0;
-  const ctxColorClass = ctxRatio < 0.5 ? '' : ctxRatio <= 0.75 ? 'bar-warning' : 'bar-danger';
-  ctxBar.className = `progress-fill ${ctxColorClass}`;
+  ctxBar.className = `progress-fill ${barColor(cv)}`;
   const thresholdMarker = $('#metric-context-threshold');
   if (thresholdMarker) {
     thresholdMarker.hidden = false;
