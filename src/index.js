@@ -484,6 +484,11 @@ async function handleSettingsUpdate(req, res) {
     return;
   }
 
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    sendJson(res, 400, { error: 'Request body must be a JSON object' });
+    return;
+  }
+
   const errors = [];
 
   if (body.modelPrices !== undefined) {
