@@ -51,8 +51,24 @@ function makeMockStore() {
     db: {
       prepare(sql) {
         return {
-          get() {
+          get(param) {
             if (sql.includes('byte_offset')) return null;
+            if (sql.includes('jsonl_usage')) {
+              // Check if this uuid exists in metrics
+              if (param && typeof param === 'string') {
+                const uuidMatch = param.match(/"uuid":"([^"]+)"/);
+                if (uuidMatch) {
+                  const uuid = uuidMatch[1];
+                  const exists = metrics.find(m =>
+                    m.source === 'jsonl_usage' &&
+                    m.metric_name === 'api_request_tokens' &&
+                    m.dimensions?.uuid === uuid
+                  );
+                  return exists ? { '1': 1 } : undefined;
+                }
+              }
+              return undefined;
+            }
             return { seq: 0 };
           }
         };
@@ -93,9 +109,12 @@ test('extracts usage metrics from assistant messages', () => {
   const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
   assert.equal(tokenMetrics.length, 1);
   assert.equal(tokenMetrics[0].metric_value, 100 + 5000 + 2000); // totalInput
-  assert.deepEqual(tokenMetrics[0].dimensions, {
-    input: 100, output: 50, cache_read: 5000, cache_creation: 2000, model: 'claude-opus-4-6'
-  });
+  assert.equal(tokenMetrics[0].dimensions.input, 100);
+  assert.equal(tokenMetrics[0].dimensions.output, 50);
+  assert.equal(tokenMetrics[0].dimensions.cache_read, 5000);
+  assert.equal(tokenMetrics[0].dimensions.cache_creation, 2000);
+  assert.equal(tokenMetrics[0].dimensions.model, 'claude-opus-4-6');
+  assert.equal(tokenMetrics[0].dimensions.uuid, 'uuid-1');
 
   const costMetrics = store.metrics.filter(m => m.metric_name === 'api_request_cost');
   assert.equal(costMetrics.length, 1);
@@ -166,10 +185,11 @@ test('offset persistence prevents duplication on restart', () => {
   store2.db = {
     prepare(sql) {
       return {
-        get() {
+        get(param) {
           if (sql.includes('byte_offset')) {
             return { extra: JSON.stringify(persistedOffset.extra) };
           }
+          if (sql.includes('jsonl_usage')) return undefined;
           return { seq: 0 };
         }
       };
@@ -181,6 +201,57 @@ test('offset persistence prevents duplication on restart', () => {
 
   // No new metrics since offset was restored past existing data
   assert.equal(store2.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 0);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('uuid dedup prevents double-counting on crash recovery replay', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-replay') + '\n');
+  collector.collect();
+
+  assert.equal(store.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 1);
+
+  // Simulate crash recovery: offset NOT persisted (simulating crash before persist)
+  // Create new collector at offset 0 (as if no offset was saved)
+  const store2 = makeMockStore();
+  // Pre-seed store2's metrics with existing data (simulating DB survived the crash)
+  store2.metrics.push(...store.metrics);
+  store2.db = {
+    prepare(sql) {
+      return {
+        get(param) {
+          if (sql.includes('byte_offset')) return null; // no persisted offset (crash)
+          if (sql.includes('jsonl_usage')) {
+            // Check against pre-seeded metrics
+            if (param && typeof param === 'string') {
+              const uuidMatch = param.match(/"uuid":"([^"]+)"/);
+              if (uuidMatch) {
+                const uuid = uuidMatch[1];
+                const exists = store2.metrics.find(m =>
+                  m.source === 'jsonl_usage' &&
+                  m.metric_name === 'api_request_tokens' &&
+                  m.dimensions?.uuid === uuid
+                );
+                return exists ? { '1': 1 } : undefined;
+              }
+            }
+            return undefined;
+          }
+          return { seq: 0 };
+        }
+      };
+    }
+  };
+  const { collector: collector2 } = makeCollector(store2, tmpDir);
+  collector2.collect();
+
+  // uuid-replay should NOT be double-counted because dedup check finds it
+  const tokenMetrics = store2.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  assert.equal(tokenMetrics.length, 1); // still just 1, not 2
 
   fs.rmSync(tmpDir, { recursive: true });
 });

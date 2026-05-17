@@ -57,6 +57,15 @@ export class ConversationCollector {
     return fs.existsSync(jsonlPath) ? jsonlPath : null;
   }
 
+  _hasUsageForUuid(uuid) {
+    try {
+      const row = this.store.db.prepare(
+        "SELECT 1 FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'api_request_tokens' AND dimensions LIKE ? LIMIT 1"
+      ).get(`%"uuid":"${uuid}"%`);
+      return !!row;
+    } catch { return false; }
+  }
+
   _resolveModelPrice(model) {
     if (!model) return null;
     const prices = this.config.modelPrices || {};
@@ -99,11 +108,11 @@ export class ConversationCollector {
     const lastNewline = chunk.lastIndexOf('\n');
     if (lastNewline === -1) return 0;
     this._lastByteOffset += Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
-    this._persistOffset();
 
     const lines = chunk.slice(0, lastNewline).split('\n').filter(l => l.trim());
 
     let written = 0;
+    let usageWritten = 0;
     const now = new Date().toISOString();
 
     for (const line of lines) {
@@ -125,7 +134,7 @@ export class ConversationCollector {
       const sessionId = msg.sessionId || null;
 
       if (usage) {
-        this._ingestUsage(usage, model, sessionId, timestamp);
+        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid);
       }
 
       if (!Array.isArray(content)) continue;
@@ -175,6 +184,11 @@ export class ConversationCollector {
       }
     }
 
+    // Persist offset only AFTER all writes succeed — crash-safe: on restart,
+    // unacknowledged lines are re-read; uuid dedup in _seenUuids + dimensions
+    // prevents double-counting.
+    this._persistOffset();
+
     if (written > 0) {
       this.store.upsertSourceHealth('conversation_reader', 'collector_liveness', 'healthy', {
         last_success: now, messages_ingested: written
@@ -184,48 +198,53 @@ export class ConversationCollector {
     return written;
   }
 
-  _ingestUsage(usage, model, sessionId, timestamp) {
+  _ingestUsage(usage, model, sessionId, timestamp, uuid) {
     const inputTokens = usage.input_tokens || 0;
     const outputTokens = usage.output_tokens || 0;
     const cacheRead = usage.cache_read_input_tokens || 0;
     const cacheCreation = usage.cache_creation_input_tokens || 0;
     const totalInput = inputTokens + cacheRead + cacheCreation;
 
-    if (totalInput === 0 && outputTokens === 0) return;
+    if (totalInput === 0 && outputTokens === 0) return 0;
 
-    try {
+    if (this._hasUsageForUuid(uuid)) return 0;
+
+    let written = 0;
+    this.store.insertMetric({
+      timestamp, runtime: 'claude', session_id: sessionId,
+      metric_name: 'api_request_tokens', metric_value: totalInput,
+      dimensions: { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, uuid },
+      source: 'jsonl_usage', confidence: 'actual'
+    });
+    written++;
+
+    if (totalInput > 0) {
       this.store.insertMetric({
         timestamp, runtime: 'claude', session_id: sessionId,
-        metric_name: 'api_request_tokens', metric_value: totalInput,
-        dimensions: { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model },
+        metric_name: 'cache_hit_rate', metric_value: cacheRead / totalInput,
+        dimensions: { uuid },
         source: 'jsonl_usage', confidence: 'actual'
       });
+      written++;
+    }
 
-      if (totalInput > 0) {
-        this.store.insertMetric({
-          timestamp, runtime: 'claude', session_id: sessionId,
-          metric_name: 'cache_hit_rate', metric_value: cacheRead / totalInput,
-          source: 'jsonl_usage', confidence: 'actual'
-        });
-      }
-
-      const price = this._resolveModelPrice(model);
-      const cost = this._calculateCost(usage, price);
-      if (cost != null) {
-        this.store.insertMetric({
-          timestamp, runtime: 'claude', session_id: sessionId,
-          metric_name: 'api_request_cost', metric_value: cost,
-          dimensions: { model },
-          source: 'jsonl_usage', confidence: 'actual'
-        });
-      }
-    } catch (err) {
-      process.stderr.write(`[conversation-collector] usage ingest error: ${err.message}\n`);
+    const price = this._resolveModelPrice(model);
+    const cost = this._calculateCost(usage, price);
+    if (cost != null) {
+      this.store.insertMetric({
+        timestamp, runtime: 'claude', session_id: sessionId,
+        metric_name: 'api_request_cost', metric_value: cost,
+        dimensions: { model, uuid },
+        source: 'jsonl_usage', confidence: 'actual'
+      });
+      written++;
     }
 
     this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
       last_success: timestamp, model, tokens: totalInput + outputTokens
     });
+
+    return written;
   }
 
   start(intervalMs = 5_000) {
