@@ -1581,7 +1581,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .info-bar-actions-btn:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
 
 /* ─── Settings Modal ─── */
-.settings-price-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+.settings-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 8px; }
+.settings-price-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 480px; }
 .settings-price-table th { text-align: left; padding: 4px 6px; font-weight: 500; color: var(--text-secondary); border-bottom: 1px solid var(--border); font-size: 12px; }
 .settings-price-table td { padding: 3px 4px; }
 .settings-price-table th:last-child, .settings-price-table td:last-child { width: 28px; text-align: center; }

@@ -1285,13 +1285,23 @@ function createSettingsModal() {
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">Model Pricing (USD / MTok)</span>
+      <span class="action-group-label">Model Pricing (USD / MTok)
+        <button class="tip-btn tip-btn-inline" id="pricing-tip" type="button" aria-label="Pricing info">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <div class="tip-popover" id="pricing-popover" hidden>
+          <p><strong>Model Prefix Matching</strong> — each entry matches API model names by prefix. E.g. <code>claude-opus-4</code> matches <code>claude-opus-4-6</code>, <code>claude-opus-4-7</code>, etc.</p>
+          <p style="margin-top:4px">If a model doesn't match any prefix, token metrics are still recorded but cost is not calculated.</p>
+        </div>
+      </span>
+      <div class="settings-table-scroll">
       <table class="settings-price-table" id="settings-price-table">
         <thead>
           <tr><th>Model Prefix</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th></th></tr>
         </thead>
         <tbody id="settings-price-rows"></tbody>
       </table>
+      </div>
       <button class="action-btn action-btn-sm" id="settings-add-model" type="button">+ Add Model</button>
     </div>
     <div class="action-group">
@@ -1319,6 +1329,13 @@ function createSettingsModal() {
   overlay.querySelector('#settings-cancel').addEventListener('click', closeSettingsModal);
   overlay.querySelector('#settings-save').addEventListener('click', saveSettings);
   overlay.querySelector('#settings-add-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false));
+
+  const pricingTip = overlay.querySelector('#pricing-tip');
+  const pricingPop = overlay.querySelector('#pricing-popover');
+  if (pricingTip && pricingPop) {
+    pricingTip.addEventListener('click', (e) => { e.stopPropagation(); pricingPop.hidden = !pricingPop.hidden; });
+    document.addEventListener('click', () => { pricingPop.hidden = true; });
+  }
 
   return overlay;
 }
