@@ -170,9 +170,7 @@ function srcLabel(m) {
   const friendly = {
     statusline: 'current session',
     statusline_current_usage: 'current session',
-    otel_cost_sum: 'OpenTelemetry',
-    otel_token_usage: 'OpenTelemetry',
-    otel_span: 'OpenTelemetry',
+    jsonl_usage: 'JSONL usage',
     rollout: 'rollout',
     token_price_estimated: 'estimated',
     derived_token_estimate: 'estimated',

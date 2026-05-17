@@ -718,14 +718,14 @@ export class StateEngine {
       return {
         runtime_progress: {
           hook_events: formatEntry('hook_events'),
-          otel_events: formatEntry('otel_events'),
+          jsonl_usage: formatEntry('jsonl_usage'),
           statusline: formatEntry('statusline')
         },
         collector_liveness: {
           pm2_reader: formatEntry('pm2_reader'),
           system_sampler: formatEntry('system_sampler'),
           hook_handler: formatEntry('hook_handler'),
-          otel_reader: formatEntry('otel_reader'),
+          conversation_reader: formatEntry('conversation_reader'),
           am_heartbeat: formatEntry('am_heartbeat')
         },
         platform: {
