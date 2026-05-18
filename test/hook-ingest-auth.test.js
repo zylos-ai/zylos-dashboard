@@ -39,7 +39,7 @@ function runHookIngest(zylosDir, stdin) {
   });
 }
 
-function startServer(port) {
+function startServer() {
   return new Promise((resolve) => {
     const requests = [];
     const server = createServer((req, res) => {
@@ -51,18 +51,18 @@ function startServer(port) {
         res.end('{"ok":true}');
       });
     });
-    server.listen(port, '127.0.0.1', () => resolve({ server, requests }));
+    server.listen(0, '127.0.0.1', () => {
+      resolve({ server, requests, port: server.address().port });
+    });
   });
 }
 
 test('hook-ingest.cjs — Authorization header', async (t) => {
-  const testPort = 13470 + Math.floor(Math.random() * 1000);
-
   await t.test('sends Authorization header when ingestToken is set', async () => {
+    const { server, requests, port } = await startServer();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ingest-test-'));
-    setupTmpConfig(tmpDir, { port: testPort, ingestToken: 'secret123' });
+    setupTmpConfig(tmpDir, { port, ingestToken: 'secret123' });
 
-    const { server, requests } = await startServer(testPort);
     try {
       await runHookIngest(tmpDir, MOCK_EVENT);
       assert.equal(requests.length, 1, 'must receive exactly one request');
@@ -74,11 +74,10 @@ test('hook-ingest.cjs — Authorization header', async (t) => {
   });
 
   await t.test('does not send Authorization header when ingestToken is null', async () => {
-    const port2 = testPort + 1;
+    const { server, requests, port } = await startServer();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ingest-test-'));
-    setupTmpConfig(tmpDir, { port: port2, ingestToken: null });
+    setupTmpConfig(tmpDir, { port, ingestToken: null });
 
-    const { server, requests } = await startServer(port2);
     try {
       await runHookIngest(tmpDir, MOCK_EVENT);
       assert.equal(requests.length, 1, 'must receive exactly one request');

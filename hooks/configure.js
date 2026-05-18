@@ -10,19 +10,15 @@ const COMPONENT_PREFIX = 'DASHBOARD_';
 const DEFAULT_CONFIG = {
   port: 3470,
   host: '127.0.0.1',
-  theme: 'default',
-  refreshMs: 5000,
   auth: {
-    enabled: false,
-    password: null,
-    allowUrlTokenOnLocalhost: false
+    enabled: true,
+    password: null
   }
 };
 
 const KEY_MAP = {
   port: 'port',
   host: 'host',
-  theme: 'theme',
   ingest_token: 'ingestToken',
   spool_max_bytes: 'spoolMaxBytes',
   auth_password: ['auth', 'password']
