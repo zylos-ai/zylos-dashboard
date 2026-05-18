@@ -31,6 +31,7 @@ function loadComponentConfig() {
 
 const cfg = loadComponentConfig();
 const DASHBOARD_PORT = cfg.port || 3470;
+const INGEST_TOKEN = cfg.ingestToken || null;
 const SPOOL_MAX_BYTES = Number(cfg.spoolMaxBytes) || 10 * 1024 * 1024;
 
 async function main() {
@@ -97,9 +98,12 @@ async function postToServer(body) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 200);
 
+    const headers = { 'content-type': 'application/json' };
+    if (INGEST_TOKEN) headers.authorization = `Bearer ${INGEST_TOKEN}`;
+
     const resp = await fetch(`http://127.0.0.1:${DASHBOARD_PORT}/api/ingest`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body,
       signal: controller.signal
     });

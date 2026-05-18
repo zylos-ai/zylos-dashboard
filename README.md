@@ -49,16 +49,15 @@ All config lives in `~/zylos/components/dashboard/config.json`.
 |-------|---------|-------------|
 | `port` | `3470` | Server port |
 | `host` | `127.0.0.1` | Bind address |
-| `ingestToken` | `null` | Bearer token for ingest API (optional) |
-| `auth.enabled` | `false` | Enable password authentication |
-| `auth.password` | `null` | Scrypt-hashed password (set via `zylos add` configure) |
-| `refreshMs` | `5000` | Data refresh interval |
+| `ingestToken` | `null` | Bearer token for ingest API (optional defense-in-depth) |
+| `auth.enabled` | `true` | Password authentication (enabled by default) |
+| `auth.password` | auto-generated | Scrypt-hashed password |
 
-To set a password during install:
+On first install, a random password is generated and printed to the console:
 
-```bash
-zylos add dashboard
-# When prompted for DASHBOARD_AUTH_PASSWORD, enter your password
+```
+Dashboard password: <hex string>
+Save this — it won't be shown again.
 ```
 
 ## Access

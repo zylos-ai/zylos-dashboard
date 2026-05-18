@@ -1,0 +1,91 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+const HOOK_SCRIPT = path.resolve('src/lib/hook-ingest.cjs');
+
+const MOCK_EVENT = JSON.stringify({
+  hook_event_name: 'PostToolUse',
+  session_id: 'test-session',
+  tool_name: 'Bash',
+  tool_input: { command: 'echo hello' }
+});
+
+function setupTmpConfig(tmpDir, config) {
+  const dataDir = path.join(tmpDir, 'components', 'dashboard');
+  const spoolDir = path.join(dataDir, 'spool');
+  fs.mkdirSync(spoolDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify(config, null, 2));
+  return tmpDir;
+}
+
+function runHookIngest(zylosDir, stdin) {
+  return new Promise((resolve) => {
+    const child = spawn('node', [HOOK_SCRIPT], {
+      env: { ...process.env, ZYLOS_DIR: zylosDir },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+
+function startServer(port) {
+  return new Promise((resolve) => {
+    const requests = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        requests.push({ headers: { ...req.headers }, body });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    server.listen(port, '127.0.0.1', () => resolve({ server, requests }));
+  });
+}
+
+test('hook-ingest.cjs — Authorization header', async (t) => {
+  const testPort = 13470 + Math.floor(Math.random() * 1000);
+
+  await t.test('sends Authorization header when ingestToken is set', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ingest-test-'));
+    setupTmpConfig(tmpDir, { port: testPort, ingestToken: 'secret123' });
+
+    const { server, requests } = await startServer(testPort);
+    try {
+      await runHookIngest(tmpDir, MOCK_EVENT);
+      assert.equal(requests.length, 1, 'must receive exactly one request');
+      assert.equal(requests[0].headers.authorization, 'Bearer secret123');
+    } finally {
+      server.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('does not send Authorization header when ingestToken is null', async () => {
+    const port2 = testPort + 1;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ingest-test-'));
+    setupTmpConfig(tmpDir, { port: port2, ingestToken: null });
+
+    const { server, requests } = await startServer(port2);
+    try {
+      await runHookIngest(tmpDir, MOCK_EVENT);
+      assert.equal(requests.length, 1, 'must receive exactly one request');
+      assert.equal(requests[0].headers.authorization, undefined, 'must not have Authorization header');
+    } finally {
+      server.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

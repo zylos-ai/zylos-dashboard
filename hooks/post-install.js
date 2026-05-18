@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hashPassword } from '../src/lib/auth.js';
 import { HookInstaller } from '../src/lib/hook-installer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -14,24 +16,18 @@ const configPath = path.join(dataDir, 'config.json');
 fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
 
 if (!fs.existsSync(configPath)) {
+  const plaintext = crypto.randomBytes(16).toString('hex');
   const config = {
     port: 3470,
     host: '127.0.0.1',
-    theme: 'default',
-    refreshMs: 5000,
     ingestToken: null,
     auth: {
-      enabled: false,
-      password: null
-    },
-    retention: {
-      metrics: 'full',
-      logs: 'full',
-      tracesSampleRate: 0.1,
-      archiveAfterDays: 30
+      enabled: true,
+      password: hashPassword(plaintext)
     }
   };
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  console.log(`\n  Dashboard password: ${plaintext}\n  Save this — it won't be shown again.\n`);
 }
 
 console.log(`dashboard data dir ready: ${dataDir}`);

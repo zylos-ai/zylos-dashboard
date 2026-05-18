@@ -17,8 +17,6 @@ export function loadConfig() {
   const defaults = {
     port: 3470,
     host: '127.0.0.1',
-    theme: 'default',
-    refreshMs: 5000,
     zylosDir,
     dataDir,
     auth: {
@@ -48,7 +46,6 @@ export function loadConfig() {
     ...loaded,
     port: Number(loaded.port || defaults.port),
     host: loaded.host || defaults.host,
-    theme: loaded.theme || defaults.theme,
     zylosDir: loaded.zylosDir || defaults.zylosDir,
     dataDir,
     auth: {
