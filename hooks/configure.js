@@ -9,11 +9,7 @@ const COMPONENT_PREFIX = 'DASHBOARD_';
 
 const DEFAULT_CONFIG = {
   port: 3470,
-  host: '127.0.0.1',
-  auth: {
-    enabled: true,
-    password: null
-  }
+  host: '127.0.0.1'
 };
 
 const KEY_MAP = {
