@@ -1,3 +1,4 @@
+import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
@@ -43,19 +44,6 @@ function initTheme(theme) {
 }
 
 // ─── Formatting ───
-function pct(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return `${Math.round(n < 1 ? n * 100 : n)}%`;
-}
-
-function resolveCpuDisplay(rawVal, lastGood) {
-  const n = Number(rawVal);
-  if (Number.isFinite(n)) return { display: pct(n), lastGood: n };
-  if (lastGood !== null && lastGood !== undefined) return { display: pct(lastGood), lastGood };
-  return { display: '--', lastGood: null };
-}
-
 function barPct(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;

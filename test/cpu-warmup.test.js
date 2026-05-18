@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SystemCollector } from '../src/lib/collectors/system-collector.js';
+import { resolveCpuDisplay } from '../public/js/gauge-utils.js';
 
 function makeStubStore() {
   return {
@@ -26,46 +27,25 @@ test('SystemCollector — warmup produces cpu_pct', async () => {
 });
 
 test('resolveCpuDisplay — valid value updates lastGood', () => {
-  const { resolveCpuDisplay } = makeCpuResolver();
   const result = resolveCpuDisplay(42, null);
   assert.equal(result.display, '42%');
   assert.equal(result.lastGood, 42);
 });
 
 test('resolveCpuDisplay — undefined keeps lastGood', () => {
-  const { resolveCpuDisplay } = makeCpuResolver();
   const result = resolveCpuDisplay(undefined, 42);
   assert.equal(result.display, '42%');
   assert.equal(result.lastGood, 42);
 });
 
 test('resolveCpuDisplay — NaN keeps lastGood', () => {
-  const { resolveCpuDisplay } = makeCpuResolver();
   const result = resolveCpuDisplay(NaN, 42);
   assert.equal(result.display, '42%');
   assert.equal(result.lastGood, 42);
 });
 
 test('resolveCpuDisplay — no history shows --', () => {
-  const { resolveCpuDisplay } = makeCpuResolver();
   const result = resolveCpuDisplay(undefined, null);
   assert.equal(result.display, '--');
   assert.equal(result.lastGood, null);
 });
-
-function makeCpuResolver() {
-  function pct(v) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return '--';
-    return `${Math.round(n < 1 ? n * 100 : n)}%`;
-  }
-
-  function resolveCpuDisplay(rawVal, lastGood) {
-    const n = Number(rawVal);
-    if (Number.isFinite(n)) return { display: pct(n), lastGood: n };
-    if (lastGood !== null && lastGood !== undefined) return { display: pct(lastGood), lastGood };
-    return { display: '--', lastGood: null };
-  }
-
-  return { resolveCpuDisplay };
-}
