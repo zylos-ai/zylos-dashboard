@@ -1,5 +1,21 @@
 import os from 'node:os';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+function macosFreeMem() {
+  try {
+    const out = execFileSync('vm_stat', { encoding: 'utf8', timeout: 3000 });
+    const pageSizeMatch = out.match(/page size of (\d+) bytes/);
+    const pageSize = pageSizeMatch ? Number(pageSizeMatch[1]) : 16384;
+    const get = (label) => {
+      const m = out.match(new RegExp(`^${label}:\\s+(\\d+)`, 'm'));
+      return m ? Number(m[1]) * pageSize : 0;
+    };
+    return get('Pages free') + get('Pages inactive') + get('Pages purgeable');
+  } catch {
+    return os.freemem();
+  }
+}
 
 export class SystemCollector {
   constructor(store, config) {
@@ -49,7 +65,8 @@ export class SystemCollector {
 
     try {
       data.mem_total_bytes = os.totalmem();
-      data.mem_used_bytes = data.mem_total_bytes - os.freemem();
+      const freeMem = process.platform === 'darwin' ? macosFreeMem() : os.freemem();
+      data.mem_used_bytes = data.mem_total_bytes - freeMem;
 
       this.store.insertMetric({
         timestamp: now, runtime,
