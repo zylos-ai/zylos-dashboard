@@ -2,16 +2,20 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
+export function parseVmStatFreeMem(vmStatOutput) {
+  const pageSizeMatch = vmStatOutput.match(/page size of (\d+) bytes/);
+  const pageSize = pageSizeMatch ? Number(pageSizeMatch[1]) : 16384;
+  const get = (label) => {
+    const m = vmStatOutput.match(new RegExp(`^${label}:\\s+(\\d+)`, 'm'));
+    return m ? Number(m[1]) * pageSize : 0;
+  };
+  return get('Pages free') + get('Pages speculative') + get('Pages inactive') + get('Pages purgeable');
+}
+
 function macosFreeMem() {
   try {
     const out = execFileSync('vm_stat', { encoding: 'utf8', timeout: 3000 });
-    const pageSizeMatch = out.match(/page size of (\d+) bytes/);
-    const pageSize = pageSizeMatch ? Number(pageSizeMatch[1]) : 16384;
-    const get = (label) => {
-      const m = out.match(new RegExp(`^${label}:\\s+(\\d+)`, 'm'));
-      return m ? Number(m[1]) * pageSize : 0;
-    };
-    return get('Pages free') + get('Pages inactive') + get('Pages purgeable');
+    return parseVmStatFreeMem(out);
   } catch {
     return os.freemem();
   }
