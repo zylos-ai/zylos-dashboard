@@ -16,18 +16,25 @@ CPU gauge displays '--' for the first ~30s after dashboard startup because CPU p
 ## Development Checklist
 
 - [ ] **system-collector.js**: Add `async warmup()` method — calls `collect()`, waits 200ms, calls `collect()` again. Second call produces `cpu_pct` since `_prevCpuTimes` is now set.
-- [ ] **index.js**: Replace `systemCollector.collect()` in startup with `systemCollector.warmup()`
-- [ ] **public/js/app.js**: Track `state.lastCpuPct`. On CPU render, only update display when value is finite; keep previous value otherwise. Show '--' only when no historical value exists.
+- [ ] **index.js**: Replace `systemCollector.collect()` in startup with `await systemCollector.warmup()`
+- [ ] **public/js/app.js**: Extract CPU display resolution to pure function `resolveCpuDisplay(rawVal, lastGood)` — returns `{ display, lastGood }`. Use `state.lastCpuPct` to track. Only update display when value is finite; keep previous value otherwise. Show '--' only when no historical value exists.
 
 ## Test Checklist
 
 - [ ] Unit: `SystemCollector.warmup()` produces `cpu_pct` in cache after completion
-- [ ] Unit: `SystemCollector.collect()` single call still has no `cpu_pct` (existing behavior, regression guard)
-- [ ] Manual: restart dashboard, load page immediately — CPU gauge shows a number, not '--'
+- [ ] Unit: `SystemCollector.collect()` single call still has no `cpu_pct` (regression guard)
+- [ ] Unit: `resolveCpuDisplay(42, null)` → `{ display: '42%', lastGood: 42 }`
+- [ ] Unit: `resolveCpuDisplay(undefined, 42)` → `{ display: '42%', lastGood: 42 }` (keeps last-good)
+- [ ] Unit: `resolveCpuDisplay(NaN, 42)` → `{ display: '42%', lastGood: 42 }` (keeps last-good)
+- [ ] Unit: `resolveCpuDisplay(undefined, null)` → `{ display: '--', lastGood: null }` (no history)
+- [ ] Manual: restart dashboard, immediately `curl /api/system` — response contains finite `cpu_pct`
+- [ ] Manual: restart dashboard, load page immediately — CPU gauge shows `N%` not '--'
 - [ ] `npm test` passes
 
 ## Acceptance Checklist
 
-- [ ] CPU gauge shows a valid percentage immediately after dashboard restart (browser screenshot)
+- [ ] Dashboard restart → immediately open page: CPU text matches `[0-9]+%`, not '--'
+- [ ] `/api/system` initial response contains finite numeric `cpu_pct`
 - [ ] Memory and Disk gauges still work correctly (no regression)
+- [ ] When a subsequent system payload lacks `cpu_pct`, CPU gauge retains last valid percentage
 - [ ] No regressions: `npm test` passes
