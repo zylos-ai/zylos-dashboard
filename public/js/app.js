@@ -26,7 +26,8 @@ const state = {
   timer: null,
   pollTimer: null,
   eventSource: null,
-  charts: {}
+  charts: {},
+  lastCpuPct: null
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -46,6 +47,13 @@ function pct(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
   return `${Math.round(n < 1 ? n * 100 : n)}%`;
+}
+
+function resolveCpuDisplay(rawVal, lastGood) {
+  const n = Number(rawVal);
+  if (Number.isFinite(n)) return { display: pct(n), lastGood: n };
+  if (lastGood !== null && lastGood !== undefined) return { display: pct(lastGood), lastGood };
+  return { display: '--', lastGood: null };
 }
 
 function barPct(v) {
@@ -734,10 +742,14 @@ function renderHealth() {
     }
   }
 
-  // CPU
-  const cpuPct = Number(cpuVal);
-  $('#system-cpu').textContent = pct(cpuVal);
-  if (Number.isFinite(cpuPct)) setRing('cpu-ring', cpuPct < 1 ? cpuPct * 100 : cpuPct);
+  // CPU — retain last valid value when data is transiently missing
+  const cpuResolved = resolveCpuDisplay(cpuVal, state.lastCpuPct);
+  state.lastCpuPct = cpuResolved.lastGood;
+  $('#system-cpu').textContent = cpuResolved.display;
+  if (cpuResolved.lastGood !== null) {
+    const ringVal = cpuResolved.lastGood < 1 ? cpuResolved.lastGood * 100 : cpuResolved.lastGood;
+    setRing('cpu-ring', ringVal);
+  }
 
   // Memory — ring shows %, detail shows used/total
   const memDetail = $('#mem-detail');

@@ -178,8 +178,8 @@ async function startupSequence() {
   try { await pm2Collector.collect(); } catch (err) {
     process.stderr.write(`[startup] PM2 collector initial run failed: ${err.message}\n`);
   }
-  try { await systemCollector.collect(); } catch (err) {
-    process.stderr.write(`[startup] System collector initial run failed: ${err.message}\n`);
+  try { await systemCollector.warmup(); } catch (err) {
+    process.stderr.write(`[startup] System collector warmup failed: ${err.message}\n`);
   }
   if (statuslineCollector) {
     try { await statuslineCollector.collect(); } catch (err) {

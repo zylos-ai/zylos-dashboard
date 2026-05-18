@@ -105,6 +105,12 @@ export class SystemCollector {
     if (this._onUpdate) this._onUpdate(this._cache);
   }
 
+  async warmup() {
+    await this.collect();
+    await new Promise((r) => setTimeout(r, 200));
+    await this.collect();
+  }
+
   getLatestSystemData() {
     return this._cache;
   }
