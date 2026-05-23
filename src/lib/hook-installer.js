@@ -116,8 +116,9 @@ export class HookInstaller {
   }
 
   // --- Codex ---
-  // Codex hooks.json uses the same nested format as Claude settings.json hooks:
-  // { hooks: { EventName: [{ matcher, hooks: [{ type, command, timeout, async }] }] } }
+  // Codex hooks.json uses the same nested format as Claude settings.json hooks.
+  // Codex 0.130 skips command hooks marked async, so Dashboard hooks stay sync
+  // and rely on hook-ingest.cjs to return quickly or spool on failure.
 
   _codexPath() {
     return path.join(os.homedir(), '.codex', 'hooks.json');
@@ -227,10 +228,10 @@ export class HookInstaller {
       if (existingGroup) {
         for (const h of existingGroup.hooks) {
           if (this._isOwn(h.command)) {
-            const needsUpdate = h.timeout !== 5 || h.async !== true || h.command !== cmd;
+            const needsUpdate = h.timeout !== 5 || h.async !== undefined || h.command !== cmd;
             if (needsUpdate) {
               h.timeout = 5;
-              h.async = true;
+              delete h.async;
               h.command = cmd;
               added++;
             }
@@ -240,7 +241,7 @@ export class HookInstaller {
       }
 
       const entry = {
-        hooks: [{ type: 'command', command: cmd, timeout: 5, async: true }]
+        hooks: [{ type: 'command', command: cmd, timeout: 5 }]
       };
       if (TOOL_EVENTS.has(event)) entry.matcher = '';
       config.hooks[event].push(entry);

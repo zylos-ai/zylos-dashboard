@@ -167,12 +167,12 @@ test('HookInstaller — Codex', async (t) => {
     assert.equal(config.hooks.PermissionRequest[0].matcher, undefined);
   });
 
-  await t.test('hooks are registered as async with type and short timeout', () => {
+  await t.test('hooks are registered as sync commands with type and short timeout', () => {
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       const hook = config.hooks[event][0].hooks[0];
       assert.equal(hook.type, 'command', `${event} hook should have type=command`);
-      assert.equal(hook.async, true, `${event} hook should be async`);
+      assert.equal(hook.async, undefined, `${event} hook should not set async because Codex skips async hooks`);
       assert.equal(hook.timeout, 5, `${event} hook timeout should be 5`);
     }
   });
@@ -201,7 +201,7 @@ test('HookInstaller — Codex', async (t) => {
     assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
   });
 
-  await t.test('upgrades existing sync hooks to async in-place', () => {
+  await t.test('removes async from existing hooks in-place', () => {
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       if (!config.hooks[event]) continue;
@@ -209,7 +209,7 @@ test('HookInstaller — Codex', async (t) => {
         for (const h of group.hooks || []) {
           if (installer._isOwn(h.command)) {
             h.timeout = 2000;
-            delete h.async;
+            h.async = true;
           }
         }
       }
@@ -223,7 +223,7 @@ test('HookInstaller — Codex', async (t) => {
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       const group = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
       const h = group.hooks.find(h => installer._isOwn(h.command));
-      assert.equal(h.async, true, `${event} should be async after upgrade`);
+      assert.equal(h.async, undefined, `${event} should not set async after upgrade`);
       assert.equal(h.timeout, 5, `${event} timeout should be 5 after upgrade`);
     }
   });
@@ -265,7 +265,7 @@ test('HookInstaller — Codex flat-array migration', async (t) => {
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
 
-  await t.test('migrates old flat dashboard hooks to nested async/timeout=5', () => {
+  await t.test('migrates old flat dashboard hooks to nested sync/timeout=5', () => {
     const oldFlat = [
       { event: 'PreToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
       { event: 'PostToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
@@ -289,7 +289,7 @@ test('HookInstaller — Codex flat-array migration', async (t) => {
       assert.ok(group, `${event} should have a dashboard hook group`);
       const h = group.hooks.find(h => installer._isOwn(h.command));
       assert.equal(h.type, 'command', `${event} should have type=command`);
-      assert.equal(h.async, true, `${event} should be async after migration`);
+      assert.equal(h.async, undefined, `${event} should not set async after migration`);
       assert.equal(h.timeout, 5, `${event} timeout should be 5 after migration`);
     }
   });
