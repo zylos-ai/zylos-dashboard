@@ -173,6 +173,9 @@ if (conversationCollector) {
   conversationCollector._stateEngine = stateEngine;
   conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
 }
+if (codexRolloutCollector) {
+  codexRolloutCollector._onEvent = (event) => stateEngine.onEvent(event);
+}
 
 // 8. Metric resolver
 const metricResolver = new MetricResolver(store, collectors, config, { stateEngine });

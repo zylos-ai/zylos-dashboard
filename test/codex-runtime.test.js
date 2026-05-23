@@ -225,6 +225,48 @@ test('CodexRolloutCollector computes cost from default Codex runtime prices', ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector ingests assistant output text into timeline', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const assistantLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'message',
+      role: 'assistant',
+      phase: 'commentary',
+      content: [{ type: 'output_text', text: 'I checked the code and found the missing path.' }]
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${assistantLine}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  let stateEvent = null;
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  collector._onEvent = (event) => { stateEvent = event; };
+
+  assert.equal(collector.collect(), 1);
+
+  const events = store.queryEvents({ types: ['assistant_message'] });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].runtime, 'codex');
+  assert.equal(events[0].event_type, 'assistant_message');
+  assert.equal(events[0].category, 'assistant');
+  assert.equal(events[0].summary, 'I checked the code and found the missing path.');
+  assert.equal(events[0].metadata.phase, 'commentary');
+  assert.equal(stateEvent.summary, events[0].summary);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector computes cost from Codex priority prices when fast tier is recorded', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');

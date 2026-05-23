@@ -10,6 +10,7 @@ export class CodexRolloutCollector {
     this.config = config;
     this._timer = null;
     this._metadataByPath = new Map();
+    this._onEvent = null;
   }
 
   collect() {
@@ -130,6 +131,9 @@ export class CodexRolloutCollector {
       sessionMeta.model = payload.model;
       sessionMeta.serviceTier = normalizeServiceTier(payload.service_tier ?? payload.serviceTier);
       return 0;
+    }
+    if (event.type === 'response_item') {
+      return this._ingestResponseItem(payload, timestampForEvent(event), mapping);
     }
     if (event.type !== 'event_msg' || !payload.type) return 0;
 
@@ -290,7 +294,10 @@ export class CodexRolloutCollector {
   }
 
   _ingestResponseItem(payload, timestamp, mapping) {
-    const item = payload.item || payload.response_item || {};
+    const item = payload.item || payload.response_item || payload || {};
+    if (item.type === 'message' && item.role === 'assistant') {
+      return this._ingestAssistantMessage(item, payload, timestamp, mapping);
+    }
     if (item.type !== 'function_call' && item.type !== 'function_call_output') return 0;
     const name = item.name || payload.name || null;
     const callId = item.call_id || payload.call_id || null;
@@ -310,6 +317,49 @@ export class CodexRolloutCollector {
       confidence: 'actual'
     });
     return 1;
+  }
+
+  _ingestAssistantMessage(item, payload, timestamp, mapping) {
+    const textBlocks = Array.isArray(item.content)
+      ? item.content
+        .filter(c => c.type === 'output_text' && c.text?.trim())
+        .map(c => c.text.trim())
+      : [];
+    if (textBlocks.length === 0) return 0;
+
+    const text = textBlocks.join('\n');
+    const event = {
+      id: crypto.randomUUID(),
+      ingest_id: this._assistantMessageIngestId(mapping.session_id, timestamp, text),
+      timestamp,
+      runtime: 'codex',
+      session_id: mapping.session_id,
+      event_type: 'assistant_message',
+      category: 'assistant',
+      summary: text.length > 500 ? text.slice(0, 497) + '...' : text,
+      duration_ms: null,
+      metadata: {
+        role: item.role,
+        phase: payload.phase || item.phase || null,
+        content_types: [...new Set(item.content.map(c => c.type).filter(Boolean))]
+      },
+      source: 'rollout',
+      confidence: 'actual'
+    };
+
+    const result = this.store.insertEvent(event);
+    if (result?.inserted && this._onEvent) {
+      this._onEvent(event);
+    }
+    return result?.inserted ? 1 : 0;
+  }
+
+  _assistantMessageIngestId(sessionId, timestamp, text) {
+    const hash = crypto.createHash('sha256')
+      .update(`${sessionId || 'unknown'}\n${timestamp || ''}\n${text}`)
+      .digest('hex')
+      .slice(0, 24);
+    return `codex-assistant-${sessionId || 'unknown'}-${hash}`;
   }
 
   _resolveModelPrice(model, serviceTier = 'standard') {
@@ -386,6 +436,10 @@ export class CodexRolloutCollector {
 function numberOrNull(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function timestampForEvent(event) {
+  return event.timestamp || event.payload?.timestamp || new Date().toISOString();
 }
 
 function normalizeUsage(usage) {
