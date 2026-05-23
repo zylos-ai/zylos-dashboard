@@ -772,6 +772,7 @@ function fmtTime(ts) {
 
 function timelineDotType(eventType) {
   if (eventType === 'session_start' || eventType === 'session_end') return 'session';
+  if (eventType === 'user_message' || eventType === 'user_prompt_submit') return 'prompt';
   if (eventType === 'stop' || eventType === 'assistant_message') return 'assistant';
   if (eventType === 'permission_request') return 'permission';
   if (eventType === 'post_compact') return 'compact';

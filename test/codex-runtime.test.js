@@ -267,6 +267,94 @@ test('CodexRolloutCollector ingests assistant output text into timeline', () => 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector ingests user message text into timeline', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const userLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Please check the dashboard timeline.' }]
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${userLine}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  let stateEvent = null;
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  collector._onEvent = (event) => { stateEvent = event; };
+
+  assert.equal(collector.collect(), 1);
+
+  const events = store.queryEvents({ types: ['user_message'] });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].runtime, 'codex');
+  assert.equal(events[0].event_type, 'user_message');
+  assert.equal(events[0].summary, 'Please check the dashboard timeline.');
+  assert.equal(stateEvent.summary, events[0].summary);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector uses human-friendly summaries for shell and patch calls', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const shellLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      call_id: 'call-shell',
+      arguments: JSON.stringify({ cmd: 'npm test', workdir: '/tmp/project' })
+    }
+  });
+  const shellOutputLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.000Z',
+    payload: { type: 'function_call_output', call_id: 'call-shell', output: 'ok' }
+  });
+  const patchLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.000Z',
+    payload: {
+      type: 'custom_tool_call',
+      name: 'apply_patch',
+      call_id: 'call-patch',
+      input: '*** Begin Patch\n*** End Patch\n'
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 3);
+
+  const events = store.queryEvents({ limit: 10, order: 'asc' });
+  assert.deepEqual(events.map(e => e.summary), ['Run verification', 'Run verification', 'Edit files']);
+  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call']);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector computes cost from Codex priority prices when fast tier is recorded', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');

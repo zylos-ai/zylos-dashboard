@@ -224,6 +224,19 @@ export class StateEngine {
         this._clearPossiblyStuck();
         break;
 
+      case 'user_message':
+        this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
+        if (event.session_id) this._state.mainSessionId = event.session_id;
+        this._state.lastProgressAt = now;
+        this._state.lastAssistantMessage = null;
+        this._state.lastPrompt = {
+          source: event.metadata?.source || null,
+          summary: event.summary || 'User message',
+          timestamp: event.timestamp
+        };
+        this._clearPossiblyStuck();
+        break;
+
       case 'stop':
         if (event.session_id) {
           for (const [id, tool] of this._state.runningTools) {

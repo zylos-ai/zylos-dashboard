@@ -10,6 +10,7 @@ export class CodexRolloutCollector {
     this.config = config;
     this._timer = null;
     this._metadataByPath = new Map();
+    this._toolSummaryByCallId = new Map();
     this._onEvent = null;
   }
 
@@ -295,48 +296,56 @@ export class CodexRolloutCollector {
 
   _ingestResponseItem(payload, timestamp, mapping) {
     const item = payload.item || payload.response_item || payload || {};
-    if (item.type === 'message' && item.role === 'assistant') {
-      return this._ingestAssistantMessage(item, payload, timestamp, mapping);
+    if (item.type === 'message' && (item.role === 'assistant' || item.role === 'user')) {
+      return this._ingestMessage(item, payload, timestamp, mapping);
     }
-    if (item.type !== 'function_call' && item.type !== 'function_call_output') return 0;
+    if (!['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(item.type)) return 0;
     const name = item.name || payload.name || null;
     const callId = item.call_id || payload.call_id || null;
     if (!name && !callId) return 0;
+    const isOutput = item.type === 'function_call_output' || item.type === 'custom_tool_call_output';
+    const summary = isOutput
+      ? this._toolSummaryByCallId.get(callId) || 'Tool completed'
+      : this._summarizeToolCall(name, item.arguments || item.input || payload.arguments || payload.input);
+    if (callId && !isOutput) this._toolSummaryByCallId.set(callId, summary);
     this.store.insertEvent({
       id: crypto.randomUUID(),
       ingest_id: `codex-rollout-${mapping.session_id || 'unknown'}-${callId || crypto.randomUUID()}-${item.type}`,
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
-      event_type: item.type === 'function_call' ? 'tool_call' : 'tool_result',
+      event_type: isOutput ? 'tool_result' : 'tool_call',
       category: 'tool',
-      summary: name || 'function call',
+      summary,
       duration_ms: null,
-      metadata: { tool_name: name, call_id: callId, source_event: 'response_item' },
+      metadata: { tool_name: name, call_id: callId, source_event: 'response_item', raw_type: item.type },
       source: 'rollout',
       confidence: 'actual'
     });
     return 1;
   }
 
-  _ingestAssistantMessage(item, payload, timestamp, mapping) {
+  _ingestMessage(item, payload, timestamp, mapping) {
+    const textType = item.role === 'assistant' ? 'output_text' : 'input_text';
     const textBlocks = Array.isArray(item.content)
       ? item.content
-        .filter(c => c.type === 'output_text' && c.text?.trim())
+        .filter(c => c.type === textType && c.text?.trim())
         .map(c => c.text.trim())
       : [];
     if (textBlocks.length === 0) return 0;
 
     const text = textBlocks.join('\n');
+    const summary = redactCredentials(text);
+    const eventType = item.role === 'assistant' ? 'assistant_message' : 'user_message';
     const event = {
       id: crypto.randomUUID(),
-      ingest_id: this._assistantMessageIngestId(mapping.session_id, timestamp, text),
+      ingest_id: this._messageIngestId(item.role, mapping.session_id, timestamp, summary),
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
-      event_type: 'assistant_message',
-      category: 'assistant',
-      summary: text.length > 500 ? text.slice(0, 497) + '...' : text,
+      event_type: eventType,
+      category: item.role === 'assistant' ? 'assistant' : 'turn',
+      summary: summary.length > 2_000 ? summary.slice(0, 1_997) + '...' : summary,
       duration_ms: null,
       metadata: {
         role: item.role,
@@ -354,12 +363,22 @@ export class CodexRolloutCollector {
     return result?.inserted ? 1 : 0;
   }
 
-  _assistantMessageIngestId(sessionId, timestamp, text) {
+  _messageIngestId(role, sessionId, timestamp, text) {
     const hash = crypto.createHash('sha256')
       .update(`${sessionId || 'unknown'}\n${timestamp || ''}\n${text}`)
       .digest('hex')
       .slice(0, 24);
-    return `codex-assistant-${sessionId || 'unknown'}-${hash}`;
+    return `codex-${role || 'message'}-${sessionId || 'unknown'}-${hash}`;
+  }
+
+  _summarizeToolCall(name, args) {
+    if (!name) return 'Tool call';
+    if (name === 'apply_patch') return 'Edit files';
+    if (name === 'exec_command' || name === 'functions.exec_command') {
+      const cmd = parseToolArgs(args)?.cmd || '';
+      return summarizeShellCommand(cmd);
+    }
+    return name.replace(/^functions\./, '');
   }
 
   _resolveModelPrice(model, serviceTier = 'standard') {
@@ -450,4 +469,52 @@ function normalizeUsage(usage) {
     cache_creation: numberOrNull(usage.cache_creation_input_tokens) || 0,
     reasoning: numberOrNull(usage.reasoning_output_tokens ?? usage.reasoning_tokens) || 0
   };
+}
+
+function parseToolArgs(args) {
+  if (!args) return {};
+  if (typeof args === 'object') return args;
+  if (typeof args !== 'string') return {};
+  try {
+    return JSON.parse(args);
+  } catch {
+    return {};
+  }
+}
+
+function summarizeShellCommand(cmd) {
+  if (!cmd || typeof cmd !== 'string') return 'Run shell command';
+  const line = firstCommandLine(cmd);
+  if (/^(npm|pnpm|yarn)\s+(test|run\s+(test|check|lint|smoke|ci))\b/.test(line) ||
+      /^node\s+--test\b/.test(line) ||
+      /^go\s+test\b/.test(line) ||
+      /^make\s+(test|ci|check|smoke)\b/.test(line)) {
+    return 'Run verification';
+  }
+  if (/^git\s+(status|log|show|branch|diff)\b/.test(line)) return 'Inspect git state';
+  if (/^git\s+(push|commit|merge|rebase|fetch|pull)\b/.test(line)) return 'Update git branch';
+  if (/^(rg|grep|find|ls|sed|cat|nl|wc)\b/.test(line)) return 'Inspect files';
+  if (/^pm2\s+(restart|reload|start|stop)\b/.test(line)) return 'Restart service';
+  if (/^pm2\s+(status|list|logs|describe)\b/.test(line)) return 'Check service status';
+  if (/^(curl|wget)\b/.test(line)) return 'Check HTTP endpoint';
+  if (/^gh\s+pr\b/.test(line)) return 'Check pull request';
+  if (/^zylos\s+(upgrade|install|runtime|restart)\b/.test(line)) return 'Update Zylos runtime';
+  return 'Run shell command';
+}
+
+function firstCommandLine(cmd) {
+  let line = cmd.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) || '';
+  line = line.replace(/^cd\s+\S+\s*&&\s*/i, '');
+  line = line.replace(/^export\s+\$\([^)]*\)\s*&&\s*/i, '');
+  const pipeIdx = line.indexOf('|');
+  if (pipeIdx > 0) line = line.slice(0, pipeIdx).trim();
+  return line;
+}
+
+function redactCredentials(text) {
+  return text
+    .replace(/sk-[a-zA-Z0-9_-]{20,}/g, '[REDACTED]')
+    .replace(/xoxb-[a-zA-Z0-9-]+/g, '[REDACTED]')
+    .replace(/ghp_[a-zA-Z0-9]{36,}/g, '[REDACTED]')
+    .replace(/Bearer\s+[a-zA-Z0-9._-]+/g, 'Bearer [REDACTED]');
 }
