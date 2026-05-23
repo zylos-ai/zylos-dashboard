@@ -126,6 +126,13 @@ export class HookInstaller {
     return path.join(os.homedir(), '.codex', 'config.toml');
   }
 
+  _codexConfigPaths() {
+    return Array.from(new Set([
+      this._codexConfigPath(),
+      path.join(this.zylosDir, '.codex', 'config.toml')
+    ]));
+  }
+
   _readCodex() {
     let raw;
     try {
@@ -155,8 +162,7 @@ export class HookInstaller {
     fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
   }
 
-  _enableCodexHookFeature() {
-    const p = this._codexConfigPath();
+  _enableCodexHookFeatureAtPath(p) {
     let text = '';
     try {
       text = fs.readFileSync(p, 'utf8');
@@ -182,6 +188,17 @@ export class HookInstaller {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, next.endsWith('\n') ? next : `${next}\n`);
     return { enabled: true, changed: true, path: p };
+  }
+
+  _enableCodexHookFeature() {
+    const results = this._codexConfigPaths().map(p => this._enableCodexHookFeatureAtPath(p));
+    return {
+      enabled: results.every(r => r.enabled),
+      changed: results.some(r => r.changed),
+      path: results[0]?.path,
+      paths: results.map(r => r.path),
+      results
+    };
   }
 
   _codexCommand() {
