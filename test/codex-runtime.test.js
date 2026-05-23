@@ -331,10 +331,20 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
       type: 'custom_tool_call',
       name: 'apply_patch',
       call_id: 'call-patch',
-      input: '*** Begin Patch\n*** End Patch\n'
+      input: '*** Begin Patch\n*** Update File: /Users/howard/zylos/workspace/zylos-dashboard/src/lib/store.js\n@@\n*** Add File: test/new-fixture.js\n+ok\n*** End Patch\n'
     }
   });
-  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n`);
+  const fallbackLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:07.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      call_id: 'call-fallback',
+      arguments: JSON.stringify({ cmd: 'python scripts/do_custom_thing.py --token sk-abcdefghijklmnopqrstuvwxyz123456 --file /Users/howard/zylos/workspace/zylos-dashboard/src/index.js' })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n${fallbackLine}\n`);
 
   const store = new Store(path.join(dir, 'dashboard.db'));
   store.upsertCodexRolloutPath({
@@ -345,11 +355,16 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
   });
 
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
-  assert.equal(collector.collect(), 3);
+  assert.equal(collector.collect(), 4);
 
   const events = store.queryEvents({ limit: 10, order: 'asc' });
-  assert.deepEqual(events.map(e => e.summary), ['Run verification', 'Run verification', 'Edit files']);
-  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call']);
+  assert.deepEqual(events.map(e => e.summary), [
+    'Run verification: npm test',
+    'Run verification: npm test',
+    'Edit files: src/lib/store.js, test/new-fixture.js',
+    'Run shell command: python scripts/do_custom_thing.py --token [REDACTED] --file zylos-dashboard/src/index.js'
+  ]);
+  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call']);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

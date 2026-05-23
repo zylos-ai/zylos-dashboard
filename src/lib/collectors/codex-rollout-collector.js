@@ -373,10 +373,10 @@ export class CodexRolloutCollector {
 
   _summarizeToolCall(name, args) {
     if (!name) return 'Tool call';
-    if (name === 'apply_patch') return 'Edit files';
+    if (name === 'apply_patch') return summarizePatchCall(args);
+    const toolArgs = parseToolArgs(args);
     if (name === 'exec_command' || name === 'functions.exec_command') {
-      const cmd = parseToolArgs(args)?.cmd || '';
-      return summarizeShellCommand(cmd);
+      return summarizeShellCommand(toolArgs);
     }
     return name.replace(/^functions\./, '');
   }
@@ -482,24 +482,32 @@ function parseToolArgs(args) {
   }
 }
 
-function summarizeShellCommand(cmd) {
+function summarizePatchCall(args) {
+  const patch = typeof args === 'string' ? args : args?.input || args?.patch || '';
+  const files = extractPatchFiles(patch);
+  return files.length > 0 ? `Edit files: ${files.join(', ')}` : 'Edit files';
+}
+
+function summarizeShellCommand(args) {
+  const cmd = typeof args === 'string' ? args : args?.cmd || args?.command || '';
   if (!cmd || typeof cmd !== 'string') return 'Run shell command';
   const line = firstCommandLine(cmd);
+  const readable = readableCommand(line);
   if (/^(npm|pnpm|yarn)\s+(test|run\s+(test|check|lint|smoke|ci))\b/.test(line) ||
       /^node\s+--test\b/.test(line) ||
       /^go\s+test\b/.test(line) ||
       /^make\s+(test|ci|check|smoke)\b/.test(line)) {
-    return 'Run verification';
+    return `Run verification: ${readable}`;
   }
-  if (/^git\s+(status|log|show|branch|diff)\b/.test(line)) return 'Inspect git state';
-  if (/^git\s+(push|commit|merge|rebase|fetch|pull)\b/.test(line)) return 'Update git branch';
-  if (/^(rg|grep|find|ls|sed|cat|nl|wc)\b/.test(line)) return 'Inspect files';
-  if (/^pm2\s+(restart|reload|start|stop)\b/.test(line)) return 'Restart service';
-  if (/^pm2\s+(status|list|logs|describe)\b/.test(line)) return 'Check service status';
-  if (/^(curl|wget)\b/.test(line)) return 'Check HTTP endpoint';
-  if (/^gh\s+pr\b/.test(line)) return 'Check pull request';
-  if (/^zylos\s+(upgrade|install|runtime|restart)\b/.test(line)) return 'Update Zylos runtime';
-  return 'Run shell command';
+  if (/^git\s+(status|log|show|branch|diff)\b/.test(line)) return `Inspect git state: ${readable}`;
+  if (/^git\s+(push|commit|merge|rebase|fetch|pull)\b/.test(line)) return `Update git branch: ${readable}`;
+  if (/^(rg|grep|find|ls|sed|cat|nl|wc)\b/.test(line)) return `Inspect files: ${readable}`;
+  if (/^pm2\s+(restart|reload|start|stop)\b/.test(line)) return `Restart service: ${readable}`;
+  if (/^pm2\s+(status|list|logs|describe)\b/.test(line)) return `Check service status: ${readable}`;
+  if (/^(curl|wget)\b/.test(line)) return `Check HTTP endpoint: ${readable}`;
+  if (/^gh\s+pr\b/.test(line)) return `Check pull request: ${readable}`;
+  if (/^zylos\s+(upgrade|install|runtime|restart)\b/.test(line)) return `Update Zylos runtime: ${readable}`;
+  return `Run shell command: ${readable}`;
 }
 
 function firstCommandLine(cmd) {
@@ -509,6 +517,41 @@ function firstCommandLine(cmd) {
   const pipeIdx = line.indexOf('|');
   if (pipeIdx > 0) line = line.slice(0, pipeIdx).trim();
   return line;
+}
+
+function readableCommand(line) {
+  const redacted = redactCredentials(line)
+    .replace(/(?<=^|[\s"'=])(?:\/(?:home|Users|tmp|var|usr|opt|etc|root)(?:\/[^\s"'|;:]+){3,}|~(?:\/[^\s"'|;:]+){3,})/g, shortenPath);
+  return redacted.length > 120 ? redacted.slice(0, 117) + '...' : redacted;
+}
+
+function extractPatchFiles(patch) {
+  if (typeof patch !== 'string' || !patch) return [];
+  const files = [];
+  const seen = new Set();
+  const patterns = [
+    /^\*\*\* (?:Add|Update|Delete) File:\s+(.+)$/gm,
+    /^\*\*\* Move to:\s+(.+)$/gm
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(patch)) !== null) {
+      const file = shortenPath(match[1].trim());
+      if (file && !seen.has(file)) {
+        files.push(file);
+        seen.add(file);
+      }
+      if (files.length >= 3) return files;
+    }
+  }
+  return files;
+}
+
+function shortenPath(fullPath) {
+  const normalized = String(fullPath).replace(/^["']|["']$/g, '');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 3) return normalized;
+  return parts.slice(-3).join('/');
 }
 
 function redactCredentials(text) {
