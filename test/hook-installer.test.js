@@ -126,13 +126,13 @@ test('HookInstaller — Codex', async (t) => {
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
 
-  await t.test('install creates hook entries for all 5 Codex events (no SubagentStart/Stop)', () => {
+  await t.test('install creates hook entries for all 6 Codex events (no SubagentStart/Stop)', () => {
     const result = installer.installCodexHooks();
-    assert.equal(result.added, 5);
-    assert.equal(result.total, 5);
+    assert.equal(result.added, 6);
+    assert.equal(result.total, 6);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       assert.ok(config.hooks[event], `missing event ${event}`);
       assert.ok(config.hooks[event].length > 0);
     }
@@ -145,7 +145,7 @@ test('HookInstaller — Codex', async (t) => {
     assert.equal(result.added, 0);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       assert.equal(config.hooks[event].length, 1);
     }
   });
@@ -161,7 +161,7 @@ test('HookInstaller — Codex', async (t) => {
 
   await t.test('hooks are registered as async with type and short timeout', () => {
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       const hook = config.hooks[event][0].hooks[0];
       assert.equal(hook.type, 'command', `${event} hook should have type=command`);
       assert.equal(hook.async, true, `${event} hook should be async`);
@@ -195,7 +195,7 @@ test('HookInstaller — Codex', async (t) => {
 
   await t.test('upgrades existing sync hooks to async in-place', () => {
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       if (!config.hooks[event]) continue;
       for (const group of config.hooks[event]) {
         for (const h of group.hooks || []) {
@@ -212,7 +212,7 @@ test('HookInstaller — Codex', async (t) => {
     assert.ok(result.added > 0, 'should report updated hooks');
 
     const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       const group = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
       const h = group.hooks.find(h => installer._isOwn(h.command));
       assert.equal(h.async, true, `${event} should be async after upgrade`);
@@ -222,7 +222,7 @@ test('HookInstaller — Codex', async (t) => {
 
   await t.test('uninstall removes only own hooks', () => {
     const result = installer.uninstallCodexHooks();
-    assert.equal(result.removed, 5);
+    assert.equal(result.removed, 6);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     assert.equal(config.hooks.PreToolUse.length, 1);
@@ -293,7 +293,7 @@ test('HookInstaller — Codex flat-array migration', async (t) => {
 
   await t.test('uninstall works on migrated file', () => {
     const result = installer.uninstallCodexHooks();
-    assert.equal(result.removed, 5);
+    assert.equal(result.removed, 6);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     assert.equal(config.hooks.PreToolUse.length, 1);
@@ -387,19 +387,48 @@ test('HookInstaller — StatusLine', async (t) => {
   fs.rmSync(projectRoot, { recursive: true, force: true });
 });
 
-test('HookInstaller — install() dispatches by runtime', async (t) => {
+test('HookInstaller — install() provisions all supported runtimes', async (t) => {
   const tmpHome = makeTmpDir();
   const projectRoot = makeTmpDir();
 
-  await t.test('installs claude hooks + statusline when runtime is claude', () => {
+  await t.test('installs Claude hooks, Codex hooks, and Claude statusline when runtime is claude', () => {
     const prev = process.env.ZYLOS_RUNTIME;
     process.env.ZYLOS_RUNTIME = 'claude';
 
     const installer = makeInstaller(projectRoot, tmpHome);
     const result = installer.install();
-    assert.equal(result.hooks.runtime, 'claude');
-    assert.equal(result.hooks.added, 7);
+    assert.equal(result.claude.runtime, 'claude');
+    assert.equal(result.claude.added, 7);
+    assert.equal(result.codex.runtime, 'codex');
+    assert.equal(result.codex.added, 6);
     assert.equal(result.statusline.installed, true);
+
+    const claudeSettings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    const codexSettings = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.ok(claudeSettings.hooks.PreToolUse);
+    assert.ok(codexSettings.hooks.SessionStart);
+
+    if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
+    else delete process.env.ZYLOS_RUNTIME;
+  });
+
+  await t.test('installs both hook sets even when runtime is codex', () => {
+    const prev = process.env.ZYLOS_RUNTIME;
+    process.env.ZYLOS_RUNTIME = 'codex';
+
+    const installer = makeInstaller(projectRoot, tmpHome);
+    const result = installer.install();
+    assert.equal(result.claude.runtime, 'claude');
+    assert.equal(result.codex.runtime, 'codex');
+    assert.equal(result.claude.added, 0);
+    assert.equal(result.codex.added, 0);
+    assert.equal(result.statusline.installed, false);
+    assert.equal(result.statusline.reason, 'already_installed');
+
+    const claudeSettings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    const codexSettings = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.ok(claudeSettings.hooks.UserPromptSubmit);
+    assert.ok(codexSettings.hooks.UserPromptSubmit);
 
     if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
     else delete process.env.ZYLOS_RUNTIME;

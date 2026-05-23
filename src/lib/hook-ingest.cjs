@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ALLOWED_EVENTS = new Set([
+  'SessionStart',
   'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest',
   'SubagentStart', 'SubagentStop'
 ]);

@@ -152,6 +152,28 @@ export class Store {
       }
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(7);
     }
+    if (currentVersion < 8) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS codex_rollout_paths (
+          runtime TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          transcript_path TEXT NOT NULL,
+          last_event_at TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (runtime, session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_codex_rollout_paths_updated
+        ON codex_rollout_paths (runtime, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS codex_rollout_cursors (
+          transcript_path TEXT PRIMARY KEY,
+          byte_offset INTEGER NOT NULL DEFAULT 0,
+          session_id TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(8);
+    }
   }
 
   _prepareStatements() {
@@ -276,6 +298,35 @@ export class Store {
     this._cleanupSessions = this.db.prepare(
       'DELETE FROM auth_sessions WHERE created_at < ? OR last_activity_at < ?'
     );
+
+    this._upsertCodexRolloutPath = this.db.prepare(`
+      INSERT INTO codex_rollout_paths (runtime, session_id, transcript_path, last_event_at, updated_at)
+      VALUES (@runtime, @session_id, @transcript_path, @last_event_at, datetime('now'))
+      ON CONFLICT(runtime, session_id) DO UPDATE SET
+        transcript_path = @transcript_path,
+        last_event_at = @last_event_at,
+        updated_at = datetime('now')
+    `);
+
+    this._latestCodexRolloutPath = this.db.prepare(`
+      SELECT * FROM codex_rollout_paths
+      WHERE runtime = @runtime
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `);
+
+    this._getCodexRolloutCursor = this.db.prepare(`
+      SELECT * FROM codex_rollout_cursors WHERE transcript_path = ?
+    `);
+
+    this._upsertCodexRolloutCursor = this.db.prepare(`
+      INSERT INTO codex_rollout_cursors (transcript_path, byte_offset, session_id, updated_at)
+      VALUES (@transcript_path, @byte_offset, @session_id, datetime('now'))
+      ON CONFLICT(transcript_path) DO UPDATE SET
+        byte_offset = @byte_offset,
+        session_id = @session_id,
+        updated_at = datetime('now')
+    `);
   }
 
   insertEvent(event) {
@@ -458,6 +509,50 @@ export class Store {
 
   cleanupSessions(absoluteCutoff, idleCutoff) {
     return this._cleanupSessions.run(absoluteCutoff, idleCutoff);
+  }
+
+  upsertCodexRolloutPath({ runtime = 'codex', sessionId, transcriptPath, lastEventAt }) {
+    if (!sessionId || !transcriptPath || typeof transcriptPath !== 'string') return { changes: 0 };
+    if (!transcriptPath.endsWith('.jsonl')) return { changes: 0 };
+    const info = this._upsertCodexRolloutPath.run({
+      runtime,
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      last_event_at: lastEventAt || null
+    });
+    return { changes: info.changes };
+  }
+
+  latestCodexRolloutPath(runtime = 'codex') {
+    const row = this._latestCodexRolloutPath.get({ runtime });
+    return row ? {
+      runtime: row.runtime,
+      session_id: row.session_id,
+      transcript_path: row.transcript_path,
+      last_event_at: row.last_event_at,
+      updated_at: row.updated_at
+    } : null;
+  }
+
+  getCodexRolloutCursor(transcriptPath) {
+    if (!transcriptPath) return null;
+    const row = this._getCodexRolloutCursor.get(transcriptPath);
+    return row ? {
+      transcript_path: row.transcript_path,
+      byte_offset: row.byte_offset,
+      session_id: row.session_id,
+      updated_at: row.updated_at
+    } : null;
+  }
+
+  upsertCodexRolloutCursor({ transcriptPath, byteOffset, sessionId }) {
+    if (!transcriptPath || !Number.isFinite(byteOffset) || byteOffset < 0) return { changes: 0 };
+    const info = this._upsertCodexRolloutCursor.run({
+      transcript_path: transcriptPath,
+      byte_offset: Math.floor(byteOffset),
+      session_id: sessionId || null
+    });
+    return { changes: info.changes };
   }
 
   aggregateCost({ since, until, sessionId } = {}) {

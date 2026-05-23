@@ -16,6 +16,7 @@ import { PM2Collector } from './lib/collectors/pm2-collector.js';
 import { SystemCollector } from './lib/collectors/system-collector.js';
 import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
 import { ConversationCollector } from './lib/collectors/conversation-collector.js';
+import { CodexRolloutCollector } from './lib/collectors/codex-rollout-collector.js';
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
@@ -85,10 +86,12 @@ const pm2Collector = new PM2Collector(store, config);
 const systemCollector = new SystemCollector(store, config);
 const statuslineCollector = isClaudeRuntime ? new StatuslineCollector(store, config) : null;
 const conversationCollector = isClaudeRuntime ? new ConversationCollector(store, config) : null;
+const codexRolloutCollector = activeRuntime === 'codex' ? new CodexRolloutCollector(store, config) : null;
 
 const collectors = { pm2: pm2Collector, system: systemCollector };
 if (statuslineCollector) collectors.statusline = statuslineCollector;
 if (conversationCollector) collectors.conversation = conversationCollector;
+if (codexRolloutCollector) collectors.codexRollout = codexRolloutCollector;
 if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}" — Claude-only collectors skipped\n`);
 
 // SSE hub
@@ -189,6 +192,11 @@ async function startupSequence() {
   if (conversationCollector) {
     try { conversationCollector.collect(); } catch (err) {
       process.stderr.write(`[startup] Conversation collector initial run failed: ${err.message}\n`);
+    }
+  }
+  if (codexRolloutCollector) {
+    try { codexRolloutCollector.collect(); } catch (err) {
+      process.stderr.write(`[startup] Codex rollout collector initial run failed: ${err.message}\n`);
     }
   }
 
@@ -763,6 +771,7 @@ if (isMain && process.argv.includes('--smoke')) {
   systemCollector.start(30_000);
   if (statuslineCollector) statuslineCollector.start();
   if (conversationCollector) conversationCollector.start(5_000);
+  if (codexRolloutCollector) codexRolloutCollector.start(5_000);
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();

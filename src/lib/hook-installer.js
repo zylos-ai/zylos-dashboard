@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
-const CODEX_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
+const CODEX_HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
 
@@ -261,10 +261,11 @@ export class HookInstaller {
   // --- Combined ---
 
   install() {
-    const rt = this.detectRuntime();
-    const hooks = rt === 'codex' ? this.installCodexHooks() : this.installClaudeHooks();
-    const statusline = rt === 'claude' ? this.installStatusline() : { installed: false, reason: 'codex_runtime' };
-    return { hooks, statusline };
+    return {
+      claude: this.installClaudeHooks(),
+      codex: this.installCodexHooks(),
+      statusline: this.installStatusline()
+    };
   }
 
   uninstall() {

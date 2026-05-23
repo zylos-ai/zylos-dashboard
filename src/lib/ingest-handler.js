@@ -3,11 +3,13 @@ import { readJsonBody } from './http.js';
 import { sendJson } from './http.js';
 
 const ALLOWED_EVENTS = new Set([
+  'SessionStart',
   'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest',
   'SubagentStart', 'SubagentStop'
 ]);
 
 const EVENT_TYPE_MAP = {
+  SessionStart: { event_type: 'session_start', category: 'session' },
   PreToolUse: { event_type: 'pre_tool_use', category: 'tool' },
   PostToolUse: { event_type: 'post_tool_use', category: 'tool' },
   UserPromptSubmit: { event_type: 'user_prompt_submit', category: 'turn' },
@@ -80,6 +82,15 @@ export class IngestHandler {
       };
 
       const { inserted } = this.store.insertEvent(event);
+
+      if (event.runtime === 'codex' && sanitized.metadata?.transcript_path && sanitized.session_id) {
+        this.store.upsertCodexRolloutPath?.({
+          runtime: event.runtime,
+          sessionId: sanitized.session_id,
+          transcriptPath: sanitized.metadata.transcript_path,
+          lastEventAt: event.timestamp
+        });
+      }
 
       if (inserted && this.stateEngine) {
         this.stateEngine.onEvent(event);

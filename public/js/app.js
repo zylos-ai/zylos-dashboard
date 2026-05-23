@@ -196,11 +196,10 @@ function applyRuntimeVisibility() {
   const trendsTab = $('[data-tab="trends"]');
   const trendsPanel = $('#tab-trends');
 
-  if (runtimeCard) runtimeCard.hidden = !isClaude;
-  if (capacityCard) capacityCard.hidden = !isClaude;
-  if (timelineCard) timelineCard.hidden = !isClaude;
-  if (trendsTab) trendsTab.hidden = !isClaude;
-  if (trendsPanel && !isClaude) trendsPanel.hidden = true;
+  if (runtimeCard) runtimeCard.hidden = false;
+  if (capacityCard) capacityCard.hidden = false;
+  if (timelineCard) timelineCard.hidden = false;
+  if (trendsTab) trendsTab.hidden = false;
 
   let banner = $('#codex-degraded-banner');
   if (!isClaude) {
@@ -217,10 +216,7 @@ function applyRuntimeVisibility() {
     banner.hidden = true;
   }
 
-  if (!isClaude && $('[data-tab="trends"].active')) {
-    const overviewTab = $('[data-tab="overview"]');
-    if (overviewTab) overviewTab.click();
-  }
+  if (trendsPanel && trendsTab?.classList.contains('active')) trendsPanel.hidden = false;
 }
 
 // ─── Render: Info Bar ───
@@ -977,16 +973,9 @@ async function refreshComm() {
   renderComm();
 }
 
-function isClaudeRuntime() {
-  return (state.dashboardState?.runtime_info?.runtime || 'claude') === 'claude';
-}
-
 async function refreshAll() {
   const stateResult = await Promise.allSettled([refreshState()]);
-  const fetches = [refreshHealth(), refreshComm()];
-  if (isClaudeRuntime()) {
-    fetches.push(refreshMetrics(), refreshTimeline(), refreshSummary());
-  }
+  const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary()];
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
@@ -1005,7 +994,7 @@ function applySse(name, data) {
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     applyRuntimeVisibility();
     renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
-    if (isClaudeRuntime()) refreshTimeline();
+    refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
     if (mn) { state.metrics.set(mn, data); state.metricsUpdatedAt = new Date().toISOString(); renderMetrics(); }

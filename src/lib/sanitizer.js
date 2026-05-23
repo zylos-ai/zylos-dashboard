@@ -38,7 +38,15 @@ export class Sanitizer {
       if (tool_detail) metadata.tool_detail = tool_detail;
       if (prompt_source) metadata.prompt_source = prompt_source;
 
-      const safeFields = ['timestamp', 'hook_event_name', 'runtime'];
+      const safeFields = [
+        'timestamp',
+        'hook_event_name',
+        'runtime',
+        'turn_id',
+        'transcript_path',
+        'model',
+        'permission_mode'
+      ];
       for (const key of safeFields) {
         if (rawPayload[key] !== undefined) metadata[key] = rawPayload[key];
       }
@@ -96,6 +104,8 @@ export class Sanitizer {
   buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource, assistantSummary) {
     const detail = toolDetail ? `: ${toolDetail}` : '';
     switch (hookEventName) {
+      case 'SessionStart':
+        return 'Session started';
       case 'PreToolUse':
         return `${toolName || 'Unknown'}${detail}`;
       case 'PostToolUse':

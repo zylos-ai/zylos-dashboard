@@ -22,10 +22,10 @@ function freshTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'postinstall-test-'));
 }
 
-function runPostInstall(zylosDir) {
+function runPostInstall(zylosDir, extraEnv = {}) {
   const scriptPath = path.resolve('hooks/post-install.js');
   return execFileSync('node', [scriptPath], {
-    env: { ...process.env, ZYLOS_DIR: zylosDir },
+    env: { ...process.env, ZYLOS_DIR: zylosDir, ZYLOS_RUNTIME: 'claude', ...extraEnv },
     encoding: 'utf8'
   });
 }
@@ -82,6 +82,40 @@ test('post-install — does not overwrite existing config', () => {
   runPostInstall(tmpDir);
   const after = fs.readFileSync(configPath(tmpDir), 'utf8');
   assert.equal(before, after, 'existing config must not be overwritten');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('post-install — installs both Claude and Codex hooks regardless of runtime', () => {
+  const tmpDir = freshTmpDir();
+  const homeDir = path.join(tmpDir, 'home');
+  fs.mkdirSync(homeDir, { recursive: true });
+
+  const stdout = runPostInstall(tmpDir, {
+    ZYLOS_RUNTIME: 'codex',
+    HOME: homeDir
+  });
+
+  assert.match(stdout, /claude hooks: 7 added/);
+  assert.match(stdout, /codex hooks: 6 added/);
+  const claudePath = path.join(tmpDir, '.claude', 'settings.json');
+  const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8'));
+  for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
+    assert.ok(claude.hooks[event], `missing Claude ${event}`);
+    const hook = claude.hooks[event][0].hooks[0];
+    assert.ok(hook.command.includes('hook-ingest.cjs'));
+  }
+  assert.ok(claude.statusLine.command.includes('statusline-ingest.cjs'));
+
+  const hooksPath = path.join(homeDir, '.codex', 'hooks.json');
+  const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+
+  for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    assert.ok(hooks.hooks[event], `missing ${event}`);
+    const hook = hooks.hooks[event][0].hooks[0];
+    assert.ok(hook.command.includes('ZYLOS_RUNTIME=codex'));
+    assert.ok(hook.command.includes('hook-ingest.cjs'));
+  }
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
