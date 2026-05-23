@@ -144,7 +144,7 @@ test('HookInstaller — Codex', async (t) => {
 
     const codexConfig = fs.readFileSync(installer._codexConfigPath(), 'utf8');
     assert.match(codexConfig, /^\[features\]$/m);
-    assert.match(codexConfig, /^codex_hooks = true$/m);
+    assert.match(codexConfig, /^hooks = true$/m);
   });
 
   await t.test('idempotent — second install adds nothing', () => {
@@ -243,16 +243,16 @@ test('HookInstaller — Codex', async (t) => {
     assert.equal(result.removed, 0);
   });
 
-  await t.test('enables existing false codex hook feature flag in-place', () => {
+  await t.test('enables existing false Codex hook feature flag in-place', () => {
     fs.mkdirSync(path.dirname(installer._codexConfigPath()), { recursive: true });
-    fs.writeFileSync(installer._codexConfigPath(), '[features]\ncodex_hooks = false\n\n[projects."/tmp/example"]\ntrust_level = "trusted"\n');
+    fs.writeFileSync(installer._codexConfigPath(), '[features]\nhooks = false\n\n[projects."/tmp/example"]\ntrust_level = "trusted"\n');
 
     const result = installer.installCodexHooks();
     assert.equal(result.feature.changed, true);
 
     const codexConfig = fs.readFileSync(installer._codexConfigPath(), 'utf8');
-    assert.match(codexConfig, /^codex_hooks = true$/m);
-    assert.doesNotMatch(codexConfig, /^codex_hooks = false$/m);
+    assert.match(codexConfig, /^hooks = true$/m);
+    assert.doesNotMatch(codexConfig, /^hooks = false$/m);
     assert.match(codexConfig, /^\[projects\."\/tmp\/example"\]$/m);
   });
 

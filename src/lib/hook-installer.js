@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
 const CODEX_HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
+const CODEX_HOOK_FEATURE = 'hooks';
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
 
@@ -170,19 +171,20 @@ export class HookInstaller {
       text = '';
     }
 
-    const existingFlag = /^codex_hooks\s*=\s*(true|false)\s*$/m.exec(text);
+    const flagPattern = new RegExp(`^${CODEX_HOOK_FEATURE}\\s*=\\s*(true|false)\\s*$`, 'm');
+    const existingFlag = flagPattern.exec(text);
     if (existingFlag?.[1] === 'true') {
       return { enabled: true, changed: false, path: p };
     }
 
     let next;
     if (existingFlag) {
-      next = text.replace(/^codex_hooks\s*=\s*false\s*$/m, 'codex_hooks = true');
+      next = text.replace(flagPattern, `${CODEX_HOOK_FEATURE} = true`);
     } else if (/^\[features\]\s*$/m.test(text)) {
-      next = text.replace(/^(\[features\]\s*)$/m, '$1\ncodex_hooks = true');
+      next = text.replace(/^(\[features\]\s*)$/m, `$1\n${CODEX_HOOK_FEATURE} = true`);
     } else {
       const trimmed = text.replace(/\s*$/, '');
-      next = `${trimmed}${trimmed ? '\n\n' : ''}[features]\ncodex_hooks = true\n`;
+      next = `${trimmed}${trimmed ? '\n\n' : ''}[features]\n${CODEX_HOOK_FEATURE} = true\n`;
     }
 
     fs.mkdirSync(path.dirname(p), { recursive: true });
