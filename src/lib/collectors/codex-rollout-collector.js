@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { modelPricesForRuntime } from '../config.js';
 
 const PER_MTOK = 1_000_000;
 
@@ -309,7 +310,7 @@ export class CodexRolloutCollector {
 
   _resolveModelPrice(model) {
     if (!model) return null;
-    const prices = this.config.modelPrices || {};
+    const prices = modelPricesForRuntime(this.config, 'codex');
     for (const [prefix, price] of Object.entries(prices)) {
       if (model.startsWith(prefix)) return price;
     }

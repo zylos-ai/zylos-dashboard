@@ -114,6 +114,7 @@
   "btn.confirm": "确认",
   "settings.title": "设置",
   "settings.model_pricing": "模型定价（USD / MTok）",
+  "settings.model_pricing_runtime": "{runtime} 模型定价（USD / MTok）",
   "settings.fast_mode": "快速模式",
   "settings.price_multiplier": "价格倍率",
   "settings.saved": "设置已保存",

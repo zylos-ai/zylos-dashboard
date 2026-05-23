@@ -114,6 +114,7 @@
   "btn.confirm": "Confirm",
   "settings.title": "Settings",
   "settings.model_pricing": "Model Pricing (USD / MTok)",
+  "settings.model_pricing_runtime": "{runtime} Model Pricing (USD / MTok)",
   "settings.fast_mode": "Fast Mode",
   "settings.price_multiplier": "Price Multiplier",
   "settings.saved": "Settings saved",

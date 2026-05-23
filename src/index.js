@@ -6,7 +6,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
-import { ensureDataDirs, loadConfig, publicDir } from './lib/config.js';
+import {
+  DEFAULT_RUNTIME_MODEL_PRICES,
+  ensureDataDirs,
+  fastModeMultiplierForRuntime,
+  loadConfig,
+  modelPricesForRuntime,
+  publicDir
+} from './lib/config.js';
 import { readJsonBody, sendHtml, sendJson, sendText, serveStatic } from './lib/http.js';
 import { Store } from './lib/store.js';
 import { Sanitizer } from './lib/sanitizer.js';
@@ -498,7 +505,56 @@ function handleApi(req, res, pathname, url) {
 }
 
 
-const BUILT_IN_MODELS = ['claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'];
+function builtInModelsForRuntime(runtime) {
+  return Object.keys(DEFAULT_RUNTIME_MODEL_PRICES[runtime === 'codex' ? 'codex' : 'claude'] || {});
+}
+
+function supportsFastMode(runtime) {
+  return runtime !== 'codex';
+}
+
+function settingsPayload(runtime) {
+  const priceRuntime = runtime === 'codex' ? 'codex' : 'claude';
+  const fastModeAvailable = supportsFastMode(priceRuntime);
+  const fastModeMultiplier = fastModeAvailable ? fastModeMultiplierForRuntime(config, priceRuntime) : null;
+  return {
+    runtime: priceRuntime,
+    builtInModels: builtInModelsForRuntime(priceRuntime),
+    modelPrices: modelPricesForRuntime(config, priceRuntime),
+    runtimeModelPrices: config.runtimeModelPrices,
+    fastMode: {
+      available: fastModeAvailable,
+      multiplier: fastModeMultiplier
+    },
+    fastModeMultiplier
+  };
+}
+
+function validateModelPrices(modelPrices, runtime) {
+  const errors = [];
+  if (typeof modelPrices !== 'object' || modelPrices === null || Array.isArray(modelPrices)) {
+    errors.push('modelPrices must be an object');
+    return errors;
+  }
+  for (const builtIn of builtInModelsForRuntime(runtime)) {
+    if (!(builtIn in modelPrices)) {
+      errors.push(`Cannot remove built-in model: ${builtIn}`);
+    }
+  }
+  for (const [prefix, prices] of Object.entries(modelPrices)) {
+    if (!prefix || typeof prefix !== 'string') {
+      errors.push('Model prefix must be a non-empty string');
+      continue;
+    }
+    for (const field of ['input', 'output', 'cacheRead', 'cacheCreation']) {
+      const v = prices?.[field];
+      if (v == null || typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+        errors.push(`${prefix}.${field} must be a finite number >= 0`);
+      }
+    }
+  }
+  return errors;
+}
 
 async function handleSettingsUpdate(req, res) {
   let body;
@@ -515,38 +571,17 @@ async function handleSettingsUpdate(req, res) {
   }
 
   const errors = [];
+  const priceRuntime = activeRuntime === 'codex' ? 'codex' : 'claude';
 
   if (body.modelPrices !== undefined) {
-    if (typeof body.modelPrices !== 'object' || body.modelPrices === null || Array.isArray(body.modelPrices)) {
-      errors.push('modelPrices must be an object');
-    } else {
-      for (const builtIn of BUILT_IN_MODELS) {
-        if (!(builtIn in body.modelPrices)) {
-          errors.push(`Cannot remove built-in model: ${builtIn}`);
-        }
-      }
-      const prefixes = Object.keys(body.modelPrices);
-      if (new Set(prefixes).size !== prefixes.length) {
-        errors.push('Duplicate model prefixes');
-      }
-      for (const [prefix, prices] of Object.entries(body.modelPrices)) {
-        if (!prefix || typeof prefix !== 'string') {
-          errors.push('Model prefix must be a non-empty string');
-          continue;
-        }
-        for (const field of ['input', 'output', 'cacheRead', 'cacheCreation']) {
-          const v = prices?.[field];
-          if (v == null || typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
-            errors.push(`${prefix}.${field} must be a finite number >= 0`);
-          }
-        }
-      }
-    }
+    errors.push(...validateModelPrices(body.modelPrices, priceRuntime));
   }
 
   if (body.fastModeMultiplier !== undefined) {
     const fm = body.fastModeMultiplier;
-    if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
+    if (!supportsFastMode(priceRuntime)) {
+      errors.push(`fastModeMultiplier is not supported for ${priceRuntime} runtime`);
+    } else if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
       errors.push('fastModeMultiplier must be a finite number > 0');
     }
   }
@@ -570,20 +605,43 @@ async function handleSettingsUpdate(req, res) {
       }
     } catch { /* start fresh if corrupt */ }
 
-    if (body.modelPrices !== undefined) existing.modelPrices = body.modelPrices;
-    if (body.fastModeMultiplier !== undefined) existing.fastModeMultiplier = body.fastModeMultiplier;
+    if (body.modelPrices !== undefined) {
+      existing.runtimeModelPrices = {
+        ...(existing.runtimeModelPrices || {}),
+        [priceRuntime]: body.modelPrices
+      };
+      if (priceRuntime === 'claude') existing.modelPrices = body.modelPrices;
+    }
+    if (body.fastModeMultiplier !== undefined) {
+      existing.runtimeFastModeMultipliers = {
+        ...(existing.runtimeFastModeMultipliers || {}),
+        [priceRuntime]: body.fastModeMultiplier
+      };
+      if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
+    }
 
     const tmpPath = config.configPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(tmpPath, config.configPath);
 
-    if (body.modelPrices !== undefined) config.modelPrices = body.modelPrices;
-    if (body.fastModeMultiplier !== undefined) config.fastModeMultiplier = body.fastModeMultiplier;
+    if (body.modelPrices !== undefined) {
+      config.runtimeModelPrices = {
+        ...(config.runtimeModelPrices || {}),
+        [priceRuntime]: body.modelPrices
+      };
+      config.modelPrices = config.runtimeModelPrices.claude;
+    }
+    if (body.fastModeMultiplier !== undefined) {
+      config.runtimeFastModeMultipliers = {
+        ...(config.runtimeFastModeMultipliers || {}),
+        [priceRuntime]: body.fastModeMultiplier
+      };
+      config.fastModeMultiplier = config.runtimeFastModeMultipliers.claude;
+    }
 
     sendJson(res, 200, {
       ok: true,
-      modelPrices: config.modelPrices,
-      fastModeMultiplier: config.fastModeMultiplier
+      ...settingsPayload(priceRuntime)
     });
   } catch (err) {
     sendJson(res, 500, { error: `Failed to save settings: ${err.message}` });
@@ -706,10 +764,8 @@ export function createServer() {
     }
 
     if (pathname === '/api/settings' && req.method === 'GET') {
-      sendJson(res, 200, {
-        modelPrices: config.modelPrices,
-        fastModeMultiplier: config.fastModeMultiplier
-      });
+      const priceRuntime = activeRuntime === 'codex' ? 'codex' : 'claude';
+      sendJson(res, 200, settingsPayload(priceRuntime));
       return;
     }
 

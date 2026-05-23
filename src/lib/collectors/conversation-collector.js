@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fastModeMultiplierForRuntime, modelPricesForRuntime } from '../config.js';
 
 const PER_MTOK = 1_000_000;
 
@@ -68,7 +69,7 @@ export class ConversationCollector {
 
   _resolveModelPrice(model) {
     if (!model) return null;
-    const prices = this.config.modelPrices || {};
+    const prices = modelPricesForRuntime(this.config, 'claude');
     for (const [prefix, price] of Object.entries(prices)) {
       if (model.startsWith(prefix)) return price;
     }
@@ -77,7 +78,7 @@ export class ConversationCollector {
 
   _calculateCost(usage, price, speed) {
     if (!price) return null;
-    const multiplier = speed === 'fast' ? (this.config.fastModeMultiplier || 6) : 1;
+    const multiplier = speed === 'fast' ? (fastModeMultiplierForRuntime(this.config, 'claude') || 6) : 1;
     const input = (usage.input_tokens || 0) * price.input * multiplier / PER_MTOK;
     const output = (usage.output_tokens || 0) * price.output * multiplier / PER_MTOK;
     const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead * multiplier / PER_MTOK;

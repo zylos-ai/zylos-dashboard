@@ -4,6 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import {
+  DEFAULT_CODEX_MODEL_PRICES,
+  DEFAULT_RUNTIME_MODEL_PRICES,
+  loadConfig,
+  modelPricesForRuntime
+} from '../src/lib/config.js';
 
 function makeTmpConfig() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-test-'));
@@ -16,14 +22,65 @@ function makeTmpConfig() {
       'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
       'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.10, cacheCreation: 2 }
     },
+    runtimeFastModeMultipliers: { claude: 6 },
     fastModeMultiplier: 6,
     retention: { metrics: 'full' }
   }));
   return { dir, configPath };
 }
 
+function withTmpZylosConfig(configBody, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-zylos-'));
+  const dashboardDir = path.join(dir, 'components', 'dashboard');
+  fs.mkdirSync(dashboardDir, { recursive: true });
+  const configPath = path.join(dashboardDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify(configBody, null, 2) + '\n');
+  const previous = process.env.ZYLOS_DIR;
+  process.env.ZYLOS_DIR = dir;
+  try {
+    return fn({ dir, configPath });
+  } finally {
+    if (previous === undefined) delete process.env.ZYLOS_DIR;
+    else process.env.ZYLOS_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function parseConfigFile(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+}
+
+async function makeSettingsServer(runtime = 'claude', configBody = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-server-'));
+  fs.mkdirSync(path.join(dir, '.zylos'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.zylos', 'config.json'), JSON.stringify({ runtime }, null, 2) + '\n');
+  const dashboardDir = path.join(dir, 'components', 'dashboard');
+  fs.mkdirSync(dashboardDir, { recursive: true });
+  const configPath = path.join(dashboardDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    auth: { enabled: false },
+    ...configBody
+  }, null, 2) + '\n');
+
+  const previous = process.env.ZYLOS_DIR;
+  process.env.ZYLOS_DIR = dir;
+  const moduleUrl = new URL(`../src/index.js?settings=${Date.now()}-${Math.random()}`, import.meta.url);
+  const { createServer } = await import(moduleUrl.href);
+  if (previous === undefined) delete process.env.ZYLOS_DIR;
+  else process.env.ZYLOS_DIR = previous;
+
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return {
+    dir,
+    configPath,
+    origin: `http://127.0.0.1:${port}`,
+    close: async () => {
+      await new Promise((resolve) => server.close(resolve));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
 }
 
 async function importHandler() {
@@ -80,6 +137,14 @@ test('settings validation: rejects missing built-in model', () => {
   assert.ok(errors.some(e => e.includes('claude-sonnet-4')));
 });
 
+test('settings validation: uses Codex built-ins for Codex runtime', () => {
+  const prices = { ...DEFAULT_CODEX_MODEL_PRICES };
+  delete prices['gpt-5.5'];
+  const errors = validateModelPrices(prices, 'codex');
+  assert.ok(errors.some(e => e.includes('gpt-5.5')));
+  assert.ok(!errors.some(e => e.includes('claude-sonnet-4')));
+});
+
 test('settings validation: accepts valid prices', () => {
   const prices = {
     'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
@@ -108,6 +173,7 @@ test('config file preservation: non-whitelisted fields survive settings update',
   // Simulate a settings update: read, patch whitelisted, write
   const existing = parseConfigFile(configPath);
   existing.modelPrices['claude-opus-4'].input = 10;
+  existing.runtimeFastModeMultipliers.claude = 8;
   existing.fastModeMultiplier = 8;
   fs.writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n');
 
@@ -116,22 +182,136 @@ test('config file preservation: non-whitelisted fields survive settings update',
   assert.equal(updated.port, 3470);
   assert.equal(updated.retention.metrics, 'full');
   assert.equal(updated.modelPrices['claude-opus-4'].input, 10);
+  assert.equal(updated.runtimeFastModeMultipliers.claude, 8);
   assert.equal(updated.fastModeMultiplier, 8);
 
   fs.rmSync(dir, { recursive: true });
 });
 
+test('loadConfig separates Claude and Codex model price tables', () => {
+  withTmpZylosConfig({
+    runtimeModelPrices: {
+      claude: {
+        'claude-opus-4': { input: 9, output: 25, cacheRead: 0.50, cacheCreation: 10 }
+      },
+      codex: {
+        'gpt-5.5': { input: 4, output: 30, cacheRead: 0.50, cacheCreation: 4 }
+      }
+    }
+  }, () => {
+    const config = loadConfig();
+    assert.equal(config.modelPrices['claude-opus-4'].input, 9);
+    assert.equal(config.runtimeModelPrices.codex['gpt-5.5'].input, 4);
+    assert.equal(config.runtimeModelPrices.codex['gpt-5.3-codex'].input, DEFAULT_CODEX_MODEL_PRICES['gpt-5.3-codex'].input);
+    assert.equal(config.runtimeModelPrices.codex['gpt-5.4'].input, DEFAULT_CODEX_MODEL_PRICES['gpt-5.4'].input);
+    assert.equal(modelPricesForRuntime(config, 'claude')['gpt-5.5'], undefined);
+    assert.equal(modelPricesForRuntime(config, 'codex')['claude-opus-4'], undefined);
+  });
+});
+
+test('loadConfig keeps fast mode multiplier scoped to Claude runtime', () => {
+  withTmpZylosConfig({
+    fastModeMultiplier: 8
+  }, () => {
+    const config = loadConfig();
+    assert.equal(config.fastModeMultiplier, 8);
+    assert.equal(config.runtimeFastModeMultipliers.claude, 8);
+    assert.equal(config.runtimeFastModeMultipliers.codex, undefined);
+  });
+});
+
+test('loadConfig prefers runtime fast mode multipliers over legacy field', () => {
+  withTmpZylosConfig({
+    fastModeMultiplier: 8,
+    runtimeFastModeMultipliers: { claude: 5 }
+  }, () => {
+    const config = loadConfig();
+    assert.equal(config.fastModeMultiplier, 5);
+    assert.equal(config.runtimeFastModeMultipliers.claude, 5);
+    assert.equal(config.runtimeFastModeMultipliers.codex, undefined);
+  });
+});
+
+test('loadConfig migrates legacy modelPrices into Claude prices only', () => {
+  withTmpZylosConfig({
+    modelPrices: {
+      'claude-opus-4': { input: 11, output: 25, cacheRead: 0.50, cacheCreation: 10 }
+    }
+  }, () => {
+    const config = loadConfig();
+    assert.equal(config.runtimeModelPrices.claude['claude-opus-4'].input, 11);
+    assert.equal(config.runtimeModelPrices.codex['gpt-5.5'].input, DEFAULT_CODEX_MODEL_PRICES['gpt-5.5'].input);
+    assert.equal(config.runtimeModelPrices.codex['claude-opus-4'], undefined);
+  });
+});
+
+test('GET /api/settings hides fast mode for Codex runtime', async () => {
+  const server = await makeSettingsServer('codex');
+  try {
+    const resp = await fetch(`${server.origin}/api/settings`);
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    assert.equal(body.runtime, 'codex');
+    assert.equal(body.fastMode.available, false);
+    assert.equal(body.fastMode.multiplier, null);
+    assert.equal(body.fastModeMultiplier, null);
+  } finally {
+    await server.close();
+  }
+});
+
+test('PUT /api/settings rejects fast mode multiplier for Codex runtime', async () => {
+  const server = await makeSettingsServer('codex');
+  try {
+    const current = await (await fetch(`${server.origin}/api/settings`)).json();
+    const resp = await fetch(`${server.origin}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPrices: current.modelPrices, fastModeMultiplier: 6 })
+    });
+    assert.equal(resp.status, 400);
+    const body = await resp.json();
+    assert.match(body.error, /not supported for codex runtime/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('PUT /api/settings stores fast mode multiplier under Claude runtime', async () => {
+  const server = await makeSettingsServer('claude');
+  try {
+    const current = await (await fetch(`${server.origin}/api/settings`)).json();
+    const resp = await fetch(`${server.origin}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPrices: current.modelPrices, fastModeMultiplier: 7 })
+    });
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    assert.equal(body.fastMode.available, true);
+    assert.equal(body.fastMode.multiplier, 7);
+    const written = parseConfigFile(server.configPath);
+    assert.equal(written.runtimeFastModeMultipliers.claude, 7);
+    assert.equal(written.fastModeMultiplier, 7);
+    assert.equal(written.runtimeFastModeMultipliers.codex, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
 // ─── Validation helpers (extracted from server logic for testability) ───
 
-const BUILT_IN_MODELS = ['claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'];
+function builtInModelsForRuntime(runtime = 'claude') {
+  return Object.keys(DEFAULT_RUNTIME_MODEL_PRICES[runtime === 'codex' ? 'codex' : 'claude'] || {});
+}
 
-function validateModelPrices(modelPrices) {
+function validateModelPrices(modelPrices, runtime = 'claude') {
   const errors = [];
   if (typeof modelPrices !== 'object' || modelPrices === null || Array.isArray(modelPrices)) {
     errors.push('modelPrices must be an object');
     return errors;
   }
-  for (const builtIn of BUILT_IN_MODELS) {
+  for (const builtIn of builtInModelsForRuntime(runtime)) {
     if (!(builtIn in modelPrices)) {
       errors.push(`Cannot remove built-in model: ${builtIn}`);
     }
