@@ -13,6 +13,7 @@ function makeInstaller(projectRoot, tmpHome) {
   const installer = new HookInstaller(projectRoot, tmpHome);
   installer._codexPath = () => path.join(tmpHome, '.codex', 'hooks.json');
   installer._codexConfigPath = () => path.join(tmpHome, '.codex', 'config.toml');
+  installer._trustCodexHooks = () => ({ trusted: 6, status: 'ok' });
   return installer;
 }
 
@@ -133,6 +134,7 @@ test('HookInstaller — Codex', async (t) => {
     assert.equal(result.total, 6);
     assert.equal(result.feature.enabled, true);
     assert.equal(result.feature.changed, true);
+    assert.equal(result.trust.trusted, 6);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
@@ -151,6 +153,7 @@ test('HookInstaller — Codex', async (t) => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 0);
     assert.equal(result.feature.changed, false);
+    assert.equal(result.trust.trusted, 6);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
@@ -254,6 +257,40 @@ test('HookInstaller — Codex', async (t) => {
     assert.match(codexConfig, /^hooks = true$/m);
     assert.doesNotMatch(codexConfig, /^hooks = false$/m);
     assert.match(codexConfig, /^\[projects\."\/tmp\/example"\]$/m);
+  });
+
+  await t.test('builds trust state only for dashboard hooks', () => {
+    const state = installer._codexTrustStateFromHooksList([
+      {
+        hooks: [
+          {
+            key: '/tmp/hooks.json:pre_tool_use:0:0',
+            command: `node ${installer.hookScript}`,
+            currentHash: 'sha256:dashboard',
+            isManaged: false
+          },
+          {
+            key: '/tmp/hooks.json:post_tool_use:0:0',
+            command: 'node ~/other-script.js',
+            currentHash: 'sha256:other',
+            isManaged: false
+          },
+          {
+            key: '/tmp/hooks.json:stop:0:0',
+            command: `node ${installer.hookScript}`,
+            currentHash: 'sha256:managed',
+            isManaged: true
+          }
+        ]
+      }
+    ]);
+
+    assert.deepEqual(state, {
+      '/tmp/hooks.json:pre_tool_use:0:0': {
+        enabled: true,
+        trusted_hash: 'sha256:dashboard'
+      }
+    });
   });
 
   fs.rmSync(tmpHome, { recursive: true, force: true });

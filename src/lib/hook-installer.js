@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -120,12 +121,16 @@ export class HookInstaller {
   // Codex 0.130 skips command hooks marked async, so Dashboard hooks stay sync
   // and rely on hook-ingest.cjs to return quickly or spool on failure.
 
+  _codexHome() {
+    return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  }
+
   _codexPath() {
-    return path.join(os.homedir(), '.codex', 'hooks.json');
+    return path.join(this._codexHome(), 'hooks.json');
   }
 
   _codexConfigPath() {
-    return path.join(os.homedir(), '.codex', 'config.toml');
+    return path.join(this._codexHome(), 'config.toml');
   }
 
   _codexConfigPaths() {
@@ -208,6 +213,191 @@ export class HookInstaller {
     return `ZYLOS_RUNTIME=codex ZYLOS_DIR=${this.zylosDir} node ${this.hookScript}`;
   }
 
+  _codexTrustStateFromHooksList(data) {
+    const state = {};
+    for (const entry of data || []) {
+      for (const hook of entry.hooks || []) {
+        if (hook.isManaged || !hook.key || !hook.currentHash) continue;
+        if (!this._isOwn(hook.command)) continue;
+        state[hook.key] = {
+          enabled: true,
+          trusted_hash: hook.currentHash
+        };
+      }
+    }
+    return state;
+  }
+
+  _trustCodexHooks() {
+    const script = String.raw`
+const { spawn } = require('node:child_process');
+
+const cwd = process.env.ZYLOS_DASHBOARD_CODEX_CWD;
+const hookScript = process.env.ZYLOS_DASHBOARD_HOOK_SCRIPT;
+const clientName = 'zylos_dashboard_hook_installer';
+
+const app = spawn('codex', ['app-server', '--listen', 'stdio://'], {
+  cwd,
+  stdio: ['pipe', 'pipe', 'pipe']
+});
+
+let stdout = '';
+let stderr = '';
+let finished = false;
+let nextId = 0;
+let trustedCount = 0;
+
+function send(method, params) {
+  const id = nextId++;
+  app.stdin.write(JSON.stringify({ method, id, params }) + '\n');
+  return id;
+}
+
+function notify(method, params) {
+  app.stdin.write(JSON.stringify({ method, params }) + '\n');
+}
+
+function finish(result) {
+  if (finished) return;
+  finished = true;
+  try { app.kill('SIGTERM'); } catch {}
+  process.stdout.write(JSON.stringify(result) + '\n');
+}
+
+function own(command) {
+  return command && (
+    command.includes(hookScript) ||
+    (command.includes('hook-ingest.cjs') && command.includes('dashboard'))
+  );
+}
+
+const timer = setTimeout(() => {
+  finish({ trusted: 0, skipped: true, reason: 'codex_app_server_timeout', stderr });
+}, 12000);
+
+app.stderr.on('data', d => { stderr += d.toString(); });
+app.on('error', err => {
+  clearTimeout(timer);
+  finish({ trusted: 0, skipped: true, reason: 'codex_app_server_error', error: String(err) });
+});
+app.on('exit', code => {
+  if (!finished) {
+    clearTimeout(timer);
+    finish({ trusted: 0, skipped: true, reason: 'codex_app_server_exit', code, stderr });
+  }
+});
+
+app.stdout.on('data', chunk => {
+  stdout += chunk.toString();
+  const lines = stdout.split('\n');
+  stdout = lines.pop();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+
+    if (msg.id === 0) {
+      notify('initialized', {});
+      send('hooks/list', { cwds: [cwd] });
+      continue;
+    }
+
+    if (msg.id === 1) {
+      if (msg.error) {
+        clearTimeout(timer);
+        finish({ trusted: 0, skipped: true, reason: 'hooks_list_error', error: msg.error });
+        return;
+      }
+
+      const state = {};
+      for (const entry of msg.result?.data || []) {
+        for (const hook of entry.hooks || []) {
+          if (hook.isManaged || !hook.key || !hook.currentHash || !own(hook.command)) continue;
+          state[hook.key] = { enabled: true, trusted_hash: hook.currentHash };
+        }
+      }
+
+      if (Object.keys(state).length === 0) {
+        clearTimeout(timer);
+        finish({ trusted: 0, skipped: true, reason: 'no_dashboard_hooks_discovered' });
+        return;
+      }
+
+      trustedCount = Object.keys(state).length;
+      send('config/batchWrite', {
+        edits: [{
+          keyPath: 'hooks.state',
+          value: state,
+          mergeStrategy: 'upsert'
+        }],
+        reloadUserConfig: true
+      });
+      continue;
+    }
+
+    if (msg.id === 2) {
+      clearTimeout(timer);
+      if (msg.error) {
+        finish({ trusted: 0, skipped: true, reason: 'config_batch_write_error', error: msg.error });
+      } else {
+        finish({ trusted: trustedCount, status: msg.result?.status || 'ok' });
+      }
+    }
+  }
+});
+
+send('initialize', {
+  clientInfo: {
+    name: clientName,
+    title: 'Zylos Dashboard Hook Installer',
+    version: '0.1.1'
+  },
+  capabilities: { experimentalApi: true }
+});
+`;
+
+    const result = spawnSync(process.execPath, ['-e', script], {
+      cwd: this.zylosDir,
+      env: {
+        ...process.env,
+        ZYLOS_DASHBOARD_CODEX_CWD: this.zylosDir,
+        ZYLOS_DASHBOARD_HOOK_SCRIPT: this.hookScript
+      },
+      encoding: 'utf8',
+      timeout: 15000
+    });
+
+    if (result.error) {
+      return { trusted: 0, skipped: true, reason: 'trust_helper_error', error: String(result.error) };
+    }
+    if (result.status !== 0) {
+      return {
+        trusted: 0,
+        skipped: true,
+        reason: 'trust_helper_exit',
+        status: result.status,
+        stderr: result.stderr?.trim()
+      };
+    }
+
+    const line = result.stdout.trim().split('\n').filter(Boolean).pop();
+    if (!line) {
+      return { trusted: 0, skipped: true, reason: 'trust_helper_no_output' };
+    }
+
+    try {
+      return JSON.parse(line);
+    } catch (err) {
+      return {
+        trusted: 0,
+        skipped: true,
+        reason: 'trust_helper_bad_output',
+        error: String(err),
+        stdout: result.stdout.trim()
+      };
+    }
+  }
+
   installCodexHooks() {
     const config = this._readCodex();
     if (!config.hooks) config.hooks = {};
@@ -249,7 +439,8 @@ export class HookInstaller {
     }
 
     if (added > 0) this._writeCodex(config);
-    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath(), feature };
+    const trust = this._trustCodexHooks();
+    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath(), feature, trust };
   }
 
   uninstallCodexHooks() {
