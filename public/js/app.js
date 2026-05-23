@@ -188,8 +188,6 @@ function applyRuntimeVisibility() {
   const rt = state.dashboardState?.runtime_info?.runtime || 'claude';
   if (rt === _lastRuntimeApplied) return;
   _lastRuntimeApplied = rt;
-  const isClaude = rt === 'claude';
-
   const runtimeCard = $('.runtime-card');
   const capacityCard = $('[aria-labelledby="capacity-title"]');
   const timelineCard = $('.timeline-card');
@@ -200,21 +198,6 @@ function applyRuntimeVisibility() {
   if (capacityCard) capacityCard.hidden = false;
   if (timelineCard) timelineCard.hidden = false;
   if (trendsTab) trendsTab.hidden = false;
-
-  let banner = $('#codex-degraded-banner');
-  if (!isClaude) {
-    if (!banner) {
-      banner = document.createElement('div');
-      banner.id = 'codex-degraded-banner';
-      banner.className = 'codex-banner';
-      const infoBar = $('#info-bar');
-      if (infoBar) infoBar.after(banner);
-    }
-    banner.textContent = t('banner.codex_degraded');
-    banner.hidden = false;
-  } else if (banner) {
-    banner.hidden = true;
-  }
 
   if (trendsPanel && trendsTab?.classList.contains('active')) trendsPanel.hidden = false;
 }

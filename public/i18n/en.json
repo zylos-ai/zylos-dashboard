@@ -183,7 +183,6 @@
   "source.tool_hooks": "tool hooks",
   "trends.tool_calls": "Tool Calls",
   "trends.output_tokens": "Output Tokens",
-  "banner.codex_degraded": "Some features require Claude runtime",
   "status.countdown": "Restarting in {seconds}s...",
   "status.reloading": "Refreshing page...",
   "result.duplicate_request": "Duplicate request ignored",
