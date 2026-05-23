@@ -1085,12 +1085,12 @@ test('UserPromptSubmit shows prompt source from reply via', () => {
   const cases = [
     [
       '[TG DM] howardzhou said: hello ---- reply via: node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "8101553026|msg:123"',
-      'hello',
+      'Prompt from telegram (8101553026)',
       'telegram (8101553026)'
     ],
     [
       '[HXA:default DM] Jinglever said: review done ---- reply via: node c4-send.js "hxa-connect" "org:default|Jinglever"',
-      'review done',
+      'Prompt from hxa-connect (Jinglever)',
       'hxa-connect (Jinglever)'
     ],
     [
@@ -1100,7 +1100,7 @@ test('UserPromptSubmit shows prompt source from reply via', () => {
     ],
     [
       'just a plain prompt from the terminal',
-      'just a plain prompt from the terminal',
+      'Prompt received',
       null
     ],
   ];
@@ -1114,16 +1114,4 @@ test('UserPromptSubmit shows prompt source from reply via', () => {
     assert.strictEqual(result.metadata.prompt_source || null, expectedSource,
       `prompt "${prompt.slice(0, 50)}..." → source ${result.metadata.prompt_source}`);
   }
-});
-
-test('UserPromptSubmit extracts current-message body and redacts credentials', () => {
-  const sanitizer = new Sanitizer('/home/howard/zylos');
-  const result = sanitizer.sanitizeHookPayload('UserPromptSubmit', {
-    session_id: 's',
-    prompt: '[TG DM] howardzhou said: <current-message>\nUse key sk-abcdefghijklmnopqrstuvwxyz123456\n</current-message> ---- reply via: node c4-send.js "telegram" "8101553026|msg:123"'
-  });
-
-  assert.equal(result.summary, 'Use key [REDACTED]');
-  assert.equal(result.metadata.prompt_preview, 'Use key [REDACTED]');
-  assert.equal(result.metadata.prompt_source, 'telegram (8101553026)');
 });

@@ -296,7 +296,7 @@ export class CodexRolloutCollector {
 
   _ingestResponseItem(payload, timestamp, mapping) {
     const item = payload.item || payload.response_item || payload || {};
-    if (item.type === 'message' && (item.role === 'assistant' || item.role === 'user')) {
+    if (item.type === 'message' && item.role === 'assistant') {
       return this._ingestMessage(item, payload, timestamp, mapping);
     }
     if (!['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(item.type)) return 0;
@@ -326,25 +326,23 @@ export class CodexRolloutCollector {
   }
 
   _ingestMessage(item, payload, timestamp, mapping) {
-    const textType = item.role === 'assistant' ? 'output_text' : 'input_text';
     const textBlocks = Array.isArray(item.content)
       ? item.content
-        .filter(c => c.type === textType && c.text?.trim())
+        .filter(c => c.type === 'output_text' && c.text?.trim())
         .map(c => c.text.trim())
       : [];
     if (textBlocks.length === 0) return 0;
 
     const text = textBlocks.join('\n');
     const summary = redactCredentials(text);
-    const eventType = item.role === 'assistant' ? 'assistant_message' : 'user_message';
     const event = {
       id: crypto.randomUUID(),
       ingest_id: this._messageIngestId(item.role, mapping.session_id, timestamp, summary),
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
-      event_type: eventType,
-      category: item.role === 'assistant' ? 'assistant' : 'turn',
+      event_type: 'assistant_message',
+      category: 'assistant',
       summary: summary.length > 2_000 ? summary.slice(0, 1_997) + '...' : summary,
       duration_ms: null,
       metadata: {

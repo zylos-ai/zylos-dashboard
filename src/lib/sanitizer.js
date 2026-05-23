@@ -13,8 +13,6 @@ const STRIP_KEYS = new Set([
   'prompt', 'content', 'message'
 ]);
 
-const MAX_PROMPT_SUMMARY = 2_000;
-
 export class Sanitizer {
   constructor(zylosDir) {
     this.zylosDir = zylosDir;
@@ -39,10 +37,6 @@ export class Sanitizer {
       if (tool_use_id) metadata.tool_use_id = tool_use_id;
       if (tool_detail) metadata.tool_detail = tool_detail;
       if (prompt_source) metadata.prompt_source = prompt_source;
-      if (hookEventName === 'UserPromptSubmit' && typeof rawPayload.prompt === 'string') {
-        const promptPreview = this._extractPromptPreview(rawPayload.prompt, prompt_source);
-        if (promptPreview) metadata.prompt_preview = promptPreview;
-      }
 
       const safeFields = [
         'timestamp',
@@ -76,7 +70,7 @@ export class Sanitizer {
         }
       }
 
-      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail, prompt_source, metadata.assistant_summary, metadata.prompt_preview);
+      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail, prompt_source, metadata.assistant_summary);
 
       return { session_id, duration_ms, summary, metadata };
     } catch {
@@ -107,7 +101,7 @@ export class Sanitizer {
     return result;
   }
 
-  buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource, assistantSummary, promptPreview) {
+  buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource, assistantSummary) {
     const detail = toolDetail ? `: ${toolDetail}` : '';
     switch (hookEventName) {
       case 'SessionStart':
@@ -117,7 +111,7 @@ export class Sanitizer {
       case 'PostToolUse':
         return `${toolName || 'Unknown'}${detail}`;
       case 'UserPromptSubmit':
-        return promptPreview || (promptSource ? `Prompt from ${promptSource}` : 'Prompt received');
+        return promptSource ? `Prompt from ${promptSource}` : 'Prompt received';
       case 'Stop':
         return assistantSummary || 'Turn ended';
       case 'PermissionRequest':
@@ -238,25 +232,6 @@ export class Sanitizer {
     if (/\[Scheduled Task\]|\[scheduler\]/i.test(prompt)) return 'scheduler';
 
     return null;
-  }
-
-  _extractPromptPreview(prompt, source) {
-    if (!prompt || source === 'control') return null;
-
-    let text = prompt;
-    const currentMessage = prompt.match(/<current-message>\s*([\s\S]*?)\s*<\/current-message>/);
-    if (currentMessage?.[1]?.trim()) {
-      text = currentMessage[1].trim();
-    } else {
-      const c4Body = prompt.match(/said:\s*([\s\S]*?)\s*----\s*reply via:/);
-      if (c4Body?.[1]?.trim()) text = c4Body[1].trim();
-    }
-
-    const redacted = this.redactCredentials(text.trim());
-    if (!redacted) return null;
-    return redacted.length > MAX_PROMPT_SUMMARY
-      ? redacted.slice(0, MAX_PROMPT_SUMMARY - 3) + '...'
-      : redacted;
   }
 
   _c4CommandSegment(line) {

@@ -267,7 +267,7 @@ test('CodexRolloutCollector ingests assistant output text into timeline', () => 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('CodexRolloutCollector ingests user message text into timeline', () => {
+test('CodexRolloutCollector skips user message text in timeline', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
   const userLine = JSON.stringify({
@@ -289,18 +289,12 @@ test('CodexRolloutCollector ingests user message text into timeline', () => {
     lastEventAt: '2026-05-23T01:00:00.000Z'
   });
 
-  let stateEvent = null;
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
-  collector._onEvent = (event) => { stateEvent = event; };
 
-  assert.equal(collector.collect(), 1);
+  assert.equal(collector.collect(), 0);
 
   const events = store.queryEvents({ types: ['user_message'] });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].runtime, 'codex');
-  assert.equal(events[0].event_type, 'user_message');
-  assert.equal(events[0].summary, 'Please check the dashboard timeline.');
-  assert.equal(stateEvent.summary, events[0].summary);
+  assert.equal(events.length, 0);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
