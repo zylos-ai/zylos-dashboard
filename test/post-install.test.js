@@ -24,8 +24,10 @@ function freshTmpDir() {
 
 function runPostInstall(zylosDir, extraEnv = {}) {
   const scriptPath = path.resolve('hooks/post-install.js');
+  const homeDir = extraEnv.HOME || path.join(zylosDir, 'home');
+  fs.mkdirSync(homeDir, { recursive: true });
   return execFileSync('node', [scriptPath], {
-    env: { ...process.env, ZYLOS_DIR: zylosDir, ZYLOS_RUNTIME: 'claude', ...extraEnv },
+    env: { ...process.env, HOME: homeDir, ZYLOS_DIR: zylosDir, ZYLOS_RUNTIME: 'claude', ...extraEnv },
     encoding: 'utf8'
   });
 }
