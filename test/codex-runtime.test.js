@@ -109,6 +109,7 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   const tokens = store.queryMetrics({ name: 'api_request_tokens' });
   assert.equal(tokens[0].runtime, 'codex');
   assert.equal(tokens[0].metric_value, 15000);
+  assert.equal(tokens[0].dimensions.model, 'gpt-5.3-codex');
   assert.equal(tokens[0].dimensions.output, 800);
   assert.equal(tokens[0].dimensions.reasoning, 150);
 
@@ -127,6 +128,40 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
 
   const cursor = store.getCodexRolloutCursor(rolloutPath);
   assert.equal(cursor.byte_offset, fs.statSync(rolloutPath).size);
+
+  assert.equal(collector.collect(), 0);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector backfills rate limits when cursor already passed initial rollout event', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.copyFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), rolloutPath);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+  store.upsertCodexRolloutCursor({
+    transcriptPath: rolloutPath,
+    byteOffset: fs.statSync(rolloutPath).size,
+    sessionId: 'codex-session-1'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 2);
+
+  const rate = store.queryMetrics({ name: 'rate_limit' });
+  assert.equal(rate.length, 1);
+  assert.equal(rate[0].metric_value, 37.5);
+  const weekly = store.queryMetrics({ name: 'rate_limit_7d' });
+  assert.equal(weekly.length, 1);
+  assert.equal(weekly[0].metric_value, 12.25);
 
   assert.equal(collector.collect(), 0);
 

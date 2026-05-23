@@ -8,6 +8,7 @@ export class CodexRolloutCollector {
     this.store = store;
     this.config = config;
     this._timer = null;
+    this._metadataByPath = new Map();
   }
 
   collect() {
@@ -40,14 +41,18 @@ export class CodexRolloutCollector {
     let offset = cursor?.byte_offset || 0;
     if (stat.size < offset) offset = 0;
 
+    const sessionMeta = this._getTranscriptMetadata(mapping.transcript_path);
+
     if (stat.size === offset) {
+      const backfilled = offset > 0 ? this._backfillRateLimits(mapping, sessionMeta) : 0;
       this.store.upsertSourceHealth('codex_rollout', 'collector_liveness', 'stale', {
         transcript_path: mapping.transcript_path,
         session_id: mapping.session_id,
         byte_offset: offset,
+        metrics_written: backfilled,
         last_checked: now
       });
-      return 0;
+      return backfilled;
     }
 
     const length = stat.size - offset;
@@ -84,7 +89,7 @@ export class CodexRolloutCollector {
       } catch {
         continue;
       }
-      written += this._ingestEvent(event, mapping);
+      written += this._ingestEvent(event, mapping, sessionMeta);
     }
 
     this.store.upsertCodexRolloutCursor?.({
@@ -118,13 +123,20 @@ export class CodexRolloutCollector {
     }
   }
 
-  _ingestEvent(event, mapping) {
+  _ingestEvent(event, mapping, sessionMeta = {}) {
     const payload = event.payload || {};
+    if (event.type === 'turn_context' && payload.model) {
+      sessionMeta.model = payload.model;
+      return 0;
+    }
     if (event.type !== 'event_msg' || !payload.type) return 0;
 
     const timestamp = event.timestamp || payload.timestamp || new Date().toISOString();
     if (payload.type === 'token_count') {
-      return this._ingestTokenCount(payload.info || {}, timestamp, mapping);
+      return this._ingestTokenCount(payload.info || {}, timestamp, mapping, {
+        rateLimits: payload.rate_limits || payload.info?.rate_limits,
+        model: sessionMeta.model
+      });
     }
     if (payload.type === 'task_complete') {
       return this._ingestTaskComplete(payload, timestamp, mapping);
@@ -135,12 +147,12 @@ export class CodexRolloutCollector {
     return 0;
   }
 
-  _ingestTokenCount(info, timestamp, mapping) {
+  _ingestTokenCount(info, timestamp, mapping, context = {}) {
     let written = 0;
     const lastUsage = info.last_token_usage || {};
     const totalUsage = info.total_token_usage || {};
     const usage = Object.keys(lastUsage).length > 0 ? lastUsage : totalUsage;
-    const model = info.model || info.model_slug || null;
+    const model = info.model || info.model_slug || context.model || null;
     const eventId = info.id || crypto.randomUUID();
 
     const contextInput = numberOrNull(lastUsage.input_tokens);
@@ -159,8 +171,8 @@ export class CodexRolloutCollector {
       written++;
     }
 
-    written += this._ingestRateLimit(info.rate_limits?.primary, 'rate_limit', timestamp, mapping);
-    written += this._ingestRateLimit(info.rate_limits?.secondary, 'rate_limit_7d', timestamp, mapping);
+    written += this._ingestRateLimit(context.rateLimits?.primary, 'rate_limit', timestamp, mapping);
+    written += this._ingestRateLimit(context.rateLimits?.secondary, 'rate_limit_7d', timestamp, mapping);
 
     const tokenDims = normalizeUsage(usage);
     const totalInput = tokenDims.input + tokenDims.cache_read + tokenDims.cache_creation;
@@ -311,6 +323,57 @@ export class CodexRolloutCollector {
     const cacheRead = usage.cache_read * price.cacheRead / PER_MTOK;
     const cacheCreation = usage.cache_creation * price.cacheCreation / PER_MTOK;
     return input + output + cacheRead + cacheCreation;
+  }
+
+  _getTranscriptMetadata(transcriptPath) {
+    const stat = fs.statSync(transcriptPath);
+    const cached = this._metadataByPath.get(transcriptPath);
+    if (cached?.size === stat.size) return cached;
+
+    const metadata = { size: stat.size };
+    const cachedModel = cached?.model;
+    if (cachedModel) metadata.model = cachedModel;
+    try {
+      const text = fs.readFileSync(transcriptPath, 'utf8');
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (event.type === 'turn_context' && event.payload?.model) {
+          metadata.model = event.payload.model;
+        }
+        if (event.type === 'event_msg' && event.payload?.type === 'token_count' && event.payload.rate_limits) {
+          metadata.rateLimits = event.payload.rate_limits;
+          metadata.rateLimitTimestamp = event.timestamp || event.payload.timestamp || null;
+        }
+      }
+    } catch {
+      // Missing metadata is non-fatal; token and context metrics can still be recorded.
+    }
+
+    this._metadataByPath.set(transcriptPath, metadata);
+    return metadata;
+  }
+
+  _backfillRateLimits(mapping, sessionMeta) {
+    if (!sessionMeta?.rateLimits) return 0;
+
+    const hasRateMetric = (name) => this.store.queryMetrics({ name })
+      .some(row => row.session_id === mapping.session_id && row.source === 'rollout');
+
+    let written = 0;
+    const timestamp = sessionMeta.rateLimitTimestamp || new Date().toISOString();
+    if (!hasRateMetric('rate_limit')) {
+      written += this._ingestRateLimit(sessionMeta.rateLimits.primary, 'rate_limit', timestamp, mapping);
+    }
+    if (!hasRateMetric('rate_limit_7d')) {
+      written += this._ingestRateLimit(sessionMeta.rateLimits.secondary, 'rate_limit_7d', timestamp, mapping);
+    }
+    return written;
   }
 }
 
