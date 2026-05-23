@@ -32,9 +32,24 @@ export const DEFAULT_CODEX_MODEL_PRICES = {
   'gpt-5': { input: 1.25, output: 10, cacheRead: 0.125, cacheCreation: 1.25 }
 };
 
+export const DEFAULT_CODEX_PRIORITY_MODEL_PRICES = {
+  // OpenAI Priority processing prices per 1M tokens. Codex /fast maps to the
+  // priority service tier for models that expose a Fast tier in Codex metadata.
+  'gpt-5.5': { input: 12.50, output: 75, cacheRead: 1.25, cacheCreation: 12.50 },
+  'gpt-5.4-mini': { input: 1.50, output: 9, cacheRead: 0.15, cacheCreation: 1.50 },
+  'gpt-5.4': { input: 5, output: 30, cacheRead: 0.50, cacheCreation: 5 },
+  'gpt-5.3-codex': { input: 3.50, output: 28, cacheRead: 0.35, cacheCreation: 3.50 }
+};
+
 export const DEFAULT_RUNTIME_MODEL_PRICES = {
   claude: DEFAULT_CLAUDE_MODEL_PRICES,
   codex: DEFAULT_CODEX_MODEL_PRICES
+};
+
+export const DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES = {
+  codex: {
+    priority: DEFAULT_CODEX_PRIORITY_MODEL_PRICES
+  }
 };
 
 export const DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS = {
@@ -64,6 +79,7 @@ export function loadConfig() {
       allowUrlTokenOnLocalhost: false
     },
     runtimeModelPrices: DEFAULT_RUNTIME_MODEL_PRICES,
+    runtimeServiceTierModelPrices: DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
     runtimeFastModeMultipliers: DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS
   };
 
@@ -91,6 +107,17 @@ export function loadConfig() {
     ...(loaded.runtimeFastModeMultipliers || {}),
     claude: Number(loaded.runtimeFastModeMultipliers?.claude ?? loaded.fastModeMultiplier ?? DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS.claude)
   };
+  const loadedServiceTierPrices = loaded.runtimeServiceTierModelPrices || {};
+  const runtimeServiceTierModelPrices = {
+    ...loadedServiceTierPrices,
+    codex: {
+      ...(loadedServiceTierPrices.codex || {}),
+      priority: {
+        ...DEFAULT_CODEX_PRIORITY_MODEL_PRICES,
+        ...(loadedServiceTierPrices.codex?.priority || {})
+      }
+    }
+  };
 
   return {
     ...defaults,
@@ -104,6 +131,7 @@ export function loadConfig() {
       ...(loaded.auth || {})
     },
     runtimeModelPrices,
+    runtimeServiceTierModelPrices,
     modelPrices: runtimeModelPrices.claude,
     runtimeFastModeMultipliers,
     fastModeMultiplier: runtimeFastModeMultipliers.claude,
@@ -112,14 +140,23 @@ export function loadConfig() {
   };
 }
 
-export function modelPricesForRuntime(config, runtime = config?.runtime) {
+export function modelPricesForRuntime(config, runtime = config?.runtime, serviceTier = 'standard') {
   const rt = runtime === 'codex' ? 'codex' : 'claude';
+  const tier = normalizeServiceTier(serviceTier);
+  if (rt === 'codex' && tier === 'priority') {
+    return config?.runtimeServiceTierModelPrices?.codex?.priority || DEFAULT_CODEX_PRIORITY_MODEL_PRICES;
+  }
   return config?.runtimeModelPrices?.[rt] || config?.modelPrices || {};
 }
 
 export function fastModeMultiplierForRuntime(config, runtime = config?.runtime) {
   const rt = runtime === 'codex' ? 'codex' : 'claude';
   return config?.runtimeFastModeMultipliers?.[rt] ?? (rt === 'claude' ? config?.fastModeMultiplier : null) ?? null;
+}
+
+export function normalizeServiceTier(serviceTier) {
+  if (serviceTier === 'fast' || serviceTier === 'priority') return 'priority';
+  return 'standard';
 }
 
 export function ensureDataDirs(config = loadConfig()) {

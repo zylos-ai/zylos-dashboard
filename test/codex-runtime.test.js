@@ -6,7 +6,7 @@ import test from 'node:test';
 import { Store } from '../src/lib/store.js';
 import { Sanitizer } from '../src/lib/sanitizer.js';
 import { CodexRolloutCollector } from '../src/lib/collectors/codex-rollout-collector.js';
-import { DEFAULT_CODEX_MODEL_PRICES } from '../src/lib/config.js';
+import { DEFAULT_CODEX_MODEL_PRICES, DEFAULT_CODEX_PRIORITY_MODEL_PRICES } from '../src/lib/config.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-test-'));
@@ -220,6 +220,37 @@ test('CodexRolloutCollector computes cost from default Codex runtime prices', ()
   assert.equal(cost.length, 1);
   assert.equal(cost[0].dimensions.model, 'gpt-5.5');
   assert.ok(Math.abs(cost[0].metric_value - 0.0855) < 0.000001);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector computes cost from Codex priority prices when fast tier is recorded', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const fixtureText = fs.readFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), 'utf8')
+    .replace('"model":"gpt-5.3-codex"', '"model":"gpt-5.3-codex","service_tier":"priority"');
+  fs.writeFileSync(rolloutPath, fixtureText);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, {
+    runtimeModelPrices: { codex: DEFAULT_CODEX_MODEL_PRICES },
+    runtimeServiceTierModelPrices: { codex: { priority: DEFAULT_CODEX_PRIORITY_MODEL_PRICES } }
+  });
+  collector.collect();
+
+  const cost = store.queryMetrics({ name: 'api_request_cost' });
+  assert.equal(cost.length, 1);
+  assert.equal(cost[0].dimensions.model, 'gpt-5.3-codex');
+  assert.equal(cost[0].dimensions.service_tier, 'priority');
+  assert.ok(Math.abs(cost[0].metric_value - 0.06545) < 0.000001);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

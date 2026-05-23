@@ -510,20 +510,23 @@ function builtInModelsForRuntime(runtime) {
 }
 
 function supportsFastMode(runtime) {
-  return runtime !== 'codex';
+  return runtime === 'claude' || runtime === 'codex';
 }
 
 function settingsPayload(runtime) {
   const priceRuntime = runtime === 'codex' ? 'codex' : 'claude';
   const fastModeAvailable = supportsFastMode(priceRuntime);
-  const fastModeMultiplier = fastModeAvailable ? fastModeMultiplierForRuntime(config, priceRuntime) : null;
+  const fastModeMultiplier = priceRuntime === 'claude' ? fastModeMultiplierForRuntime(config, priceRuntime) : null;
   return {
     runtime: priceRuntime,
     builtInModels: builtInModelsForRuntime(priceRuntime),
     modelPrices: modelPricesForRuntime(config, priceRuntime),
     runtimeModelPrices: config.runtimeModelPrices,
+    runtimeServiceTierModelPrices: config.runtimeServiceTierModelPrices,
     fastMode: {
       available: fastModeAvailable,
+      mode: priceRuntime === 'codex' ? 'service_tier' : 'multiplier',
+      serviceTier: priceRuntime === 'codex' ? 'priority' : null,
       multiplier: fastModeMultiplier
     },
     fastModeMultiplier
@@ -579,7 +582,7 @@ async function handleSettingsUpdate(req, res) {
 
   if (body.fastModeMultiplier !== undefined) {
     const fm = body.fastModeMultiplier;
-    if (!supportsFastMode(priceRuntime)) {
+    if (priceRuntime !== 'claude') {
       errors.push(`fastModeMultiplier is not supported for ${priceRuntime} runtime`);
     } else if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
       errors.push('fastModeMultiplier must be a finite number > 0');

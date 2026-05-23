@@ -1402,7 +1402,7 @@ function createSettingsModal() {
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-body">
-    <div class="action-group" id="settings-fast-mode-group">
+    <div class="action-group" id="settings-model-pricing-group">
       <span class="action-group-label" id="settings-pricing-label">${esc(t('settings.model_pricing'))}
         <button class="tip-btn tip-btn-inline" id="pricing-tip" type="button" aria-label="Pricing info">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -1421,7 +1421,7 @@ function createSettingsModal() {
       </div>
       <button class="action-btn action-btn-sm" id="settings-add-model" type="button">${esc(t('btn.add_model'))}</button>
     </div>
-    <div class="action-group">
+    <div class="action-group" id="settings-fast-mode-group">
       <span class="action-group-label">${esc(t('settings.fast_mode'))}</span>
       <div class="action-field">
         <label class="action-field-label">${esc(t('settings.price_multiplier'))}</label>
@@ -1496,7 +1496,7 @@ async function openSettingsModal() {
     }
 
     const fastModeGroup = document.getElementById('settings-fast-mode-group');
-    if (fastModeGroup) fastModeGroup.hidden = data.fastMode?.available === false;
+    if (fastModeGroup) fastModeGroup.hidden = data.fastMode?.mode !== 'multiplier';
     const fastInput = document.getElementById('settings-fast-multiplier');
     if (fastInput) fastInput.value = data.fastMode?.multiplier ?? data.fastModeMultiplier ?? 6;
   } catch (err) {

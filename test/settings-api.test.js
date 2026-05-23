@@ -6,6 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 import {
   DEFAULT_CODEX_MODEL_PRICES,
+  DEFAULT_CODEX_PRIORITY_MODEL_PRICES,
   DEFAULT_RUNTIME_MODEL_PRICES,
   loadConfig,
   modelPricesForRuntime
@@ -209,6 +210,23 @@ test('loadConfig separates Claude and Codex model price tables', () => {
   });
 });
 
+test('loadConfig keeps Codex priority prices separate from standard prices', () => {
+  withTmpZylosConfig({
+    runtimeServiceTierModelPrices: {
+      codex: {
+        priority: {
+          'gpt-5.5': { input: 13, output: 75, cacheRead: 1.25, cacheCreation: 13 }
+        }
+      }
+    }
+  }, () => {
+    const config = loadConfig();
+    assert.equal(modelPricesForRuntime(config, 'codex')['gpt-5.5'].input, DEFAULT_CODEX_MODEL_PRICES['gpt-5.5'].input);
+    assert.equal(modelPricesForRuntime(config, 'codex', 'priority')['gpt-5.5'].input, 13);
+    assert.equal(modelPricesForRuntime(config, 'codex', 'fast')['gpt-5.4'].input, DEFAULT_CODEX_PRIORITY_MODEL_PRICES['gpt-5.4'].input);
+  });
+});
+
 test('loadConfig keeps fast mode multiplier scoped to Claude runtime', () => {
   withTmpZylosConfig({
     fastModeMultiplier: 8
@@ -245,14 +263,16 @@ test('loadConfig migrates legacy modelPrices into Claude prices only', () => {
   });
 });
 
-test('GET /api/settings hides fast mode for Codex runtime', async () => {
+test('GET /api/settings exposes Codex fast mode as priority service tier', async () => {
   const server = await makeSettingsServer('codex');
   try {
     const resp = await fetch(`${server.origin}/api/settings`);
     assert.equal(resp.status, 200);
     const body = await resp.json();
     assert.equal(body.runtime, 'codex');
-    assert.equal(body.fastMode.available, false);
+    assert.equal(body.fastMode.available, true);
+    assert.equal(body.fastMode.mode, 'service_tier');
+    assert.equal(body.fastMode.serviceTier, 'priority');
     assert.equal(body.fastMode.multiplier, null);
     assert.equal(body.fastModeMultiplier, null);
   } finally {

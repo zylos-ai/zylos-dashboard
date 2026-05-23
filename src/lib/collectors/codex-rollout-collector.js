@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { modelPricesForRuntime } from '../config.js';
+import { modelPricesForRuntime, normalizeServiceTier } from '../config.js';
 
 const PER_MTOK = 1_000_000;
 
@@ -128,6 +128,7 @@ export class CodexRolloutCollector {
     const payload = event.payload || {};
     if (event.type === 'turn_context' && payload.model) {
       sessionMeta.model = payload.model;
+      sessionMeta.serviceTier = normalizeServiceTier(payload.service_tier ?? payload.serviceTier);
       return 0;
     }
     if (event.type !== 'event_msg' || !payload.type) return 0;
@@ -136,7 +137,8 @@ export class CodexRolloutCollector {
     if (payload.type === 'token_count') {
       return this._ingestTokenCount(payload.info || {}, timestamp, mapping, {
         rateLimits: payload.rate_limits || payload.info?.rate_limits,
-        model: sessionMeta.model
+        model: sessionMeta.model,
+        serviceTier: normalizeServiceTier(payload.service_tier ?? payload.serviceTier ?? payload.info?.service_tier ?? payload.info?.serviceTier ?? sessionMeta.serviceTier)
       });
     }
     if (payload.type === 'task_complete') {
@@ -154,6 +156,7 @@ export class CodexRolloutCollector {
     const totalUsage = info.total_token_usage || {};
     const usage = Object.keys(lastUsage).length > 0 ? lastUsage : totalUsage;
     const model = info.model || info.model_slug || context.model || null;
+    const serviceTier = normalizeServiceTier(info.service_tier ?? info.serviceTier ?? context.serviceTier);
     const eventId = info.id || crypto.randomUUID();
 
     const contextInput = numberOrNull(lastUsage.input_tokens);
@@ -179,6 +182,7 @@ export class CodexRolloutCollector {
     const totalInput = tokenDims.input + tokenDims.cache_read + tokenDims.cache_creation;
     if (totalInput > 0 || tokenDims.output > 0 || tokenDims.reasoning > 0) {
       tokenDims.model = model;
+      tokenDims.service_tier = serviceTier;
       tokenDims.event_id = eventId;
       this.store.insertMetric({
         timestamp,
@@ -199,14 +203,14 @@ export class CodexRolloutCollector {
           session_id: mapping.session_id,
           metric_name: 'cache_hit_rate',
           metric_value: tokenDims.cache_read / totalInput,
-          dimensions: { event_id: eventId, model },
+          dimensions: { event_id: eventId, model, service_tier: serviceTier },
           source: 'jsonl_usage',
           confidence: 'actual'
         });
         written++;
       }
 
-      const price = this._resolveModelPrice(model);
+      const price = this._resolveModelPrice(model, serviceTier);
       const cost = this._calculateCost(tokenDims, price);
       if (cost != null) {
         this.store.insertMetric({
@@ -215,7 +219,7 @@ export class CodexRolloutCollector {
           session_id: mapping.session_id,
           metric_name: 'api_request_cost',
           metric_value: cost,
-          dimensions: { event_id: eventId, model },
+          dimensions: { event_id: eventId, model, service_tier: serviceTier },
           source: 'jsonl_usage',
           confidence: 'estimated'
         });
@@ -308,9 +312,9 @@ export class CodexRolloutCollector {
     return 1;
   }
 
-  _resolveModelPrice(model) {
+  _resolveModelPrice(model, serviceTier = 'standard') {
     if (!model) return null;
-    const prices = modelPricesForRuntime(this.config, 'codex');
+    const prices = modelPricesForRuntime(this.config, 'codex', serviceTier);
     for (const [prefix, price] of Object.entries(prices)) {
       if (model.startsWith(prefix)) return price;
     }
@@ -346,6 +350,7 @@ export class CodexRolloutCollector {
         }
         if (event.type === 'turn_context' && event.payload?.model) {
           metadata.model = event.payload.model;
+          metadata.serviceTier = normalizeServiceTier(event.payload.service_tier ?? event.payload.serviceTier);
         }
         if (event.type === 'event_msg' && event.payload?.type === 'token_count' && event.payload.rate_limits) {
           metadata.rateLimits = event.payload.rate_limits;
