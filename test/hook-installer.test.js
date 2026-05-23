@@ -12,6 +12,7 @@ function makeTmpDir() {
 function makeInstaller(projectRoot, tmpHome) {
   const installer = new HookInstaller(projectRoot, tmpHome);
   installer._codexPath = () => path.join(tmpHome, '.codex', 'hooks.json');
+  installer._codexConfigPath = () => path.join(tmpHome, '.codex', 'config.toml');
   return installer;
 }
 
@@ -130,6 +131,8 @@ test('HookInstaller — Codex', async (t) => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 6);
     assert.equal(result.total, 6);
+    assert.equal(result.feature.enabled, true);
+    assert.equal(result.feature.changed, true);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
@@ -138,11 +141,16 @@ test('HookInstaller — Codex', async (t) => {
     }
     assert.equal(config.hooks.SubagentStart, undefined, 'SubagentStart should not be installed for Codex');
     assert.equal(config.hooks.SubagentStop, undefined, 'SubagentStop should not be installed for Codex');
+
+    const codexConfig = fs.readFileSync(installer._codexConfigPath(), 'utf8');
+    assert.match(codexConfig, /^\[features\]$/m);
+    assert.match(codexConfig, /^codex_hooks = true$/m);
   });
 
   await t.test('idempotent — second install adds nothing', () => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 0);
+    assert.equal(result.feature.changed, false);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
@@ -233,6 +241,19 @@ test('HookInstaller — Codex', async (t) => {
   await t.test('uninstall is idempotent', () => {
     const result = installer.uninstallCodexHooks();
     assert.equal(result.removed, 0);
+  });
+
+  await t.test('enables existing false codex hook feature flag in-place', () => {
+    fs.mkdirSync(path.dirname(installer._codexConfigPath()), { recursive: true });
+    fs.writeFileSync(installer._codexConfigPath(), '[features]\ncodex_hooks = false\n\n[projects."/tmp/example"]\ntrust_level = "trusted"\n');
+
+    const result = installer.installCodexHooks();
+    assert.equal(result.feature.changed, true);
+
+    const codexConfig = fs.readFileSync(installer._codexConfigPath(), 'utf8');
+    assert.match(codexConfig, /^codex_hooks = true$/m);
+    assert.doesNotMatch(codexConfig, /^codex_hooks = false$/m);
+    assert.match(codexConfig, /^\[projects\."\/tmp\/example"\]$/m);
   });
 
   fs.rmSync(tmpHome, { recursive: true, force: true });

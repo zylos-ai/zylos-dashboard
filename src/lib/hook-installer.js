@@ -122,6 +122,10 @@ export class HookInstaller {
     return path.join(os.homedir(), '.codex', 'hooks.json');
   }
 
+  _codexConfigPath() {
+    return path.join(os.homedir(), '.codex', 'config.toml');
+  }
+
   _readCodex() {
     let raw;
     try {
@@ -151,6 +155,35 @@ export class HookInstaller {
     fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
   }
 
+  _enableCodexHookFeature() {
+    const p = this._codexConfigPath();
+    let text = '';
+    try {
+      text = fs.readFileSync(p, 'utf8');
+    } catch {
+      text = '';
+    }
+
+    const existingFlag = /^codex_hooks\s*=\s*(true|false)\s*$/m.exec(text);
+    if (existingFlag?.[1] === 'true') {
+      return { enabled: true, changed: false, path: p };
+    }
+
+    let next;
+    if (existingFlag) {
+      next = text.replace(/^codex_hooks\s*=\s*false\s*$/m, 'codex_hooks = true');
+    } else if (/^\[features\]\s*$/m.test(text)) {
+      next = text.replace(/^(\[features\]\s*)$/m, '$1\ncodex_hooks = true');
+    } else {
+      const trimmed = text.replace(/\s*$/, '');
+      next = `${trimmed}${trimmed ? '\n\n' : ''}[features]\ncodex_hooks = true\n`;
+    }
+
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, next.endsWith('\n') ? next : `${next}\n`);
+    return { enabled: true, changed: true, path: p };
+  }
+
   _codexCommand() {
     return `ZYLOS_RUNTIME=codex ZYLOS_DIR=${this.zylosDir} node ${this.hookScript}`;
   }
@@ -158,6 +191,7 @@ export class HookInstaller {
   installCodexHooks() {
     const config = this._readCodex();
     if (!config.hooks) config.hooks = {};
+    const feature = this._enableCodexHookFeature();
 
     const cmd = this._codexCommand();
     let added = 0;
@@ -195,7 +229,7 @@ export class HookInstaller {
     }
 
     if (added > 0) this._writeCodex(config);
-    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath() };
+    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath(), feature };
   }
 
   uninstallCodexHooks() {
