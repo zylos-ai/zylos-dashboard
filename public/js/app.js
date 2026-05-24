@@ -1389,6 +1389,7 @@ function initTrendControls() {
 // ─── Settings Modal ───
 let settingsModal = null;
 let settingsBuiltInModels = new Set();
+let settingsBuiltInPriorityModels = new Set();
 
 function createSettingsModal() {
   if (settingsModal) return settingsModal;
@@ -1422,6 +1423,18 @@ function createSettingsModal() {
       </div>
       <button class="action-btn action-btn-sm" id="settings-add-model" type="button">${esc(t('btn.add_model'))}</button>
     </div>
+    <div class="action-group" id="settings-priority-pricing-group" hidden>
+      <span class="action-group-label">${esc(t('settings.priority_model_pricing'))}</span>
+      <div class="settings-table-scroll">
+      <table class="settings-price-table" id="settings-priority-price-table">
+        <thead>
+          <tr><th>${esc(t('settings.col_prefix'))}</th><th>${esc(t('settings.col_input'))}</th><th>${esc(t('settings.col_output'))}</th><th>${esc(t('settings.col_cache_read'))}</th><th>${esc(t('settings.col_cache_write'))}</th><th></th></tr>
+        </thead>
+        <tbody id="settings-priority-price-rows"></tbody>
+      </table>
+      </div>
+      <button class="action-btn action-btn-sm" id="settings-add-priority-model" type="button">${esc(t('btn.add_model'))}</button>
+    </div>
     <div class="action-group" id="settings-fast-mode-group">
       <span class="action-group-label">${esc(t('settings.fast_mode'))}</span>
       <div class="action-field">
@@ -1447,6 +1460,7 @@ function createSettingsModal() {
   overlay.querySelector('#settings-cancel').addEventListener('click', closeSettingsModal);
   overlay.querySelector('#settings-save').addEventListener('click', saveSettings);
   overlay.querySelector('#settings-add-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false));
+  overlay.querySelector('#settings-add-priority-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false, 'settings-priority-price-rows'));
 
   const pricingTip = overlay.querySelector('#pricing-tip');
   const pricingPop = overlay.querySelector('#pricing-popover');
@@ -1458,8 +1472,8 @@ function createSettingsModal() {
   return overlay;
 }
 
-function addPriceRow(prefix, prices, builtIn) {
-  const tbody = document.getElementById('settings-price-rows');
+function addPriceRow(prefix, prices, builtIn, rowsId = 'settings-price-rows') {
+  const tbody = document.getElementById(rowsId);
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><input class="settings-input settings-prefix" type="text" value="${esc(prefix)}" ${builtIn ? 'readonly' : ''} /></td>
@@ -1485,6 +1499,7 @@ async function openSettingsModal() {
     const data = await resp.json();
     const runtimeLabel = data.runtime === 'codex' ? 'Codex' : 'Claude';
     settingsBuiltInModels = new Set(data.builtInModels || []);
+    settingsBuiltInPriorityModels = new Set(data.builtInPriorityModels || []);
     const pricingLabel = document.getElementById('settings-pricing-label');
     if (pricingLabel) {
       pricingLabel.firstChild.textContent = t('settings.model_pricing_runtime', { runtime: runtimeLabel });
@@ -1494,6 +1509,16 @@ async function openSettingsModal() {
     tbody.innerHTML = '';
     for (const [prefix, prices] of Object.entries(data.modelPrices || {})) {
       addPriceRow(prefix, prices, settingsBuiltInModels.has(prefix));
+    }
+
+    const priorityGroup = document.getElementById('settings-priority-pricing-group');
+    if (priorityGroup) priorityGroup.hidden = data.runtime !== 'codex';
+    const priorityTbody = document.getElementById('settings-priority-price-rows');
+    if (priorityTbody) {
+      priorityTbody.innerHTML = '';
+      for (const [prefix, prices] of Object.entries(data.priorityModelPrices || {})) {
+        addPriceRow(prefix, prices, settingsBuiltInPriorityModels.has(prefix), 'settings-priority-price-rows');
+      }
     }
 
     const fastModeGroup = document.getElementById('settings-fast-mode-group');
@@ -1532,6 +1557,23 @@ async function saveSettings() {
 
   const fastModeGroup = document.getElementById('settings-fast-mode-group');
   const body = { modelPrices };
+  const priorityGroup = document.getElementById('settings-priority-pricing-group');
+  if (priorityGroup && !priorityGroup.hidden) {
+    const priorityModelPrices = {};
+    const priorityRows = document.querySelectorAll('#settings-priority-price-rows tr');
+    for (const row of priorityRows) {
+      const inputs = row.querySelectorAll('input');
+      const prefix = inputs[0].value.trim();
+      if (!prefix) continue;
+      priorityModelPrices[prefix] = {
+        input: Number(inputs[1].value),
+        output: Number(inputs[2].value),
+        cacheRead: Number(inputs[3].value),
+        cacheCreation: Number(inputs[4].value)
+      };
+    }
+    body.priorityModelPrices = priorityModelPrices;
+  }
   if (!fastModeGroup?.hidden) {
     body.fastModeMultiplier = Number(document.getElementById('settings-fast-multiplier').value);
   }
@@ -1739,7 +1781,6 @@ async function openActionsModal() {
 
   try {
     const meta = await fetchJson('/api/actions/meta');
-    const isClaude = meta.runtime === 'claude';
     const runtimeSel = modal.querySelector('#action-runtime');
     runtimeSel.value = meta.runtime;
 
@@ -1748,32 +1789,25 @@ async function openActionsModal() {
     const effortField = modal.querySelector('#action-effort-field');
     const effortSel = modal.querySelector('#action-effort');
 
-    if (modelField) modelField.hidden = !isClaude;
-    if (effortField) effortField.hidden = !isClaude;
+    if (modelField) modelField.hidden = false;
+    if (effortField) effortField.hidden = false;
 
     modelSel.innerHTML = '';
-    if (isClaude) {
-      for (const m of meta.models || []) {
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.id;
-        if (m.id === meta.current_model) opt.selected = true;
-        modelSel.appendChild(opt);
-      }
-      const customOpt = document.createElement('option');
-      customOpt.value = '__custom__';
-      customOpt.textContent = t('actions.custom');
-      modelSel.appendChild(customOpt);
+    for (const m of meta.models || []) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id;
+      if (m.id === meta.current_model) opt.selected = true;
+      modelSel.appendChild(opt);
     }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = t('actions.custom');
+    modelSel.appendChild(customOpt);
     modal.querySelector('#action-model-custom').hidden = true;
 
     const effortsByModel = meta.efforts_by_model || {};
     modal._renderEffortOptions = (modelId) => {
-      if (!isClaude) {
-        effortField.hidden = true;
-        effortSel.innerHTML = '';
-        return;
-      }
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
       if (!list.length) {
         effortField.hidden = true;
@@ -1790,7 +1824,7 @@ async function openActionsModal() {
       }
       effortSel._prevValue = effortSel.value;
     };
-    if (isClaude) modal._renderEffortOptions(meta.current_model);
+    modal._renderEffortOptions(modelSel.value === '__custom__' ? meta.current_model : modelSel.value);
 
     const ri = state.dashboardState?.runtime_info;
     const zylosVer = modal.querySelector('#action-zylos-ver');

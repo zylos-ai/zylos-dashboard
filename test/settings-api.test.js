@@ -275,6 +275,31 @@ test('GET /api/settings exposes Codex fast mode as priority service tier', async
     assert.equal(body.fastMode.serviceTier, 'priority');
     assert.equal(body.fastMode.multiplier, null);
     assert.equal(body.fastModeMultiplier, null);
+    assert.equal(body.priorityModelPrices['gpt-5.5'].input, DEFAULT_CODEX_PRIORITY_MODEL_PRICES['gpt-5.5'].input);
+    assert.ok(body.builtInPriorityModels.includes('gpt-5.5'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('PUT /api/settings stores Codex priority model prices', async () => {
+  const server = await makeSettingsServer('codex');
+  try {
+    const current = await (await fetch(`${server.origin}/api/settings`)).json();
+    const priorityModelPrices = {
+      ...current.priorityModelPrices,
+      'gpt-5.5': { ...current.priorityModelPrices['gpt-5.5'], input: 13 }
+    };
+    const resp = await fetch(`${server.origin}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPrices: current.modelPrices, priorityModelPrices })
+    });
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    assert.equal(body.priorityModelPrices['gpt-5.5'].input, 13);
+    const written = parseConfigFile(server.configPath);
+    assert.equal(written.runtimeServiceTierModelPrices.codex.priority['gpt-5.5'].input, 13);
   } finally {
     await server.close();
   }

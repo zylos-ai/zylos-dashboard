@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import {
+  DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
   DEFAULT_RUNTIME_MODEL_PRICES,
   ensureDataDirs,
   fastModeMultiplierForRuntime,
@@ -512,6 +513,11 @@ function builtInModelsForRuntime(runtime) {
   return Object.keys(DEFAULT_RUNTIME_MODEL_PRICES[runtime === 'codex' ? 'codex' : 'claude'] || {});
 }
 
+function builtInServiceTierModelsForRuntime(runtime, serviceTier) {
+  const rt = runtime === 'codex' ? 'codex' : 'claude';
+  return Object.keys(DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES[rt]?.[serviceTier] || {});
+}
+
 function supportsFastMode(runtime) {
   return runtime === 'claude' || runtime === 'codex';
 }
@@ -523,7 +529,9 @@ function settingsPayload(runtime) {
   return {
     runtime: priceRuntime,
     builtInModels: builtInModelsForRuntime(priceRuntime),
+    builtInPriorityModels: builtInServiceTierModelsForRuntime(priceRuntime, 'priority'),
     modelPrices: modelPricesForRuntime(config, priceRuntime),
+    priorityModelPrices: priceRuntime === 'codex' ? modelPricesForRuntime(config, priceRuntime, 'priority') : null,
     runtimeModelPrices: config.runtimeModelPrices,
     runtimeServiceTierModelPrices: config.runtimeServiceTierModelPrices,
     fastMode: {
@@ -536,13 +544,13 @@ function settingsPayload(runtime) {
   };
 }
 
-function validateModelPrices(modelPrices, runtime) {
+function validateModelPrices(modelPrices, runtime, requiredModels = builtInModelsForRuntime(runtime)) {
   const errors = [];
   if (typeof modelPrices !== 'object' || modelPrices === null || Array.isArray(modelPrices)) {
     errors.push('modelPrices must be an object');
     return errors;
   }
-  for (const builtIn of builtInModelsForRuntime(runtime)) {
+  for (const builtIn of requiredModels) {
     if (!(builtIn in modelPrices)) {
       errors.push(`Cannot remove built-in model: ${builtIn}`);
     }
@@ -583,6 +591,15 @@ async function handleSettingsUpdate(req, res) {
     errors.push(...validateModelPrices(body.modelPrices, priceRuntime));
   }
 
+  if (body.priorityModelPrices !== undefined) {
+    if (priceRuntime !== 'codex') {
+      errors.push(`priorityModelPrices is not supported for ${priceRuntime} runtime`);
+    } else {
+      const priorityBuiltIns = builtInServiceTierModelsForRuntime(priceRuntime, 'priority');
+      errors.push(...validateModelPrices(body.priorityModelPrices, priceRuntime, priorityBuiltIns));
+    }
+  }
+
   if (body.fastModeMultiplier !== undefined) {
     const fm = body.fastModeMultiplier;
     if (priceRuntime !== 'claude') {
@@ -592,7 +609,7 @@ async function handleSettingsUpdate(req, res) {
     }
   }
 
-  const allowedKeys = ['modelPrices', 'fastModeMultiplier'];
+  const allowedKeys = ['modelPrices', 'priorityModelPrices', 'fastModeMultiplier'];
   const unknownKeys = Object.keys(body).filter(k => !allowedKeys.includes(k));
   if (unknownKeys.length > 0) {
     errors.push(`Unknown keys not allowed: ${unknownKeys.join(', ')}`);
@@ -625,6 +642,15 @@ async function handleSettingsUpdate(req, res) {
       };
       if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
     }
+    if (body.priorityModelPrices !== undefined) {
+      existing.runtimeServiceTierModelPrices = {
+        ...(existing.runtimeServiceTierModelPrices || {}),
+        codex: {
+          ...(existing.runtimeServiceTierModelPrices?.codex || {}),
+          priority: body.priorityModelPrices
+        }
+      };
+    }
 
     const tmpPath = config.configPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n', { mode: 0o600 });
@@ -643,6 +669,15 @@ async function handleSettingsUpdate(req, res) {
         [priceRuntime]: body.fastModeMultiplier
       };
       config.fastModeMultiplier = config.runtimeFastModeMultipliers.claude;
+    }
+    if (body.priorityModelPrices !== undefined) {
+      config.runtimeServiceTierModelPrices = {
+        ...(config.runtimeServiceTierModelPrices || {}),
+        codex: {
+          ...(config.runtimeServiceTierModelPrices?.codex || {}),
+          priority: body.priorityModelPrices
+        }
+      };
     }
 
     sendJson(res, 200, {

@@ -18,12 +18,12 @@ In scope:
 - A Codex rollout JSONL collector that reads only hook-provided `transcript_path` values.
 - Metric mapping for Codex context, rate limits, token usage, cache hit rate, cost, TTFT, and turn duration.
 - Resolver/config updates needed for Codex metrics to appear through existing API surfaces.
+- Settings and Actions parity where Codex has matching runtime controls, including standard/priority price editing plus model and reasoning effort changes.
 - Tests, fixtures, smoke checks, and self-acceptance notes.
 
 Out of scope:
 
 - Codex OTLP receiver or codec.
-- Codex model switching or reasoning effort actions.
 - Raw prompt, raw tool input, raw tool output, or raw assistant content persistence.
 - Dashboard-side Codex session discovery through SQLite or filesystem scanning.
 
