@@ -126,7 +126,7 @@ export class HookInstaller {
   }
 
   _codexPath() {
-    return path.join(this._codexHome(), 'hooks.json');
+    return path.join(this.zylosDir, '.codex', 'hooks.json');
   }
 
   _codexConfigPath() {

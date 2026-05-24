@@ -27,7 +27,7 @@ test('post-upgrade — refreshes installed Claude and Codex hooks', () => {
   const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8'));
   assert.ok(claude.hooks.PreToolUse[0].hooks[0].command.includes('hook-ingest.cjs'));
 
-  const codexPath = path.join(homeDir, '.codex', 'hooks.json');
+  const codexPath = path.join(tmpDir, '.codex', 'hooks.json');
   const codex = JSON.parse(fs.readFileSync(codexPath, 'utf8'));
   const command = codex.hooks.PreToolUse[0].hooks[0].command;
   assert.ok(command.includes(`ZYLOS_DIR=${tmpDir}`));

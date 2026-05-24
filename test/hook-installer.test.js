@@ -11,7 +11,6 @@ function makeTmpDir() {
 
 function makeInstaller(projectRoot, tmpHome) {
   const installer = new HookInstaller(projectRoot, tmpHome);
-  installer._codexPath = () => path.join(tmpHome, '.codex', 'hooks.json');
   installer._codexConfigPath = () => path.join(tmpHome, '.codex', 'config.toml');
   installer._trustCodexHooks = () => ({ trusted: 6, status: 'ok' });
   return installer;
@@ -127,6 +126,10 @@ test('HookInstaller — Codex', async (t) => {
   const tmpHome = makeTmpDir();
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
+
+  await t.test('uses project-level hooks.json path', () => {
+    assert.equal(installer._codexPath(), path.join(tmpHome, '.codex', 'hooks.json'));
+  });
 
   await t.test('install creates hook entries for all 6 Codex events (no SubagentStart/Stop)', () => {
     const result = installer.installCodexHooks();

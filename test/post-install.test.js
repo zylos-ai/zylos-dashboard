@@ -109,7 +109,7 @@ test('post-install — installs both Claude and Codex hooks regardless of runtim
   }
   assert.ok(claude.statusLine.command.includes('statusline-ingest.cjs'));
 
-  const hooksPath = path.join(homeDir, '.codex', 'hooks.json');
+  const hooksPath = path.join(tmpDir, '.codex', 'hooks.json');
   const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
 
   for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {

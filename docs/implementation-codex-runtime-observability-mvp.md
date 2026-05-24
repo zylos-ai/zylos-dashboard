@@ -104,7 +104,7 @@ Tasks:
 - Change `post-install` to call `HookInstaller.install()` instead of manually installing Claude hooks only.
 - Keep Claude statusline install behavior intact for Claude runtime.
 - Add tests for `HookInstaller.install()` dispatching to Codex.
-- Add post-install tests for Codex runtime that verify `~/.codex/hooks.json` receives Dashboard hooks.
+- Add post-install tests for Codex runtime that verify project-level `.codex/hooks.json` receives Dashboard hooks.
 - Preserve safe Codex metadata in sanitized hook payloads:
   - `turn_id`
   - `transcript_path`
@@ -288,7 +288,7 @@ Before asking Howard for review:
 - The branch is based on latest `origin/main`.
 - The working tree has no accidental changes outside the planned files.
 - `spike/` remains untracked historical evidence and is not included unless explicitly needed as sanitized fixtures.
-- Any production hook install is only through lifecycle code, not manual modification of live `~/.codex/hooks.json`.
+- Any production hook install is only through lifecycle code, not manual modification of live `.codex/hooks.json`.
 - The final PR description calls out:
   - no OTLP dependency,
   - no Codex SQLite access,
