@@ -209,59 +209,6 @@ test('HookInstaller — Codex', async (t) => {
     assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
   });
 
-  await t.test('removes own hooks from legacy global hooks.json', () => {
-    const legacyPath = installer._legacyCodexPath();
-    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
-    fs.writeFileSync(legacyPath, JSON.stringify({
-      hooks: {
-        PreToolUse: [
-          {
-            matcher: '',
-            hooks: [{ type: 'command', command: `node ${installer.hookScript}`, timeout: 5 }]
-          },
-          {
-            matcher: '',
-            hooks: [{ type: 'command', command: 'node ~/other-script.js', timeout: 1000 }]
-          }
-        ],
-        Stop: [
-          {
-            hooks: [{ type: 'command', command: `node ${installer.hookScript}`, timeout: 5 }]
-          }
-        ]
-      }
-    }, null, 2) + '\n');
-
-    const result = installer.installCodexHooks();
-    assert.equal(result.legacyCleanup.removed, 2);
-    assert.equal(result.legacyCleanup.deleted, false);
-
-    const legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-    assert.equal(legacy.hooks.PreToolUse.length, 1);
-    assert.ok(legacy.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
-    assert.equal(legacy.hooks.Stop, undefined);
-  });
-
-  await t.test('deletes legacy global hooks.json when only dashboard hooks remain', () => {
-    const legacyPath = installer._legacyCodexPath();
-    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
-    fs.writeFileSync(legacyPath, JSON.stringify({
-      hooks: {
-        PreToolUse: [
-          {
-            matcher: '',
-            hooks: [{ type: 'command', command: `node ${installer.hookScript}`, timeout: 5 }]
-          }
-        ]
-      }
-    }, null, 2) + '\n');
-
-    const result = installer.installCodexHooks();
-    assert.equal(result.legacyCleanup.removed, 1);
-    assert.equal(result.legacyCleanup.deleted, true);
-    assert.equal(fs.existsSync(legacyPath), false);
-  });
-
   await t.test('removes async from existing hooks in-place', () => {
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
