@@ -105,6 +105,7 @@ Tasks:
 - Keep Claude statusline install behavior intact for Claude runtime.
 - Add tests for `HookInstaller.install()` dispatching to Codex.
 - Add post-install tests for Codex runtime that verify project-level `.codex/hooks.json` receives Dashboard hooks.
+- When installing project-level Codex hooks, remove Dashboard-owned hooks from the legacy global `.codex/hooks.json` while preserving unrelated user hooks.
 - Preserve safe Codex metadata in sanitized hook payloads:
   - `turn_id`
   - `transcript_path`
@@ -118,6 +119,7 @@ Tasks:
 Acceptance:
 
 - Codex post-install creates Dashboard hook entries for the verified Codex events.
+- Dashboard `post-upgrade` can migrate an already-installed instance from legacy global Codex hooks to project-level Codex hooks.
 - Claude post-install behavior remains covered and unchanged.
 - Codex hook fixture ingestion writes `runtime_events` with `runtime='codex'` and safe metadata.
 - Raw prompt and raw tool I/O are absent from stored event metadata.

@@ -129,6 +129,10 @@ export class HookInstaller {
     return path.join(this.zylosDir, '.codex', 'hooks.json');
   }
 
+  _legacyCodexPath() {
+    return path.join(this._codexHome(), 'hooks.json');
+  }
+
   _codexConfigPath() {
     return path.join(this._codexHome(), 'config.toml');
   }
@@ -167,6 +171,54 @@ export class HookInstaller {
     const p = this._codexPath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
+  }
+
+  _removeOwnCodexHooksAtPath(p) {
+    let config;
+    try {
+      config = JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch {
+      return { path: p, removed: 0, deleted: false, skipped: true };
+    }
+
+    if (Array.isArray(config)) {
+      const before = config.length;
+      config = config.filter(entry => !this._isOwn(entry.command));
+      const removed = before - config.length;
+      if (removed === 0) return { path: p, removed: 0, deleted: false };
+      if (config.length === 0) {
+        fs.unlinkSync(p);
+        return { path: p, removed, deleted: true };
+      }
+      fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
+      return { path: p, removed, deleted: false };
+    }
+
+    if (!config?.hooks) return { path: p, removed: 0, deleted: false };
+
+    let removed = 0;
+    for (const event of Object.keys(config.hooks)) {
+      if (!Array.isArray(config.hooks[event])) continue;
+      const before = config.hooks[event].length;
+      config.hooks[event] = config.hooks[event].filter(g =>
+        !g.hooks?.some(h => this._isOwn(h.command))
+      );
+      removed += before - config.hooks[event].length;
+      if (config.hooks[event].length === 0) delete config.hooks[event];
+    }
+
+    if (removed === 0) return { path: p, removed: 0, deleted: false };
+
+    const hasHooks = Object.values(config.hooks).some(groups =>
+      Array.isArray(groups) && groups.length > 0
+    );
+    if (!hasHooks && Object.keys(config).every(k => k === 'hooks')) {
+      fs.unlinkSync(p);
+      return { path: p, removed, deleted: true };
+    }
+
+    fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
+    return { path: p, removed, deleted: false };
   }
 
   _enableCodexHookFeatureAtPath(p) {
@@ -402,6 +454,7 @@ send('initialize', {
     const config = this._readCodex();
     if (!config.hooks) config.hooks = {};
     const feature = this._enableCodexHookFeature();
+    let legacyCleanup = { removed: 0, skipped: true };
 
     const cmd = this._codexCommand();
     let added = 0;
@@ -439,8 +492,12 @@ send('initialize', {
     }
 
     if (added > 0) this._writeCodex(config);
+    const legacyPath = this._legacyCodexPath();
+    if (path.resolve(legacyPath) !== path.resolve(this._codexPath())) {
+      legacyCleanup = this._removeOwnCodexHooksAtPath(legacyPath);
+    }
     const trust = this._trustCodexHooks();
-    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath(), feature, trust };
+    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath(), feature, trust, legacyCleanup };
   }
 
   uninstallCodexHooks() {
