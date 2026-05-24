@@ -109,17 +109,18 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
 
   const tokens = store.queryMetrics({ name: 'api_request_tokens' });
   assert.equal(tokens[0].runtime, 'codex');
-  assert.equal(tokens[0].metric_value, 15000);
+  assert.equal(tokens[0].metric_value, 12000);
   assert.equal(tokens[0].dimensions.model, 'gpt-5.3-codex');
   assert.equal(tokens[0].dimensions.output, 800);
   assert.equal(tokens[0].dimensions.reasoning, 150);
 
   const cache = store.queryMetrics({ name: 'cache_hit_rate' });
-  assert.equal(cache[0].metric_value, 0.2);
+  assert.equal(cache[0].metric_value, 0.25);
 
   const cost = store.queryMetrics({ name: 'api_request_cost' });
   assert.equal(cost.length, 1);
   assert.equal(cost[0].confidence, 'estimated');
+  assert.ok(Math.abs(cost[0].metric_value - 0.0259) < 0.000001);
 
   const ttft = store.queryMetrics({ name: 'ttft' });
   assert.equal(ttft[0].metric_value, 987);
@@ -219,7 +220,7 @@ test('CodexRolloutCollector computes cost from default Codex runtime prices', ()
   const cost = store.queryMetrics({ name: 'api_request_cost' });
   assert.equal(cost.length, 1);
   assert.equal(cost[0].dimensions.model, 'gpt-5.5');
-  assert.ok(Math.abs(cost[0].metric_value - 0.0855) < 0.000001);
+  assert.ok(Math.abs(cost[0].metric_value - 0.0705) < 0.000001);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -389,7 +390,7 @@ test('CodexRolloutCollector computes cost from Codex priority prices when fast t
   assert.equal(cost.length, 1);
   assert.equal(cost[0].dimensions.model, 'gpt-5.3-codex');
   assert.equal(cost[0].dimensions.service_tier, 'priority');
-  assert.ok(Math.abs(cost[0].metric_value - 0.06545) < 0.000001);
+  assert.ok(Math.abs(cost[0].metric_value - 0.05495) < 0.000001);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

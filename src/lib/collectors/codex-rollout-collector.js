@@ -184,7 +184,7 @@ export class CodexRolloutCollector {
     written += this._ingestRateLimit(context.rateLimits?.secondary, 'rate_limit_7d', timestamp, mapping);
 
     const tokenDims = normalizeUsage(usage);
-    const totalInput = tokenDims.input + tokenDims.cache_read + tokenDims.cache_creation;
+    const totalInput = tokenDims.input;
     if (totalInput > 0 || tokenDims.output > 0 || tokenDims.reasoning > 0) {
       tokenDims.model = model;
       tokenDims.service_tier = serviceTier;
@@ -390,7 +390,8 @@ export class CodexRolloutCollector {
 
   _calculateCost(usage, price) {
     if (!price) return null;
-    const input = usage.input * price.input / PER_MTOK;
+    const uncachedInput = Math.max(usage.input - usage.cache_read - usage.cache_creation, 0);
+    const input = uncachedInput * price.input / PER_MTOK;
     const output = usage.output * price.output / PER_MTOK;
     const cacheRead = usage.cache_read * price.cacheRead / PER_MTOK;
     const cacheCreation = usage.cache_creation * price.cacheCreation / PER_MTOK;
