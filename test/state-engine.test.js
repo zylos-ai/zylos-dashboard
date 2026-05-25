@@ -19,8 +19,8 @@ function makeEngine(opts = {}) {
   let clock = opts.startTime || 1000000;
   const now = () => clock;
   const advance = (ms) => { clock += ms; };
-  const store = makeMockStore();
-  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  const store = opts.store || makeMockStore();
+  const config = { zylosDir: '/tmp/zylos-test', runtime: opts.runtime || 'claude' };
   const engine = new StateEngine(store, {}, config, { now });
   engine._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   return { engine, now, advance };
@@ -312,6 +312,69 @@ test('subagent description can come from canonical event metadata', () => {
   const state = engine.getState();
   assert.equal(state.active_subagents[0].description, 'Investigate rollout lifecycle');
   assert.equal(state.active_subagents[0].agent_type, 'worker');
+});
+
+test('Codex runtime source health ignores Claude-only runtime progress', () => {
+  const store = {
+    ...makeMockStore(),
+    getSourceHealth() {
+      return [
+        {
+          name: 'hook_events',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'statusline',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'codex_rollout',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'codex' }
+        }
+      ];
+    }
+  };
+  const { engine } = makeEngine({ store, runtime: 'codex' });
+
+  const source = engine.getSourceHealth();
+  assert.equal(source.runtime_progress.hook_events.status, 'unknown');
+  assert.equal(source.runtime_progress.hook_events.fresh, false);
+  assert.equal(source.runtime_progress.statusline.status, 'unsupported');
+  assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
+});
+
+test('Claude runtime source health keeps Claude runtime progress', () => {
+  const store = {
+    ...makeMockStore(),
+    getSourceHealth() {
+      return [
+        {
+          name: 'hook_events',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'statusline',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'jsonl_usage',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString() }
+        }
+      ];
+    }
+  };
+  const { engine } = makeEngine({ store, runtime: 'claude' });
+
+  const source = engine.getSourceHealth();
+  assert.equal(source.runtime_progress.hook_events.status, 'healthy');
+  assert.equal(source.runtime_progress.statusline.status, 'healthy');
+  assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
 });
 
 test('completed Agent tool does not leak description to next subagent', () => {

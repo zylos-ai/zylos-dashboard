@@ -98,7 +98,8 @@ export class StatuslineCollector {
         last_success: now, metrics_written: written
       });
       this.store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', {
-        last_success: now
+        last_success: now,
+        runtime: 'claude'
       });
     }
 

@@ -705,9 +705,13 @@ export class StateEngine {
       const allHealth = this.store.getSourceHealth();
       const now = this._now();
 
-      const formatEntry = (name) => {
+      const currentRuntime = this._config.runtime || 'claude';
+      const formatEntry = (name, { runtimeScoped = false, expectedRuntime = currentRuntime } = {}) => {
         const h = allHealth.find(s => s.name === name);
         if (!h) return { fresh: false, age_s: null, status: 'unknown' };
+        if (runtimeScoped && h.extra?.runtime && h.extra.runtime !== expectedRuntime) {
+          return { fresh: false, age_s: null, status: 'unknown' };
+        }
         const lastSuccess = h.extra?.last_success;
         const ageS = lastSuccess ? Math.floor((now - new Date(lastSuccess).getTime()) / 1000) : null;
         return {
@@ -719,9 +723,13 @@ export class StateEngine {
 
       return {
         runtime_progress: {
-          hook_events: formatEntry('hook_events'),
-          jsonl_usage: formatEntry('jsonl_usage'),
-          statusline: formatEntry('statusline')
+          hook_events: formatEntry('hook_events', { runtimeScoped: true }),
+          jsonl_usage: currentRuntime === 'codex'
+            ? formatEntry('codex_rollout')
+            : formatEntry('jsonl_usage'),
+          statusline: currentRuntime === 'claude'
+            ? formatEntry('statusline', { runtimeScoped: true, expectedRuntime: 'claude' })
+            : { fresh: false, age_s: null, status: 'unsupported' }
         },
         collector_liveness: {
           pm2_reader: formatEntry('pm2_reader'),

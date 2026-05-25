@@ -98,7 +98,10 @@ export class IngestHandler {
 
       const now = new Date().toISOString();
       this.store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now });
-      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', { last_success: now });
+      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', {
+        last_success: now,
+        runtime: event.runtime
+      });
 
       sendJson(res, 200, { ok: true });
     } catch (err) {

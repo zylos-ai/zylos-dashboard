@@ -69,6 +69,7 @@ export class SpoolDrainer {
     }
 
     const failedLines = [];
+    let lastProcessedRuntime = null;
 
     for (const line of lines) {
       try {
@@ -109,6 +110,7 @@ export class SpoolDrainer {
 
         if (inserted) {
           result.processed++;
+          lastProcessedRuntime = event.runtime;
           if (stateEngine) {
             stateEngine.onEvent(event);
           }
@@ -143,7 +145,10 @@ export class SpoolDrainer {
     if (result.processed > 0) {
       const now = new Date().toISOString();
       this.store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now });
-      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', { last_success: now });
+      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', {
+        last_success: now,
+        runtime: lastProcessedRuntime || this.config.runtime || process.env.ZYLOS_RUNTIME || 'claude'
+      });
     }
 
     return result;

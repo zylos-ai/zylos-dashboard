@@ -728,7 +728,11 @@ async function handleStatuslineIngest(req, res) {
   if (written > 0) {
     const now = new Date().toISOString();
     store.upsertSourceHealth('statusline', 'collector_liveness', 'healthy', { last_success: now });
-    store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', { last_success: now, metrics_written: written });
+    store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', {
+      last_success: now,
+      metrics_written: written,
+      runtime: 'claude'
+    });
 
     for (const m of metrics) {
       if (m.metric_name && m.metric_value != null) {
