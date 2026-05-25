@@ -268,6 +268,45 @@ test('CodexRolloutCollector ingests assistant output text into timeline', () => 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector redacts and caps assistant output summaries', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const longText = `Contact user@example.com with sk-abcdefghijklmnopqrstuvwxyz123456 ${'x'.repeat(700)}`;
+  const assistantLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'message',
+      role: 'assistant',
+      phase: 'final_answer',
+      content: [{ type: 'output_text', text: longText }]
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${assistantLine}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 1);
+
+  const events = store.queryEvents({ types: ['assistant_message'] });
+  assert.equal(events.length, 1);
+  assert.ok(events[0].summary.length <= 500);
+  assert.ok(!events[0].summary.includes('user@example.com'));
+  assert.ok(!events[0].summary.includes('sk-abcdefghijklmnopqrstuvwxyz123456'));
+  assert.ok(events[0].summary.includes('[EMAIL]'));
+  assert.ok(events[0].summary.includes('[REDACTED]'));
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector skips user message text in timeline', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
@@ -360,6 +399,89 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
     'Run shell command: python scripts/do_custom_thing.py --token [REDACTED] --file zylos-dashboard/src/index.js'
   ]);
   assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call']);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector reconstructs subagent lifecycle from rollout tools', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const spawnCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'spawn_agent',
+      call_id: 'call-spawn',
+      arguments: JSON.stringify({
+        agent_type: 'worker',
+        message: `Investigate the bug for user@example.com using token sk-abcdefghijklmnopqrstuvwxyz123456 ${'details '.repeat(40)}`
+      })
+    }
+  });
+  const spawnOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.000Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-spawn',
+      output: JSON.stringify({ agent_id: 'agent-1', nickname: 'Ada' })
+    }
+  });
+  const sendInput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'send_input',
+      call_id: 'call-send',
+      arguments: JSON.stringify({ target: 'agent-1', message: 'Please check logs.' })
+    }
+  });
+  const waitCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.500Z',
+    payload: {
+      type: 'function_call',
+      name: 'wait_agent',
+      call_id: 'call-wait',
+      arguments: JSON.stringify({ targets: ['agent-1'], timeout_ms: 1000 })
+    }
+  });
+  const waitOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:07.000Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-wait',
+      output: JSON.stringify({ status: { 'agent-1': { completed: 'Done' } }, timed_out: false })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${spawnCall}\n${spawnOutput}\n${sendInput}\n${waitCall}\n${waitOutput}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 7);
+
+  const subagentEvents = store.queryEvents({ types: ['subagent_start', 'subagent_stop'] });
+  assert.deepEqual(subagentEvents.map(e => e.event_type), ['subagent_start', 'subagent_stop']);
+  assert.equal(subagentEvents[0].metadata.agent_id, 'agent-1');
+  assert.equal(subagentEvents[0].metadata.agent_type, 'worker');
+  assert.ok(subagentEvents[0].metadata.description.length <= 200);
+  assert.ok(!subagentEvents[0].metadata.description.includes('user@example.com'));
+  assert.ok(!subagentEvents[0].metadata.description.includes('sk-abcdefghijklmnopqrstuvwxyz123456'));
+  assert.equal(subagentEvents[1].metadata.source_tool, 'wait_agent');
+
+  const sendEvent = store.queryEvents({ limit: 10 }).find(e => e.metadata?.call_id === 'call-send');
+  assert.equal(sendEvent.metadata.agent_id, 'agent-1');
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

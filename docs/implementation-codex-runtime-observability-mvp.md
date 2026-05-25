@@ -37,6 +37,21 @@ Out of scope:
 - On cold start with no hook-derived mapping, report Codex rollout metrics as unavailable.
 - Keep Claude runtime behavior unchanged.
 - Store only sanitized metadata. Do not persist raw prompts, raw tool arguments, raw command output, email addresses, account IDs, API keys, or tokens.
+- Redact sensitive text before truncation.
+- Cap `Stop.last_assistant_message` summaries at 200 characters.
+- Cap rollout/conversation assistant message summaries at 500 characters.
+
+## Implementation Gates
+
+These gates must stay explicit in code and tests before the MVP is considered reviewable:
+
+| Gate | Requirement |
+|---|---|
+| Shared sanitizer/privacy boundary | All hook and rollout ingestion stores only safe structured metadata or redacted summaries; raw prompt, tool input, tool output, and assistant text are not persisted. Redaction happens before truncation. |
+| Canonical token/cache/cost contract | Codex `input_tokens` already includes cached input. Cache hit rate is `cached_input_tokens / input_tokens`; estimated cost charges only uncached input at input price plus cached input at cache-read price. |
+| Deterministic rollout high-water dedup | Rollout ingestion advances a durable cursor by `transcript_path` and byte offset. Re-collection must not duplicate metric or event rows. |
+| Runtime-switch state reset | Runtime-specific state and source health must not make Claude and Codex sessions appear active at the same time after a runtime switch. |
+| Current-scope Codex sub-agent lifecycle | Codex sub-agent activity is reconstructed from rollout `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` tool call/output events. This is part of the MVP, not deferred. |
 
 ## Current Code Baseline
 
@@ -123,6 +138,30 @@ Acceptance:
 - Codex hook fixture ingestion writes `runtime_events` with `runtime='codex'` and safe metadata.
 - Raw prompt and raw tool I/O are absent from stored event metadata.
 
+### Phase 2B: Shared Privacy and Summary Contract
+
+Apply the accepted summary boundaries consistently across hook and rollout ingestion.
+
+Files likely affected:
+
+- `src/lib/sanitizer.js`
+- `src/lib/collectors/codex-rollout-collector.js`
+- `src/lib/collectors/conversation-collector.js`
+- Tests covering redaction and truncation.
+
+Tasks:
+
+- Keep hook `Stop.last_assistant_message` capped at 200 characters.
+- Cap Codex rollout assistant message summaries at 500 characters.
+- Ensure rollout assistant summaries redact API keys, bearer tokens, GitHub tokens, Slack tokens, and email addresses before truncation.
+- Do not persist raw assistant text in metadata.
+
+Acceptance:
+
+- Tests prove redaction occurs before truncation.
+- Assistant timeline summaries are useful but bounded.
+- Raw assistant text is not stored in event metadata.
+
 ### Phase 3: Hook-Derived Rollout Path Registry
 
 Persist the current rollout JSONL locator from hook metadata.
@@ -199,6 +238,32 @@ Acceptance:
 - With no new events, collector keeps the same path and reports stale/idle based on freshness.
 - With truncated or missing files, collector does not crash and does not choose another path.
 - `rate_limit_7d` resolves from rollout data.
+
+### Phase 4B: Codex Sub-agent Lifecycle MVP
+
+Reconstruct Codex sub-agent state from rollout tool events because Codex 0.130 hooks do not expose `SubagentStart` / `SubagentStop`.
+
+Files likely affected:
+
+- `src/lib/collectors/codex-rollout-collector.js`
+- `src/lib/state-engine.js` only if the existing canonical events are insufficient.
+- Tests for spawn, wait, send-input, and close behavior.
+
+Tasks:
+
+- Track `spawn_agent` function call arguments by `call_id` only long enough to summarize the request.
+- On successful `spawn_agent` output, emit canonical `subagent_start` with `agent_id`, `agent_type`, and a redacted bounded description.
+- On `wait_agent` output with completed status, emit canonical `subagent_stop`.
+- On `close_agent` call or output, emit canonical `subagent_stop`.
+- Preserve `send_input` target metadata so timeline/tool feed can attribute parent-to-subagent communication without storing raw message content.
+- Use deterministic ingest IDs so re-reading the same rollout events does not duplicate lifecycle events.
+
+Acceptance:
+
+- Active sub-agents appear through the existing StateEngine `active_subagents` output.
+- Completed or closed sub-agents are removed through canonical `subagent_stop`.
+- `send_input` does not persist raw sub-agent prompt/message content.
+- Duplicate collection does not create duplicate sub-agent lifecycle events.
 
 ### Phase 5: Cost and Resolver Behavior
 

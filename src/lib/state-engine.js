@@ -269,13 +269,15 @@ export class StateEngine {
       case 'subagent_start':
         if (event.session_id) this._state.mainSessionId = event.session_id;
         if (event.metadata?.agent_id) {
-          let description = null;
-          for (const [, tool] of this._state.runningTools) {
-            if ((tool.tool_name === 'Agent' || tool.tool_name === 'Task')
-                && !tool.agent_id && tool.tool_detail && !tool._descriptionConsumed) {
-              description = tool.tool_detail;
-              tool._descriptionConsumed = true;
-              break;
+          let description = event.metadata.description || null;
+          if (!description) {
+            for (const [, tool] of this._state.runningTools) {
+              if ((tool.tool_name === 'Agent' || tool.tool_name === 'Task')
+                  && !tool.agent_id && tool.tool_detail && !tool._descriptionConsumed) {
+                description = tool.tool_detail;
+                tool._descriptionConsumed = true;
+                break;
+              }
             }
           }
           this._state.activeSubagents.set(event.metadata.agent_id, {

@@ -295,6 +295,25 @@ test('subagent description fallback when no preceding Agent tool', () => {
   assert.equal(state.active_subagents[0].agent_type, 'claude-code-guide');
 });
 
+test('subagent description can come from canonical event metadata', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: {
+      agent_id: 'agent-1',
+      agent_type: 'worker',
+      description: 'Investigate rollout lifecycle'
+    }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents[0].description, 'Investigate rollout lifecycle');
+  assert.equal(state.active_subagents[0].agent_type, 'worker');
+});
+
 test('completed Agent tool does not leak description to next subagent', () => {
   const { engine } = makeEngine();
 

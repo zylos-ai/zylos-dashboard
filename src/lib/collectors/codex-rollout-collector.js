@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { modelPricesForRuntime, normalizeServiceTier } from '../config.js';
 
 const PER_MTOK = 1_000_000;
+const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 
 export class CodexRolloutCollector {
   constructor(store, config) {
@@ -11,6 +12,8 @@ export class CodexRolloutCollector {
     this._timer = null;
     this._metadataByPath = new Map();
     this._toolSummaryByCallId = new Map();
+    this._toolNameByCallId = new Map();
+    this._subagentSpawnByCallId = new Map();
     this._onEvent = null;
   }
 
@@ -303,12 +306,26 @@ export class CodexRolloutCollector {
     const name = item.name || payload.name || null;
     const callId = item.call_id || payload.call_id || null;
     if (!name && !callId) return 0;
+    const normalizedName = normalizeToolName(name || this._toolNameByCallId.get(callId));
     const isOutput = item.type === 'function_call_output' || item.type === 'custom_tool_call_output';
+    const toolArgs = parseToolArgs(item.arguments || item.input || payload.arguments || payload.input);
+
+    if (callId && !isOutput && name) this._toolNameByCallId.set(callId, name);
+
+    if (!isOutput && normalizedName === 'spawn_agent' && callId) {
+      this._subagentSpawnByCallId.set(callId, {
+        agent_type: toolArgs.agent_type || 'default',
+        description: summarizeAgentMessage(toolArgs.message)
+      });
+    }
+
     const summary = isOutput
       ? this._toolSummaryByCallId.get(callId) || 'Tool completed'
       : this._summarizeToolCall(name, item.arguments || item.input || payload.arguments || payload.input);
     if (callId && !isOutput) this._toolSummaryByCallId.set(callId, summary);
-    this.store.insertEvent({
+
+    let written = 0;
+    const toolEvent = {
       id: crypto.randomUUID(),
       ingest_id: `codex-rollout-${mapping.session_id || 'unknown'}-${callId || crypto.randomUUID()}-${item.type}`,
       timestamp,
@@ -321,8 +338,96 @@ export class CodexRolloutCollector {
       metadata: { tool_name: name, call_id: callId, source_event: 'response_item', raw_type: item.type },
       source: 'rollout',
       confidence: 'actual'
+    };
+
+    const targetAgentId = subagentTargetFromArgs(normalizedName, toolArgs);
+    if (targetAgentId) toolEvent.metadata.agent_id = targetAgentId;
+
+    const toolResult = this.store.insertEvent(toolEvent);
+    written += toolResult?.inserted ? 1 : 0;
+
+    if (isOutput) {
+      written += this._ingestSubagentLifecycleOutput(normalizedName, callId, item.output ?? payload.output, timestamp, mapping);
+    } else {
+      written += this._ingestSubagentLifecycleCall(normalizedName, toolArgs, timestamp, mapping);
+    }
+
+    return written;
+  }
+
+  _ingestSubagentLifecycleOutput(toolName, callId, output, timestamp, mapping) {
+    if (toolName === 'spawn_agent') {
+      const parsed = parseToolArgs(output);
+      const agentId = parsed.agent_id || parsed.id || null;
+      if (!agentId) return 0;
+      const spawn = this._subagentSpawnByCallId.get(callId) || {};
+      const result = this.store.insertEvent({
+        id: crypto.randomUUID(),
+        ingest_id: `codex-subagent-start-${mapping.session_id || 'unknown'}-${agentId}`,
+        timestamp,
+        runtime: 'codex',
+        session_id: mapping.session_id,
+        event_type: 'subagent_start',
+        category: 'subagent',
+        summary: 'Subagent started',
+        duration_ms: null,
+        metadata: {
+          agent_id: agentId,
+          agent_type: spawn.agent_type || 'default',
+          description: spawn.description || null,
+          source_event: 'response_item',
+          source_tool: 'spawn_agent'
+        },
+        source: 'rollout',
+        confidence: 'actual'
+      });
+      return result?.inserted ? 1 : 0;
+    }
+
+    if (toolName === 'wait_agent') {
+      const parsed = parseToolArgs(output);
+      let written = 0;
+      for (const agentId of completedAgentIds(parsed)) {
+        written += this._insertSubagentStop(agentId, timestamp, mapping, 'wait_agent');
+      }
+      return written;
+    }
+
+    if (toolName === 'close_agent') {
+      const parsed = parseToolArgs(output);
+      const agentId = parsed.agent_id || parsed.id || parsed.target || parsed.previous_status?.agent_id || null;
+      return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent') : 0;
+    }
+
+    return 0;
+  }
+
+  _ingestSubagentLifecycleCall(toolName, args, timestamp, mapping) {
+    if (toolName !== 'close_agent') return 0;
+    const agentId = args.target || args.id || null;
+    return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent') : 0;
+  }
+
+  _insertSubagentStop(agentId, timestamp, mapping, sourceTool) {
+    const result = this.store.insertEvent({
+      id: crypto.randomUUID(),
+      ingest_id: `codex-subagent-stop-${mapping.session_id || 'unknown'}-${agentId}`,
+      timestamp,
+      runtime: 'codex',
+      session_id: mapping.session_id,
+      event_type: 'subagent_stop',
+      category: 'subagent',
+      summary: 'Subagent completed',
+      duration_ms: null,
+      metadata: {
+        agent_id: agentId,
+        source_event: 'response_item',
+        source_tool: sourceTool
+      },
+      source: 'rollout',
+      confidence: 'actual'
     });
-    return 1;
+    return result?.inserted ? 1 : 0;
   }
 
   _ingestMessage(item, payload, timestamp, mapping) {
@@ -334,7 +439,7 @@ export class CodexRolloutCollector {
     if (textBlocks.length === 0) return 0;
 
     const text = textBlocks.join('\n');
-    const summary = redactCredentials(text);
+    const summary = truncateText(redactCredentials(text), ASSISTANT_MESSAGE_SUMMARY_LIMIT);
     const event = {
       id: crypto.randomUUID(),
       ingest_id: this._messageIngestId(item.role, mapping.session_id, timestamp, summary),
@@ -343,7 +448,7 @@ export class CodexRolloutCollector {
       session_id: mapping.session_id,
       event_type: 'assistant_message',
       category: 'assistant',
-      summary: summary.length > 2_000 ? summary.slice(0, 1_997) + '...' : summary,
+      summary,
       duration_ms: null,
       metadata: {
         role: item.role,
@@ -481,6 +586,41 @@ function parseToolArgs(args) {
   }
 }
 
+function normalizeToolName(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name.replace(/^functions\./, '');
+}
+
+function subagentTargetFromArgs(toolName, args) {
+  if (toolName === 'send_input') return args.target || null;
+  if (toolName === 'close_agent') return args.target || args.id || null;
+  const targets = Array.isArray(args.targets) ? args.targets : Array.isArray(args.ids) ? args.ids : null;
+  if (toolName === 'wait_agent' && targets?.length === 1) return targets[0];
+  return null;
+}
+
+function completedAgentIds(output) {
+  const ids = [];
+  if (!output || typeof output !== 'object' || output.timed_out) return ids;
+  const status = output.status && typeof output.status === 'object' ? output.status : {};
+  for (const [agentId, value] of Object.entries(status)) {
+    if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'completed')) {
+      ids.push(agentId);
+    }
+  }
+  return ids;
+}
+
+function summarizeAgentMessage(message) {
+  if (typeof message !== 'string' || !message.trim()) return null;
+  return truncateText(redactCredentials(message.trim().replace(/\s+/g, ' ')), 200);
+}
+
+function truncateText(text, limit) {
+  if (typeof text !== 'string' || text.length <= limit) return text;
+  return text.slice(0, limit - 3) + '...';
+}
+
 function summarizePatchCall(args) {
   const patch = typeof args === 'string' ? args : args?.input || args?.patch || '';
   const files = extractPatchFiles(patch);
@@ -558,5 +698,6 @@ function redactCredentials(text) {
     .replace(/sk-[a-zA-Z0-9_-]{20,}/g, '[REDACTED]')
     .replace(/xoxb-[a-zA-Z0-9-]+/g, '[REDACTED]')
     .replace(/ghp_[a-zA-Z0-9]{36,}/g, '[REDACTED]')
-    .replace(/Bearer\s+[a-zA-Z0-9._-]+/g, 'Bearer [REDACTED]');
+    .replace(/Bearer\s+[a-zA-Z0-9._-]+/g, 'Bearer [REDACTED]')
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[EMAIL]');
 }
