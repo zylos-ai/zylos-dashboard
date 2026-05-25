@@ -114,6 +114,21 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(tokens[0].dimensions.output, 800);
   assert.equal(tokens[0].dimensions.reasoning, 150);
 
+  const aggregateTokens = store.aggregateTokens({ sessionId: 'codex-session-1' });
+  assert.equal(aggregateTokens.input, 12000);
+  assert.equal(aggregateTokens.cache_read, 3000);
+  assert.equal(aggregateTokens.cache_rate, 0.25);
+
+  const tokenSeries = store.aggregateTokenSeries({
+    since: '2026-05-23T00:00:00.000Z',
+    until: '2026-05-23T02:00:00.000Z',
+    bucketSeconds: 3600
+  });
+  assert.equal(tokenSeries.length, 1);
+  assert.equal(tokenSeries[0].input_sum, 12000);
+  assert.equal(tokenSeries[0].cache_read_sum, 3000);
+  assert.equal(tokenSeries[0].cache_rate, 0.25);
+
   const cache = store.queryMetrics({ name: 'cache_hit_rate' });
   assert.equal(cache[0].metric_value, 0.25);
 

@@ -596,7 +596,7 @@ export class Store {
     const row = this.db.prepare(sql).get(params);
     if (!row || row.cnt === 0) return null;
     return {
-      input: row.input + row.cache_creation + row.cache_read,
+      input: row.total_input,
       output: row.output,
       cache_read: row.cache_read,
       cache_rate: row.total_input > 0 ? row.cache_read / row.total_input : 0
@@ -606,9 +606,7 @@ export class Store {
   aggregateTokenSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
       SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
-             COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) AS input_sum,
+             COALESCE(SUM(metric_value), 0) AS input_sum,
              COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS output_sum,
              COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
              COALESCE(SUM(metric_value), 0) AS total_input_sum
