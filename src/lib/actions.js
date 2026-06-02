@@ -128,7 +128,7 @@ export async function handleAction(action, body, config) {
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
       case 'set-threshold': result = await setThreshold(reqId, body, config, zylosDir); break;
       case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
-      case 'upgrade-cc': result = await upgradeCc(reqId); break;
+      case 'upgrade-cc': result = await upgradeRuntimeCli(reqId, config); break;
       default: result = { ok: false, error: 'unknown_action', messageKey: 'result.unknown_action' };
     }
   } catch (err) {
@@ -350,7 +350,22 @@ async function upgradeZylos(reqId) {
   return { ok: true, message: upgradeMsg, detached: true, messageKey: upgradeMsgKey, messageParams: upgradeMsgParams };
 }
 
-async function upgradeCc(reqId) {
+async function upgradeRuntimeCli(reqId, config) {
+  const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
+  if (runtime === 'codex') {
+    log(reqId, `exec: codex update`);
+    try {
+      const { stdout, stderr } = await execFileAsync('codex', ['update'], { timeout: 60000 });
+      const output = (stdout || '') + (stderr || '');
+      log(reqId, `codex update done (${output.trim().slice(0, 200)})`);
+      return { ok: true, message: 'Codex CLI updated. Restart session to apply.', output: output.trim(), requires_restart: true, messageKey: 'result.codex_updated' };
+    } catch (err) {
+      const fallbackMsg = err.stderr || err.stdout || err.message;
+      log(reqId, `codex update failed: ${(fallbackMsg || '').slice(0, 200)}`);
+      return { ok: false, error: 'upgrade_failed', message: fallbackMsg, messageKey: 'result.upgrade_failed', messageParams: { error: fallbackMsg } };
+    }
+  }
+
   log(reqId, `exec: claude update`);
   try {
     const { stdout, stderr } = await execFileAsync('claude', ['update'], { timeout: 60000 });

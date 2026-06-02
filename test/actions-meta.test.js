@@ -72,3 +72,25 @@ test('handleAction stores Codex model and effort in config.toml', async () => {
     assert.match(config, /^model_reasoning_effort = "xhigh"$/m);
   });
 });
+
+test('handleAction upgrades Codex CLI under Codex runtime', async () => {
+  const prevPath = process.env.PATH;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-codex-upgrade-'));
+  const binDir = path.join(dir, 'bin');
+  fs.mkdirSync(binDir);
+  const marker = path.join(dir, 'updated.txt');
+  const codexBin = path.join(binDir, 'codex');
+  fs.writeFileSync(codexBin, `#!/bin/sh\nif [ "$1" = "update" ]; then echo updated > ${JSON.stringify(marker)}; echo "codex updated"; exit 0; fi\nexit 2\n`);
+  fs.chmodSync(codexBin, 0o755);
+  process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+
+  try {
+    const result = await handleAction('upgrade-cc', {}, { runtime: 'codex' });
+    assert.equal(result.ok, true);
+    assert.equal(result.messageKey, 'result.codex_updated');
+    assert.equal(fs.readFileSync(marker, 'utf8').trim(), 'updated');
+  } finally {
+    process.env.PATH = prevPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

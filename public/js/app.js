@@ -1759,7 +1759,7 @@ function createActionsModal() {
           ${esc(t('actions.upgrade_zylos'))}<span class="action-ver" id="action-zylos-ver"></span>
         </button>
         <button class="action-btn" data-action="upgrade-cc" type="button">
-          ${esc(t('actions.upgrade_cc'))}<span class="action-ver" id="action-cc-ver"></span>
+          <span id="action-cli-label">${esc(t('actions.upgrade_cc'))}</span><span class="action-ver" id="action-cc-ver"></span>
         </button>
       </div>
     </div>
@@ -1926,12 +1926,14 @@ async function openActionsModal() {
     const ri = state.dashboardState?.runtime_info;
     const zylosVer = modal.querySelector('#action-zylos-ver');
     const ccVer = modal.querySelector('#action-cc-ver');
+    const cliLabel = modal.querySelector('#action-cli-label');
     zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
     zylosVer.classList.toggle('action-ver-dot', !!ri?.zylos_update);
     zylosVer.title = ri?.zylos_update ? t('info.version_available', { version: ri.zylos_update }) : '';
+    if (cliLabel) cliLabel.textContent = meta.runtime_cli === 'codex' ? t('actions.upgrade_codex') : t('actions.upgrade_cc');
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
-    ccVer.classList.toggle('action-ver-dot', !!ri?.cc_update);
-    ccVer.title = ri?.cc_update ? t('info.version_available', { version: ri.cc_update }) : '';
+    ccVer.classList.toggle('action-ver-dot', meta.runtime_cli !== 'codex' && !!ri?.cc_update);
+    ccVer.title = meta.runtime_cli !== 'codex' && ri?.cc_update ? t('info.version_available', { version: ri.cc_update }) : '';
 
     runtimeSel._prevValue = runtimeSel.value;
     modelSel._prevValue = modelSel.value;
@@ -2050,7 +2052,9 @@ async function execAction(action, body) {
       'switch-model': t('confirm.switch_model', { value: body?.model }),
       'switch-effort': t('confirm.switch_effort', { value: effortLabel(body?.effort) }),
       'upgrade-zylos': t('confirm.upgrade_zylos'),
-      'upgrade-cc': t('confirm.upgrade_cc')
+      'upgrade-cc': state.dashboardState?.runtime_info?.runtime === 'codex'
+        ? t('confirm.upgrade_codex')
+        : t('confirm.upgrade_cc')
     };
     if (!(await showConfirm(labels[action] || t('confirm.fallback', { action })))) return false;
   }

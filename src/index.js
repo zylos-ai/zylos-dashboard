@@ -38,6 +38,7 @@ const startedAt = new Date();
 
 let zylosVersion = null;
 let ccInstalledVersion = null;
+let codexInstalledVersion = null;
 try {
   zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
 } catch { /* zylos CLI not available */ }
@@ -45,6 +46,10 @@ try {
   const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
   ccInstalledVersion = raw.replace(/\s.*$/, '');
 } catch { /* claude CLI not available */ }
+try {
+  const raw = execFileSync('codex', ['--version'], { timeout: 5000 }).toString().trim();
+  codexInstalledVersion = raw.replace(/^codex-cli\s+/, '').replace(/\s.*$/, '');
+} catch { /* codex CLI not available */ }
 
 function refreshInstalledVersions() {
   try {
@@ -53,6 +58,10 @@ function refreshInstalledVersions() {
   try {
     const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
     ccInstalledVersion = raw.replace(/\s.*$/, '');
+  } catch { /* ignore */ }
+  try {
+    const raw = execFileSync('codex', ['--version'], { timeout: 5000 }).toString().trim();
+    codexInstalledVersion = raw.replace(/^codex-cli\s+/, '').replace(/\s.*$/, '');
   } catch { /* ignore */ }
   const st = stateEngine?.getState();
   if (st) {
@@ -142,6 +151,7 @@ function buildRuntimeInfo() {
     effort: slInfo?.effort || null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
+    codex_installed: codexInstalledVersion || null,
     pending_restart: !!needsRestart,
   };
   // info bar: running != installed → show restart hint
@@ -505,7 +515,10 @@ function handleApi(req, res, pathname, url) {
     const slMeta = statuslineCollector?.getRuntimeInfo();
     const meta = getActionsMeta(zylosConfig, slMeta);
     meta.zylos_version = zylosVersion;
-    meta.cc_version = ccInstalledVersion || slMeta?.cc_version || null;
+    meta.runtime_cli = activeRuntime === 'codex' ? 'codex' : 'claude';
+    meta.cc_version = activeRuntime === 'codex'
+      ? codexInstalledVersion || null
+      : ccInstalledVersion || slMeta?.cc_version || null;
     sendJson(res, 200, meta);
     return true;
   }
