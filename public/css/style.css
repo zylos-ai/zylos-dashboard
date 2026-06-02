@@ -1302,6 +1302,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 
 .timeline-dot[data-type="session"] { background: var(--green); }
+.timeline-dot[data-type="turn"] { background: var(--accent, #0d9488); }
 .timeline-dot[data-type="prompt"] { background: var(--accent); }
 .timeline-dot[data-type="assistant"] { background: var(--purple, #6366f1); }
 .timeline-dot[data-type="permission"] { background: var(--state-possibly-stuck); }

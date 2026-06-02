@@ -96,7 +96,7 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   });
 
   const written = collector.collect();
-  assert.equal(written, 9);
+  assert.equal(written, 10);
 
   const context = store.queryMetrics({ name: 'context_pct' });
   assert.equal(context.length, 1);
@@ -151,6 +151,16 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
 
   const duration = store.queryMetrics({ name: 'turn_duration' });
   assert.equal(duration[0].metric_value, 45123);
+  assert.equal(duration[0].dimensions.rollout_line, 3);
+
+  const [turnEvent] = store.queryEvents({ types: ['turn_complete'] });
+  assert.equal(turnEvent.runtime, 'codex');
+  assert.equal(turnEvent.category, 'turn');
+  assert.equal(turnEvent.summary, 'Turn completed');
+  assert.equal(turnEvent.duration_ms, 45123);
+  assert.equal(turnEvent.metadata.ttft_ms, 987);
+  assert.equal(turnEvent.metadata.source_event, 'task_complete');
+  assert.equal(turnEvent.metadata.rollout_line, 3);
 
   const cursor = store.getCodexRolloutCursor(rolloutPath);
   assert.equal(cursor.byte_offset, fs.statSync(rolloutPath).size);

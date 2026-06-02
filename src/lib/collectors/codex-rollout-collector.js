@@ -164,7 +164,7 @@ export class CodexRolloutCollector {
       });
     }
     if (payload.type === 'task_complete') {
-      return this._ingestTaskComplete(payload, timestamp, mapping);
+      return this._ingestTaskComplete(payload, timestamp, mapping, position);
     }
     if (payload.type === 'response_item') {
       return this._ingestResponseItem(payload, timestamp, mapping, position);
@@ -296,7 +296,7 @@ export class CodexRolloutCollector {
     return 1;
   }
 
-  _ingestTaskComplete(payload, timestamp, mapping) {
+  _ingestTaskComplete(payload, timestamp, mapping, position = {}) {
     let written = 0;
     const duration = numberOrNull(payload.duration_ms);
     const ttft = numberOrNull(payload.time_to_first_token_ms);
@@ -307,7 +307,10 @@ export class CodexRolloutCollector {
         session_id: mapping.session_id,
         metric_name: 'turn_duration',
         metric_value: duration,
-        dimensions: null,
+        dimensions: {
+          rollout_offset: position.byteOffset ?? null,
+          rollout_line: position.lineIndex ?? null
+        },
         source: 'rollout',
         confidence: 'actual'
       });
@@ -320,11 +323,37 @@ export class CodexRolloutCollector {
         session_id: mapping.session_id,
         metric_name: 'ttft',
         metric_value: ttft,
-        dimensions: null,
+        dimensions: {
+          rollout_offset: position.byteOffset ?? null,
+          rollout_line: position.lineIndex ?? null
+        },
         source: 'rollout',
         confidence: 'actual'
       });
       written++;
+    }
+    if (duration != null || ttft != null) {
+      const ingestId = `codex-turn-complete-${rolloutPositionId('task_complete', mapping, position)}`;
+      const result = this._insertEvent({
+        id: stableEventId(ingestId),
+        ingest_id: ingestId,
+        timestamp,
+        runtime: 'codex',
+        session_id: mapping.session_id,
+        event_type: 'turn_complete',
+        category: 'turn',
+        summary: 'Turn completed',
+        duration_ms: duration,
+        metadata: {
+          ttft_ms: ttft,
+          source_event: 'task_complete',
+          rollout_offset: position.byteOffset ?? null,
+          rollout_line: position.lineIndex ?? null
+        },
+        source: 'rollout',
+        confidence: 'actual'
+      });
+      written += result?.inserted ? 1 : 0;
     }
     return written;
   }
