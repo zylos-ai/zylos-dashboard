@@ -410,16 +410,19 @@ test('Codex runtime source health ignores Claude-only runtime progress', () => {
       return [
         {
           name: 'hook_events',
+          signal_type: 'runtime_progress',
           status: 'healthy',
           extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
         },
         {
           name: 'statusline',
+          signal_type: 'runtime_progress',
           status: 'healthy',
           extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
         },
         {
           name: 'codex_rollout',
+          signal_type: 'collector_liveness',
           status: 'healthy',
           extra: { last_success: new Date(990000).toISOString(), runtime: 'codex' }
         }
@@ -431,8 +434,12 @@ test('Codex runtime source health ignores Claude-only runtime progress', () => {
   const source = engine.getSourceHealth();
   assert.equal(source.runtime_progress.hook_events.status, 'unknown');
   assert.equal(source.runtime_progress.hook_events.fresh, false);
+  assert.equal(source.runtime_progress.hook_events.reason, 'runtime_mismatch');
   assert.equal(source.runtime_progress.statusline.status, 'unsupported');
+  assert.equal(source.runtime_progress.statusline.capability, 'unsupported');
+  assert.equal(source.runtime_progress.statusline.reason, 'unsupported');
   assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
+  assert.equal(source.runtime_progress.jsonl_usage.reason, 'fresh');
 });
 
 test('runtime boundary event resets foreground runtime state', () => {
@@ -493,16 +500,19 @@ test('Claude runtime source health keeps Claude runtime progress', () => {
       return [
         {
           name: 'hook_events',
+          signal_type: 'runtime_progress',
           status: 'healthy',
           extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
         },
         {
           name: 'statusline',
+          signal_type: 'runtime_progress',
           status: 'healthy',
           extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
         },
         {
           name: 'jsonl_usage',
+          signal_type: 'collector_liveness',
           status: 'healthy',
           extra: { last_success: new Date(990000).toISOString() }
         }
@@ -515,6 +525,29 @@ test('Claude runtime source health keeps Claude runtime progress', () => {
   assert.equal(source.runtime_progress.hook_events.status, 'healthy');
   assert.equal(source.runtime_progress.statusline.status, 'healthy');
   assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
+});
+
+test('source health explains missing Codex rollout mapping', () => {
+  const store = {
+    ...makeMockStore(),
+    getSourceHealth() {
+      return [
+        {
+          name: 'codex_rollout',
+          signal_type: 'collector_liveness',
+          status: 'unavailable',
+          extra: { reason: 'no_hook_transcript_path', last_checked: new Date(990000).toISOString() }
+        }
+      ];
+    }
+  };
+  const { engine } = makeEngine({ store, runtime: 'codex' });
+
+  const source = engine.getSourceHealth();
+  assert.equal(source.runtime_progress.jsonl_usage.status, 'unavailable');
+  assert.equal(source.runtime_progress.jsonl_usage.capability, 'supported');
+  assert.equal(source.runtime_progress.jsonl_usage.reason, 'no_hook_transcript_path');
+  assert.match(source.runtime_progress.jsonl_usage.detail, /rollout transcript path/);
 });
 
 test('completed Agent tool does not leak description to next subagent', () => {

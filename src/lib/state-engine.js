@@ -821,41 +821,77 @@ export class StateEngine {
       const now = this._now();
 
       const currentRuntime = this._config.runtime || 'claude';
-      const formatEntry = (name, { runtimeScoped = false, expectedRuntime = currentRuntime } = {}) => {
-        const h = allHealth.find(s => s.name === name);
-        if (!h) return { fresh: false, age_s: null, status: 'unknown' };
+      const formatEntry = (name, { runtimeScoped = false, expectedRuntime = currentRuntime, signalType = null, capability = 'supported' } = {}) => {
+        if (capability === 'unsupported') {
+          return {
+            fresh: false,
+            age_s: null,
+            status: 'unsupported',
+            capability: 'unsupported',
+            reason: 'unsupported',
+            detail: 'Not supported for this runtime'
+          };
+        }
+
+        const h = allHealth.find(s => s.name === name && (!signalType || s.signal_type === signalType));
+        if (!h) {
+          return {
+            fresh: false,
+            age_s: null,
+            status: 'unknown',
+            capability,
+            reason: 'no_signal',
+            detail: 'No source signal has been recorded yet'
+          };
+        }
         if (runtimeScoped && h.extra?.runtime && h.extra.runtime !== expectedRuntime) {
-          return { fresh: false, age_s: null, status: 'unknown' };
+          return {
+            fresh: false,
+            age_s: null,
+            status: 'unknown',
+            capability,
+            reason: 'runtime_mismatch',
+            detail: `Last signal belongs to ${h.extra.runtime}, not ${expectedRuntime}`
+          };
         }
         const lastSuccess = h.extra?.last_success;
         const ageS = lastSuccess ? Math.floor((now - new Date(lastSuccess).getTime()) / 1000) : null;
+        const fresh = ageS !== null && ageS < 30;
+        const reason = h.extra?.reason
+          || (h.status === 'unavailable' ? 'unavailable'
+            : h.status === 'stale' ? 'stale'
+              : fresh ? 'fresh' : 'stale_or_not_successful');
         return {
-          fresh: ageS !== null && ageS < 30,
+          fresh,
           age_s: ageS,
-          status: h.status
+          status: h.status,
+          capability,
+          reason,
+          detail: sourceHealthDetail(h, reason, fresh),
+          updated_at: h.updated_at || null
         };
       };
 
       return {
         runtime_progress: {
-          hook_events: formatEntry('hook_events', { runtimeScoped: true }),
+          hook_events: formatEntry('hook_events', { runtimeScoped: true, signalType: 'runtime_progress' }),
           jsonl_usage: currentRuntime === 'codex'
-            ? formatEntry('codex_rollout')
-            : formatEntry('jsonl_usage'),
+            ? formatEntry('codex_rollout', { signalType: 'collector_liveness' })
+            : formatEntry('jsonl_usage', { signalType: 'collector_liveness' }),
           statusline: currentRuntime === 'claude'
-            ? formatEntry('statusline', { runtimeScoped: true, expectedRuntime: 'claude' })
-            : { fresh: false, age_s: null, status: 'unsupported' }
+            ? formatEntry('statusline', { runtimeScoped: true, expectedRuntime: 'claude', signalType: 'runtime_progress' })
+            : formatEntry('statusline', { capability: 'unsupported' })
         },
         collector_liveness: {
-          pm2_reader: formatEntry('pm2_reader'),
-          system_sampler: formatEntry('system_sampler'),
-          hook_handler: formatEntry('hook_handler'),
-          conversation_reader: formatEntry('conversation_reader'),
-          am_heartbeat: formatEntry('am_heartbeat')
+          pm2_reader: formatEntry('pm2_reader', { signalType: 'collector_liveness' }),
+          system_sampler: formatEntry('system_sampler', { signalType: 'collector_liveness' }),
+          hook_handler: formatEntry('hook_handler', { signalType: 'collector_liveness' }),
+          conversation_reader: formatEntry('conversation_reader', { signalType: 'collector_liveness' }),
+          am_heartbeat: formatEntry('am_heartbeat', { signalType: 'collector_liveness' })
         },
         platform: {
-          statusline: formatEntry('statusline'),
-          c4: formatEntry('c4')
+          statusline: formatEntry('statusline', { signalType: 'collector_liveness' }),
+          c4: formatEntry('c4', { signalType: 'collector_liveness' })
         }
       };
     } catch {
@@ -866,4 +902,16 @@ export class StateEngine {
       };
     }
   }
+}
+
+function sourceHealthDetail(row, reason, fresh) {
+  const extra = row.extra || {};
+  if (reason === 'no_hook_transcript_path') return 'Waiting for a Codex hook to provide a rollout transcript path';
+  if (reason === 'rollout_unreadable') return extra.error ? `Rollout transcript is unreadable: ${extra.error}` : 'Rollout transcript is unreadable';
+  if (reason === 'partial_line') return 'Rollout transcript ended with an incomplete line';
+  if (reason === 'missing_model_price') return `Missing price table entry for ${extra.model || 'model'}`;
+  if (reason === 'unavailable') return 'Source is unavailable';
+  if (reason === 'stale') return 'No new source data since the last check';
+  if (fresh) return 'Fresh source signal';
+  return 'Source signal is stale or has not reported a successful sample';
 }

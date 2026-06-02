@@ -27,6 +27,31 @@ Out of scope:
 - Raw prompt, raw tool input, raw tool output, or raw assistant content persistence.
 - Dashboard-side Codex session discovery through SQLite or filesystem scanning.
 
+## Current Implementation Outcome
+
+Status as of branch head `c3e5726` plus the in-progress source signal work:
+
+| Area | Outcome |
+|---|---|
+| Product semantic model | Codex uses the same Dashboard surfaces as Claude where the semantics match: Runtime State, Current Activity, Capacity & Cost, Work Timeline, Trends, Communication, PM2/system/scheduler. |
+| Privacy boundary | Landed. Hook, conversation, and rollout summaries use shared sanitizer behavior with redaction before truncation. Raw prompts, raw tool input/output, raw patch content, and raw assistant text are not persisted. |
+| Token/cache/cost contract | Landed. Codex/OpenAI input includes cached tokens, so collector writes canonical dimensions and cost uses uncached input plus cache read/write plus output. Aggregates use canonical totals. |
+| Rollout dedup | Landed. The rollout collector uses hook-provided `transcript_path` plus durable byte-offset cursors and deterministic rollout-position identities instead of random usage IDs. |
+| Runtime switch boundary | Landed. StateEngine clears foreground runtime state and ignores foreign-runtime foreground events so Claude and Codex sessions do not appear active at the same time. |
+| Sub-agent lifecycle | Landed for lifecycle/current-activity MVP. Codex `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` rollout records reconstruct parent lifecycle rows; child-session events attach to the active sub-agent row when collectable. |
+| Source signals | In progress. `/api/health.source` is being expanded from raw freshness booleans into capability/reason/detail entries so Codex-specific missing data can be explained as unsupported, stale, unavailable, missing rollout path, or runtime mismatch. |
+
+Remaining PR #131 work before merge:
+
+- Productize source health/capability in the Runtime card and keep it compact enough for repeated use.
+- Add Codex sub-agent diagnostics beyond lifecycle: duration, wait latency, timeout/failure classification, stale explanation, and recent tool/activity history.
+- Surface Codex TTFT and turn duration as first-class runtime metrics where the current UI can explain them clearly.
+- Harden Codex work trace classification for command outcomes, permission flow, patch history, failures, and tool latency.
+- Add mixed Claude/Codex runtime validation for daily/7d token, cache, cost, and project attribution semantics.
+- Add rollout edge-case tests for rotation/truncation, partial lines, missing previous path, child-session path gaps, collector restart, and source-health explanations.
+- Add browser-level validation for the key Codex UI states: capacity, reset times, source signals, timeline, current activity, and sub-agents.
+- Keep OTLP out by default. Reconsider it only if hooks plus rollout JSONL cannot satisfy a required product semantic.
+
 ## Non-Negotiable Design Constraints
 
 - Do not read Codex SQLite.

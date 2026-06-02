@@ -685,6 +685,68 @@ function setRing(id, pctVal, levelFn) {
   el.className.baseVal = `ring-fill ${(levelFn || ringLevel)(v)}`;
 }
 
+function sourceSignalRows(source) {
+  const runtime = source?.runtime_progress || {};
+  const collectors = source?.collector_liveness || {};
+  const platform = source?.platform || {};
+  return [
+    ['hook_events', runtime.hook_events],
+    ['jsonl_usage', runtime.jsonl_usage],
+    ['statusline', runtime.statusline],
+    ['hook_handler', collectors.hook_handler],
+    ['pm2_reader', collectors.pm2_reader],
+    ['system_sampler', collectors.system_sampler],
+    ['c4', platform.c4]
+  ].filter(([, entry]) => entry);
+}
+
+function sourceSignalLabel(key) {
+  return t(`source_signal.${key}`) || key.replaceAll('_', ' ');
+}
+
+function sourceSignalStatus(entry) {
+  if (entry.capability === 'unsupported') return t('source_signal.unsupported');
+  if (entry.status === 'healthy' && entry.fresh) return t('source_signal.fresh');
+  if (entry.status === 'healthy') return t('source_signal.stale');
+  if (entry.status === 'stale') return t('source_signal.stale');
+  if (entry.status === 'unavailable') return t('source_signal.unavailable');
+  return t(`source_signal.${entry.status}`) || t('value.unknown');
+}
+
+function sourceSignalClass(entry) {
+  if (entry.capability === 'unsupported') return 'unsupported';
+  if (entry.status === 'healthy' && entry.fresh) return 'healthy';
+  if (entry.status === 'unavailable') return 'unavailable';
+  if (entry.status === 'stale' || entry.fresh === false) return 'stale';
+  return 'unknown';
+}
+
+function sourceSignalDetail(entry) {
+  return t(`source_reason.${entry.reason}`) || entry.detail || entry.reason || '';
+}
+
+function renderSourceSignals() {
+  const el = $('#source-signals');
+  if (!el) return;
+  const rows = sourceSignalRows(state.health?.source);
+  if (rows.length === 0) {
+    el.innerHTML = `<p class="empty-state">${esc(t('source_signal.empty'))}</p>`;
+    return;
+  }
+  el.innerHTML = rows.map(([key, entry]) => {
+    const age = entry.age_s == null ? '' : `<span class="source-signal-age">${esc(fmtAge(new Date(Date.now() - entry.age_s * 1000).toISOString()))}</span>`;
+    const detail = sourceSignalDetail(entry);
+    return `<div class="source-signal ${sourceSignalClass(entry)}">
+      <div class="source-signal-main">
+        <span class="source-signal-name">${esc(sourceSignalLabel(key))}</span>
+        <span class="source-signal-status">${esc(sourceSignalStatus(entry))}</span>
+        ${age}
+      </div>
+      <div class="source-signal-detail">${esc(detail)}</div>
+    </div>`;
+  }).join('');
+}
+
 function renderHealth() {
   const sysResp = state.system || {};
   const sys = sysResp.system || sysResp;
@@ -767,6 +829,7 @@ function renderHealth() {
   }
 
   $('#health-updated').textContent = fmtAge(state.healthUpdatedAt);
+  renderSourceSignals();
 }
 
 // ─── Render: Timeline ───
