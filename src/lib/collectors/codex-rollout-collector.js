@@ -1001,7 +1001,13 @@ function summarizeShellCommand(args) {
   const cmd = typeof args === 'string' ? args : args?.cmd || args?.command || '';
   if (!cmd || typeof cmd !== 'string') return 'Run shell command';
   const line = firstCommandLine(cmd);
+  const fullCommand = cmd.replace(/\s+/g, ' ').trim();
   const readable = readableCommand(line);
+  if (/^git\s+diff\s+--check\b/.test(line) ||
+      /^node\s+--check\b/.test(line) ||
+      /(?:playwright|puppeteer)/i.test(fullCommand)) {
+    return `Run verification: ${browserCheckSummary(fullCommand) || readable}`;
+  }
   if (/^(npm|pnpm|yarn)\s+(test|run\s+(test|check|lint|smoke|ci))\b/.test(line) ||
       /^node\s+--test\b/.test(line) ||
       /^go\s+test\b/.test(line) ||
@@ -1014,9 +1020,17 @@ function summarizeShellCommand(args) {
   if (/^pm2\s+(restart|reload|start|stop)\b/.test(line)) return `Restart service: ${readable}`;
   if (/^pm2\s+(status|list|logs|describe)\b/.test(line)) return `Check service status: ${readable}`;
   if (/^(curl|wget)\b/.test(line)) return `Check HTTP endpoint: ${readable}`;
+  if (/^sqlite3\b/.test(line)) return `Inspect database: ${readable}`;
   if (/^gh\s+pr\b/.test(line)) return `Check pull request: ${readable}`;
   if (/^zylos\s+(upgrade|install|runtime|restart)\b/.test(line)) return `Update Zylos runtime: ${readable}`;
   return `Run shell command: ${readable}`;
+}
+
+function browserCheckSummary(cmd) {
+  if (!/(?:playwright|puppeteer)/i.test(cmd)) return null;
+  if (/screenshot/i.test(cmd)) return 'browser screenshot check';
+  if (/(?:getBoundingClientRect|evaluate|locator|page\.)/i.test(cmd)) return 'browser render check';
+  return 'browser check';
 }
 
 function firstCommandLine(cmd) {

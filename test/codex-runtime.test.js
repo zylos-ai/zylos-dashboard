@@ -605,7 +605,47 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
       arguments: JSON.stringify({ cmd: 'python scripts/do_custom_thing.py --token sk-abcdefghijklmnopqrstuvwxyz123456 --file /Users/howard/zylos/workspace/zylos-dashboard/src/index.js' })
     }
   });
-  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n${shellWaitLine}\n${fallbackLine}\n`);
+  const browserLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:08.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      call_id: 'call-browser',
+      arguments: JSON.stringify({ cmd: 'node scripts/browser-check.js --runner playwright --screenshot /tmp/dashboard.png' })
+    }
+  });
+  const syntaxLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:09.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      call_id: 'call-syntax',
+      arguments: JSON.stringify({ cmd: 'node --check public/js/app.js' })
+    }
+  });
+  const diffLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:10.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      call_id: 'call-diff',
+      arguments: JSON.stringify({ cmd: 'git diff --check' })
+    }
+  });
+  const dbLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:11.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      call_id: 'call-db',
+      arguments: JSON.stringify({ cmd: 'sqlite3 /Users/howard/zylos/.claude/skills/dashboard/dashboard.db "select count(*) from events;"' })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n${shellWaitLine}\n${fallbackLine}\n${browserLine}\n${syntaxLine}\n${diffLine}\n${dbLine}\n`);
 
   const store = new Store(path.join(dir, 'dashboard.db'));
   store.upsertCodexRolloutPath({
@@ -616,7 +656,7 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
   });
 
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
-  assert.equal(collector.collect(), 5);
+  assert.equal(collector.collect(), 9);
 
   const events = store.queryEvents({ limit: 10, order: 'asc' });
   assert.deepEqual(events.map(e => e.summary), [
@@ -624,9 +664,13 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
     'Run verification: npm test',
     'Edit files: src/lib/store.js, test/new-fixture.js',
     'Wait for command output: 95158',
-    'Run shell command: python scripts/do_custom_thing.py --token [REDACTED] --file zylos-dashboard/src/index.js'
+    'Run shell command: python scripts/do_custom_thing.py --token [REDACTED] --file zylos-dashboard/src/index.js',
+    'Run verification: browser screenshot check',
+    'Run verification: node --check public/js/app.js',
+    'Run verification: git diff --check',
+    'Inspect database: sqlite3 skills/dashboard/dashboard.db "select count(*) from events;"'
   ]);
-  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call', 'tool_call']);
+  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call', 'tool_call', 'tool_call', 'tool_call', 'tool_call', 'tool_call']);
   const patchEvent = events.find(e => e.metadata.call_id === 'call-patch');
   assert.equal(patchEvent.metadata.tool_name, 'apply_patch');
   assert.ok(patchEvent.summary.includes('src/lib/store.js'));

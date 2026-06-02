@@ -1278,12 +1278,17 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .timeline-item {
   display: grid;
-  grid-template-columns: 48px 8px 1fr auto;
+  grid-template-columns: 48px 8px minmax(56px, auto) 1fr auto;
   gap: var(--space-sm);
   align-items: center;
   padding: var(--space-xs) 0;
   border-top: 1px solid var(--border);
   font-size: 12px;
+}
+
+.timeline-boundary {
+  padding-top: var(--space-sm);
+  padding-bottom: var(--space-sm);
 }
 
 .timeline-time {
@@ -1307,6 +1312,32 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .timeline-dot[data-type="assistant"] { background: var(--purple, #6366f1); }
 .timeline-dot[data-type="permission"] { background: var(--state-possibly-stuck); }
 .timeline-dot[data-type="compact"] { background: var(--purple, #6366f1); }
+.timeline-dot[data-type="subagent"] { background: var(--blue, #2563eb); }
+.timeline-dot[data-type="tool"] { background: var(--text-muted); }
+
+.timeline-kind {
+  justify-self: start;
+  max-width: 96px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.timeline-item-turn .timeline-kind,
+.timeline-item-session .timeline-kind {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--text);
+}
+
+.timeline-item-subagent .timeline-kind {
+  border-color: color-mix(in srgb, var(--blue, #2563eb) 28%, var(--border));
+}
 
 .timeline-summary {
   min-width: 0;

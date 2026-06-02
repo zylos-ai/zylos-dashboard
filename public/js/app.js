@@ -831,6 +831,8 @@ function timelineDotType(eventType) {
   if (eventType === 'stop' || eventType === 'assistant_message') return 'assistant';
   if (eventType === 'permission_request') return 'permission';
   if (eventType === 'post_compact') return 'compact';
+  if (eventType?.startsWith('subagent_')) return 'subagent';
+  if (eventType === 'tool_call' || eventType === 'tool_result') return 'tool';
   return '';
 }
 
@@ -838,6 +840,33 @@ function fmtDuration(ms) {
   if (ms == null || !Number.isFinite(Number(ms))) return '';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function timelineKind(event) {
+  const type = event?.event_type || '';
+  if (type === 'turn_complete') return t('timeline.kind.turn');
+  if (type === 'session_start' || type === 'session_end') return t('timeline.kind.session');
+  if (type === 'assistant_message') return t('timeline.kind.reply');
+  if (type === 'user_prompt_submit') return t('timeline.kind.prompt');
+  if (type === 'post_compact') return t('timeline.kind.compact');
+  if (type === 'permission_request') return t('timeline.kind.permission');
+  if (type === 'tool_call') return t('timeline.kind.tool');
+  if (type === 'tool_result') return t('timeline.kind.done');
+  if (type === 'subagent_start') return t('timeline.kind.subagent');
+  if (type === 'subagent_update') return t('timeline.kind.subagent');
+  if (type === 'subagent_stop') return t('timeline.kind.subagent');
+  return type ? type.replace(/_/g, ' ') : '';
+}
+
+function timelineItemClass(event) {
+  const type = event?.event_type || '';
+  const classes = ['timeline-item'];
+  const dot = timelineDotType(type);
+  if (dot) classes.push(`timeline-item-${dot}`);
+  if (type === 'turn_complete' || type === 'session_start' || type === 'session_end') {
+    classes.push('timeline-boundary');
+  }
+  return classes.join(' ');
 }
 
 function renderTimeline() {
@@ -849,11 +878,13 @@ function renderTimeline() {
   }
   container.replaceChildren(...events.slice(0, 50).map((e) => {
     const el = document.createElement('div');
-    el.className = 'timeline-item';
+    el.className = timelineItemClass(e);
     const durStr = fmtDuration(e.duration_ms);
+    const kind = timelineKind(e);
     el.innerHTML =
       `<span class="timeline-time">${fmtTime(e.timestamp)}</span>` +
       `<span class="timeline-dot" data-type="${timelineDotType(e.event_type)}"></span>` +
+      `<span class="timeline-kind">${esc(kind)}</span>` +
       `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>` +
       `<span class="timeline-duration">${esc(durStr)}</span>`;
     return el;
@@ -996,7 +1027,11 @@ async function refreshTimeline() {
   const since = new Date(Date.now() - 30 * 60_000).toISOString();
   const data = await fetchJson(`/api/timeline?since=${since}&limit=200&order=desc`);
   if (!data || typeof data !== 'object') return;
-  state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use' && e.event_type !== 'stop');
+  state.timeline = (data.events || []).filter((e) => (
+    e.event_type !== 'pre_tool_use' &&
+    e.event_type !== 'stop' &&
+    e.event_type !== 'tool_result'
+  ));
   state.timelineUpdatedAt = new Date().toISOString();
   renderTimeline();
 }
