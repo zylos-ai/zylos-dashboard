@@ -171,6 +171,51 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector deduplicates metrics when rollout cursor is replayed', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.copyFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), rolloutPath);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, {
+    modelPrices: {
+      'gpt-5.3-codex': { input: 2, output: 8, cacheRead: 0.5, cacheCreation: 2 }
+    }
+  });
+
+  assert.equal(collector.collect(), 10);
+  store.upsertCodexRolloutCursor({
+    transcriptPath: rolloutPath,
+    byteOffset: 0,
+    sessionId: 'codex-session-1'
+  });
+
+  assert.equal(collector.collect(), 0);
+  assert.equal(store.queryMetrics({ name: 'context_pct' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'rate_limit' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'rate_limit_7d' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'api_request_tokens' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'cache_hit_rate' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'api_request_cost' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'ttft' }).length, 1);
+  assert.equal(store.queryMetrics({ name: 'turn_duration' }).length, 1);
+  assert.equal(store.queryEvents({ types: ['turn_complete'] }).length, 1);
+
+  const aggregateTokens = store.aggregateTokens({ sessionId: 'codex-session-1' });
+  assert.equal(aggregateTokens.input, 12000);
+  assert.equal(aggregateTokens.output, 800);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('Project distribution uses canonical total input without double-counting Codex cached tokens', () => {
   const dir = tmpDir();
   const store = new Store(path.join(dir, 'dashboard.db'));

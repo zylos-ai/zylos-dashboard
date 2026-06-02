@@ -185,21 +185,27 @@ export class CodexRolloutCollector {
     const contextInput = numberOrNull(lastUsage.input_tokens);
     const contextWindow = numberOrNull(info.model_context_window);
     if (contextInput != null && contextWindow && contextWindow > 0) {
-      this.store.insertMetric({
+      written += this._insertMetricOnce({
         timestamp,
         runtime: 'codex',
         session_id: mapping.session_id,
         metric_name: 'context_pct',
         metric_value: (contextInput / contextWindow) * 100,
-        dimensions: { input_tokens: contextInput, model_context_window: contextWindow, model },
+        dimensions: {
+          input_tokens: contextInput,
+          model_context_window: contextWindow,
+          model,
+          event_id: eventId,
+          rollout_offset: position.byteOffset ?? null,
+          rollout_line: position.lineIndex ?? null
+        },
         source: 'rollout',
         confidence: 'actual'
       });
-      written++;
     }
 
-    written += this._ingestRateLimit(context.rateLimits?.primary, 'rate_limit', timestamp, mapping);
-    written += this._ingestRateLimit(context.rateLimits?.secondary, 'rate_limit_7d', timestamp, mapping);
+    written += this._ingestRateLimit(context.rateLimits?.primary, 'rate_limit', timestamp, mapping, position);
+    written += this._ingestRateLimit(context.rateLimits?.secondary, 'rate_limit_7d', timestamp, mapping, position);
 
     const tokenDims = normalizeUsage(usage);
     const totalInput = tokenDims.input;
@@ -212,7 +218,7 @@ export class CodexRolloutCollector {
       tokenDims.event_id = eventId;
       tokenDims.rollout_offset = position.byteOffset ?? null;
       tokenDims.rollout_line = position.lineIndex ?? null;
-      this.store.insertMetric({
+      written += this._insertMetricOnce({
         timestamp,
         runtime: 'codex',
         session_id: mapping.session_id,
@@ -222,10 +228,9 @@ export class CodexRolloutCollector {
         source: 'jsonl_usage',
         confidence: 'actual'
       });
-      written++;
 
       if (totalInput > 0) {
-        this.store.insertMetric({
+        written += this._insertMetricOnce({
           timestamp,
           runtime: 'codex',
           session_id: mapping.session_id,
@@ -241,13 +246,12 @@ export class CodexRolloutCollector {
           source: 'jsonl_usage',
           confidence: 'actual'
         });
-        written++;
       }
 
       const price = this._resolveModelPrice(model, serviceTier);
       const cost = this._calculateCost(tokenDims, price);
       if (cost != null) {
-        this.store.insertMetric({
+        written += this._insertMetricOnce({
           timestamp,
           runtime: 'codex',
           session_id: mapping.session_id,
@@ -263,7 +267,6 @@ export class CodexRolloutCollector {
           source: 'jsonl_usage',
           confidence: 'estimated'
         });
-        written++;
       } else {
         this.store.upsertSourceHealth('codex_cost', 'collector_liveness', 'unavailable', {
           reason: 'missing_model_price',
@@ -276,24 +279,27 @@ export class CodexRolloutCollector {
     return written;
   }
 
-  _ingestRateLimit(limit, metricName, timestamp, mapping) {
+  _ingestRateLimit(limit, metricName, timestamp, mapping, position = {}) {
     if (!limit || typeof limit !== 'object') return 0;
     const value = numberOrNull(limit.percent_used ?? limit.usage_pct ?? limit.used_percent);
     if (value == null) return 0;
-    this.store.insertMetric({
+    const eventId = rolloutPositionId(metricName, mapping, position);
+    return this._insertMetricOnce({
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
       metric_name: metricName,
       metric_value: value,
       dimensions: {
+        event_id: eventId,
         window_minutes: limit.window_minutes ?? null,
-        resets_at: limit.resets_at ?? null
+        resets_at: limit.resets_at ?? null,
+        rollout_offset: position.byteOffset ?? null,
+        rollout_line: position.lineIndex ?? null
       },
       source: 'rollout',
       confidence: 'actual'
     });
-    return 1;
   }
 
   _ingestTaskComplete(payload, timestamp, mapping, position = {}) {
@@ -301,36 +307,36 @@ export class CodexRolloutCollector {
     const duration = numberOrNull(payload.duration_ms);
     const ttft = numberOrNull(payload.time_to_first_token_ms);
     if (duration != null) {
-      this.store.insertMetric({
+      written += this._insertMetricOnce({
         timestamp,
         runtime: 'codex',
         session_id: mapping.session_id,
         metric_name: 'turn_duration',
         metric_value: duration,
         dimensions: {
+          event_id: rolloutPositionId('turn_duration', mapping, position),
           rollout_offset: position.byteOffset ?? null,
           rollout_line: position.lineIndex ?? null
         },
         source: 'rollout',
         confidence: 'actual'
       });
-      written++;
     }
     if (ttft != null) {
-      this.store.insertMetric({
+      written += this._insertMetricOnce({
         timestamp,
         runtime: 'codex',
         session_id: mapping.session_id,
         metric_name: 'ttft',
         metric_value: ttft,
         dimensions: {
+          event_id: rolloutPositionId('ttft', mapping, position),
           rollout_offset: position.byteOffset ?? null,
           rollout_line: position.lineIndex ?? null
         },
         source: 'rollout',
         confidence: 'actual'
       });
-      written++;
     }
     if (duration != null || ttft != null) {
       const ingestId = `codex-turn-complete-${rolloutPositionId('task_complete', mapping, position)}`;
@@ -356,6 +362,20 @@ export class CodexRolloutCollector {
       written += result?.inserted ? 1 : 0;
     }
     return written;
+  }
+
+  _insertMetricOnce(point) {
+    const eventId = point.dimensions?.event_id || null;
+    if (eventId && this.store.hasMetricEventId?.({
+      metricName: point.metric_name,
+      sessionId: point.session_id,
+      source: point.source,
+      eventId
+    })) {
+      return 0;
+    }
+    this.store.insertMetric(point);
+    return 1;
   }
 
   _ingestResponseItem(payload, timestamp, mapping, position = {}) {

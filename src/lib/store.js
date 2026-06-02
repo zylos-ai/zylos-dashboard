@@ -231,6 +231,15 @@ export class Store {
       VALUES (@timestamp, @runtime, @session_id, @metric_name, @metric_value, @dimensions, @source, @confidence)
     `);
 
+    this._metricExistsByEventId = this.db.prepare(`
+      SELECT 1 FROM metric_points
+      WHERE metric_name = @metric_name
+        AND COALESCE(session_id, '') = COALESCE(@session_id, '')
+        AND source = @source
+        AND json_extract(dimensions, '$.event_id') = @event_id
+      LIMIT 1
+    `);
+
     this._queryMetrics = this.db.prepare(`
       SELECT * FROM metric_points
       WHERE metric_name = @name AND timestamp >= @since AND timestamp <= @until
@@ -394,6 +403,16 @@ export class Store {
       dimensions: point.dimensions ? JSON.stringify(point.dimensions) : null,
       source: point.source,
       confidence: point.confidence || 'actual'
+    });
+  }
+
+  hasMetricEventId({ metricName, sessionId, source, eventId }) {
+    if (!metricName || !source || !eventId) return false;
+    return !!this._metricExistsByEventId.get({
+      metric_name: metricName,
+      session_id: sessionId || null,
+      source,
+      event_id: eventId
     });
   }
 
