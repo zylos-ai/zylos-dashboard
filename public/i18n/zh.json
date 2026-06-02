@@ -171,7 +171,7 @@
   "confirm.interrupt": "中断 Agent？将取消当前操作。",
   "confirm.restart": "重启 Agent 会话？上下文通过 Memory 保留。",
   "confirm.switch_runtime": "切换运行时为 {value}？会话将重启。",
-  "confirm.switch_runtime_codex": "切换到 Codex？Agent 状态、成本追踪和趋势图将不可用。PM2、系统健康、通信和调度器仍正常运行。",
+  "confirm.switch_runtime_codex": "切换到 Codex？会话将重启。Dashboard 会使用 Codex hooks 和 rollout 指标展示运行状态、用量、成本、延迟和趋势（在数据可用时）。",
   "confirm.switch_model": "切换模型为 {value}？",
   "confirm.switch_effort": "切换推理力度为 {value}？",
   "confirm.upgrade_zylos": "升级 zylos-core？所有服务将重启。",

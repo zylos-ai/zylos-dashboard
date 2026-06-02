@@ -171,7 +171,7 @@
   "confirm.interrupt": "Interrupt the agent? This will cancel the current operation.",
   "confirm.restart": "Restart the agent session? Context is preserved via memory.",
   "confirm.switch_runtime": "Switch runtime to {value}? Session will restart.",
-  "confirm.switch_runtime_codex": "Switch to Codex? Agent state, cost tracking, and trends will be unavailable. PM2, system health, communication, and scheduler remain functional.",
+  "confirm.switch_runtime_codex": "Switch to Codex? Session will restart. Dashboard will use Codex hooks and rollout metrics for runtime state, usage, cost, latency, and trends where available.",
   "confirm.switch_model": "Switch model to {value}?",
   "confirm.switch_effort": "Switch effort to {value}?",
   "confirm.upgrade_zylos": "Upgrade zylos-core? All services will restart.",
