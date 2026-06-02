@@ -289,9 +289,38 @@ export class StateEngine {
           }
           this._state.activeSubagents.set(event.metadata.agent_id, {
             agent_type: event.metadata.agent_type || 'general-purpose',
+            nickname: event.metadata.nickname || null,
+            status: event.metadata.status || 'running',
             description,
             started_at: event.timestamp,
+            updated_at: event.timestamp,
+            last_activity: event.summary || 'Subagent started',
             session_id: event.session_id
+          });
+        }
+        this._state.lastProgressAt = now;
+        break;
+
+      case 'subagent_update':
+        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.metadata?.agent_id) {
+          const existing = this._state.activeSubagents.get(event.metadata.agent_id) || {
+            agent_type: event.metadata.agent_type || 'general-purpose',
+            nickname: null,
+            status: 'running',
+            description: null,
+            started_at: event.timestamp,
+            session_id: event.session_id
+          };
+          this._state.activeSubagents.set(event.metadata.agent_id, {
+            ...existing,
+            agent_type: event.metadata.agent_type || existing.agent_type,
+            nickname: event.metadata.nickname || existing.nickname || null,
+            status: event.metadata.status || existing.status || 'running',
+            description: event.metadata.description || existing.description || null,
+            updated_at: event.timestamp,
+            last_activity: event.summary || event.metadata.last_activity || existing.last_activity || null,
+            session_id: event.session_id || existing.session_id
           });
         }
         this._state.lastProgressAt = now;
@@ -353,8 +382,12 @@ export class StateEngine {
       activeSubagents.push({
         agent_id: id,
         agent_type: agent.agent_type,
+        nickname: agent.nickname || null,
+        status: agent.status || 'running',
         description: agent.description || null,
         started_at: agent.started_at,
+        updated_at: agent.updated_at || agent.started_at,
+        last_activity: agent.last_activity || null,
         duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
         running_tools: subagentToolsMap.get(id) || []
       });

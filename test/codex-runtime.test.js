@@ -571,19 +571,97 @@ test('CodexRolloutCollector reconstructs subagent lifecycle from rollout tools',
   });
 
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
-  assert.equal(collector.collect(), 7);
+  assert.equal(collector.collect(), 9);
 
   const subagentEvents = store.queryEvents({ types: ['subagent_start', 'subagent_stop'] });
   assert.deepEqual(subagentEvents.map(e => e.event_type), ['subagent_start', 'subagent_stop']);
   assert.equal(subagentEvents[0].metadata.agent_id, 'agent-1');
+  assert.equal(subagentEvents[0].metadata.nickname, 'Ada');
   assert.equal(subagentEvents[0].metadata.agent_type, 'worker');
   assert.ok(subagentEvents[0].metadata.description.length <= 200);
   assert.ok(!subagentEvents[0].metadata.description.includes('user@example.com'));
   assert.ok(!subagentEvents[0].metadata.description.includes('sk-abcdefghijklmnopqrstuvwxyz123456'));
   assert.equal(subagentEvents[1].metadata.source_tool, 'wait_agent');
+  assert.equal(subagentEvents[1].metadata.completion_summary, 'Done');
 
   const sendEvent = store.queryEvents({ limit: 10 }).find(e => e.metadata?.call_id === 'call-send');
   assert.equal(sendEvent.metadata.agent_id, 'agent-1');
+  assert.equal(sendEvent.summary, 'Send input to subagent: agent-1');
+
+  const updates = store.queryEvents({ types: ['subagent_update'] });
+  assert.deepEqual(updates.map(e => e.metadata.source_tool), ['send_input', 'wait_agent']);
+  assert.equal(updates[0].summary, 'Subagent input sent');
+  assert.equal(updates[0].metadata.status, 'running');
+  assert.equal(updates[0].metadata.message, undefined);
+  assert.equal(updates[0].metadata.input, undefined);
+  assert.equal(updates[1].summary, 'Waiting for subagent');
+  assert.equal(updates[1].metadata.status, 'waiting');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector keeps timed-out wait_agent active', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const spawnCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'spawn_agent',
+      call_id: 'call-spawn',
+      arguments: JSON.stringify({ agent_type: 'worker', message: 'Inspect timeout behavior' })
+    }
+  });
+  const spawnOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.000Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-spawn',
+      output: JSON.stringify({ agent_id: 'agent-timeout', nickname: 'Lin' })
+    }
+  });
+  const waitCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.500Z',
+    payload: {
+      type: 'function_call',
+      name: 'wait_agent',
+      call_id: 'call-wait',
+      arguments: JSON.stringify({ targets: ['agent-timeout'], timeout_ms: 1000 })
+    }
+  });
+  const waitOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.000Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-wait',
+      output: JSON.stringify({ status: { 'agent-timeout': { running: true } }, timed_out: true })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${spawnCall}\n${spawnOutput}\n${waitCall}\n${waitOutput}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 7);
+
+  const stops = store.queryEvents({ types: ['subagent_stop'] });
+  assert.equal(stops.length, 0);
+  const updates = store.queryEvents({ types: ['subagent_update'] });
+  assert.equal(updates.length, 2);
+  assert.deepEqual(updates.map(e => e.summary), ['Waiting for subagent', 'Subagent wait timed out']);
+  assert.equal(updates[1].metadata.agent_id, 'agent-timeout');
+  assert.equal(updates[1].metadata.status, 'waiting');
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

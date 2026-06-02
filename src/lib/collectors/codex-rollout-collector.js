@@ -389,7 +389,7 @@ export class CodexRolloutCollector {
     if (isOutput) {
       written += this._ingestSubagentLifecycleOutput(normalizedName, callId, item.output ?? payload.output, timestamp, mapping, position);
     } else {
-      written += this._ingestSubagentLifecycleCall(normalizedName, toolArgs, timestamp, mapping, position);
+      written += this._ingestSubagentLifecycleCall(normalizedName, toolArgs, timestamp, mapping, position, callId);
     }
 
     return written;
@@ -414,7 +414,9 @@ export class CodexRolloutCollector {
         duration_ms: null,
         metadata: {
           agent_id: agentId,
+          nickname: parsed.nickname || parsed.name || null,
           agent_type: spawn.agent_type || 'default',
+          status: 'running',
           description: spawn.description || null,
           source_event: 'response_item',
           source_tool: 'spawn_agent',
@@ -430,8 +432,16 @@ export class CodexRolloutCollector {
     if (toolName === 'wait_agent') {
       const parsed = parseToolArgs(output);
       let written = 0;
-      for (const agentId of completedAgentIds(parsed)) {
-        written += this._insertSubagentStop(agentId, timestamp, mapping, 'wait_agent', position);
+      for (const status of waitAgentStatuses(parsed)) {
+        if (status.completed) {
+          written += this._insertSubagentStop(status.agentId, timestamp, mapping, 'wait_agent', position, status.summary);
+        } else if (status.timedOut) {
+          written += this._insertSubagentUpdate(status.agentId, timestamp, mapping, 'wait_agent', position, {
+            status: 'waiting',
+            summary: 'Subagent wait timed out',
+            lastActivity: 'Wait timed out'
+          });
+        }
       }
       return written;
     }
@@ -445,14 +455,64 @@ export class CodexRolloutCollector {
     return 0;
   }
 
-  _ingestSubagentLifecycleCall(toolName, args, timestamp, mapping, position = {}) {
+  _ingestSubagentLifecycleCall(toolName, args, timestamp, mapping, position = {}, callId = null) {
+    if (toolName === 'send_input') {
+      const agentId = args.target || args.id || null;
+      return agentId ? this._insertSubagentUpdate(agentId, timestamp, mapping, 'send_input', position, {
+        status: 'running',
+        summary: 'Subagent input sent',
+        lastActivity: 'Input sent'
+      }, callId) : 0;
+    }
+    if (toolName === 'wait_agent') {
+      const targets = subagentTargetsFromArgs(args);
+      let written = 0;
+      for (const agentId of targets) {
+        written += this._insertSubagentUpdate(agentId, timestamp, mapping, 'wait_agent', position, {
+          status: 'waiting',
+          summary: 'Waiting for subagent',
+          lastActivity: 'Waiting for completion'
+        }, callId);
+      }
+      return written;
+    }
     if (toolName !== 'close_agent') return 0;
     const agentId = args.target || args.id || null;
     return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent', position) : 0;
   }
 
-  _insertSubagentStop(agentId, timestamp, mapping, sourceTool, position = {}) {
+  _insertSubagentUpdate(agentId, timestamp, mapping, sourceTool, position = {}, opts = {}, callId = null) {
+    const positionId = rolloutPositionId('subagent_update', mapping, position);
+    const eventKey = callId || `${sourceTool}-${positionId}`;
+    const ingestId = `codex-subagent-update-${mapping.session_id || 'unknown'}-${agentId}-${eventKey}`;
+    const result = this.store.insertEvent({
+      id: stableEventId(ingestId),
+      ingest_id: ingestId,
+      timestamp,
+      runtime: 'codex',
+      session_id: mapping.session_id,
+      event_type: 'subagent_update',
+      category: 'subagent',
+      summary: opts.summary || 'Subagent updated',
+      duration_ms: null,
+      metadata: {
+        agent_id: agentId,
+        status: opts.status || 'running',
+        last_activity: opts.lastActivity || opts.summary || null,
+        source_event: 'response_item',
+        source_tool: sourceTool,
+        rollout_offset: position.byteOffset ?? null,
+        rollout_line: position.lineIndex ?? null
+      },
+      source: 'rollout',
+      confidence: 'actual'
+    });
+    return result?.inserted ? 1 : 0;
+  }
+
+  _insertSubagentStop(agentId, timestamp, mapping, sourceTool, position = {}, completionSummary = null) {
     const ingestId = `codex-subagent-stop-${mapping.session_id || 'unknown'}-${agentId}`;
+    const summary = completionSummary ? `Subagent completed: ${completionSummary}` : 'Subagent completed';
     const result = this.store.insertEvent({
       id: stableEventId(ingestId),
       ingest_id: ingestId,
@@ -461,10 +521,12 @@ export class CodexRolloutCollector {
       session_id: mapping.session_id,
       event_type: 'subagent_stop',
       category: 'subagent',
-      summary: 'Subagent completed',
+      summary,
       duration_ms: null,
       metadata: {
         agent_id: agentId,
+        status: 'completed',
+        completion_summary: completionSummary,
         source_event: 'response_item',
         source_tool: sourceTool,
         rollout_offset: position.byteOffset ?? null,
@@ -528,6 +590,14 @@ export class CodexRolloutCollector {
     if (!name) return 'Tool call';
     if (name === 'apply_patch') return summarizePatchCall(args);
     const toolArgs = parseToolArgs(args);
+    const normalizedName = normalizeToolName(name);
+    if (normalizedName === 'send_input') return `Send input to subagent: ${shortAgentId(toolArgs.target || toolArgs.id)}`;
+    if (normalizedName === 'wait_agent') {
+      const targets = subagentTargetsFromArgs(toolArgs);
+      return targets.length === 1 ? `Wait for subagent: ${shortAgentId(targets[0])}` : 'Wait for subagents';
+    }
+    if (normalizedName === 'close_agent') return `Close subagent: ${shortAgentId(toolArgs.target || toolArgs.id)}`;
+    if (normalizedName === 'spawn_agent') return `Start subagent${toolArgs.agent_type ? `: ${toolArgs.agent_type}` : ''}`;
     if (name === 'exec_command' || name === 'functions.exec_command') {
       return summarizeShellCommand(toolArgs);
     }
@@ -662,21 +732,55 @@ function normalizeToolName(name) {
 function subagentTargetFromArgs(toolName, args) {
   if (toolName === 'send_input') return args.target || null;
   if (toolName === 'close_agent') return args.target || args.id || null;
-  const targets = Array.isArray(args.targets) ? args.targets : Array.isArray(args.ids) ? args.ids : null;
+  const targets = subagentTargetsFromArgs(args);
   if (toolName === 'wait_agent' && targets?.length === 1) return targets[0];
   return null;
 }
 
-function completedAgentIds(output) {
-  const ids = [];
-  if (!output || typeof output !== 'object' || output.timed_out) return ids;
+function subagentTargetsFromArgs(args) {
+  if (!args || typeof args !== 'object') return [];
+  if (Array.isArray(args.targets)) return args.targets.filter(Boolean);
+  if (Array.isArray(args.ids)) return args.ids.filter(Boolean);
+  if (args.target) return [args.target];
+  if (args.id) return [args.id];
+  return [];
+}
+
+function waitAgentStatuses(output) {
+  const statuses = [];
+  if (!output || typeof output !== 'object') return statuses;
   const status = output.status && typeof output.status === 'object' ? output.status : {};
   for (const [agentId, value] of Object.entries(status)) {
     if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'completed')) {
-      ids.push(agentId);
+      statuses.push({
+        agentId,
+        completed: true,
+        timedOut: false,
+        summary: summarizeCompletion(value.completed)
+      });
+    } else if (output.timed_out) {
+      statuses.push({
+        agentId,
+        completed: false,
+        timedOut: true,
+        summary: null
+      });
     }
   }
-  return ids;
+  return statuses;
+}
+
+function summarizeCompletion(value) {
+  if (typeof value === 'string') return truncateText(redactCredentials(value.trim().replace(/\s+/g, ' ')), 160);
+  if (value && typeof value === 'object') {
+    const text = value.summary || value.message || value.status || null;
+    if (typeof text === 'string') return truncateText(redactCredentials(text.trim().replace(/\s+/g, ' ')), 160);
+  }
+  return null;
+}
+
+function shortAgentId(agentId) {
+  return agentId ? String(agentId).slice(0, 12) : 'unknown';
 }
 
 function truncateText(text, limit) {

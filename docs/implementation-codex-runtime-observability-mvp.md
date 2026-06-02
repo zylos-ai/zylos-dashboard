@@ -253,15 +253,21 @@ Tasks:
 
 - Track `spawn_agent` function call arguments by `call_id` only long enough to summarize the request.
 - On successful `spawn_agent` output, emit canonical `subagent_start` with `agent_id`, `agent_type`, and a redacted bounded description.
-- On `wait_agent` output with completed status, emit canonical `subagent_stop`.
+- Preserve spawn output nickname/name metadata when available so the existing active sub-agent row can show a recognizable label.
+- On `send_input`, emit a bounded canonical `subagent_update` that marks the target agent active without storing the raw message.
+- On `wait_agent` call/output, emit canonical `subagent_update` for waiting or timed-out status; do not treat timed-out waits as completion.
+- On `wait_agent` output with completed status, emit canonical `subagent_stop` with a redacted bounded completion summary when available.
 - On `close_agent` call or output, emit canonical `subagent_stop`.
 - Preserve `send_input` target metadata so timeline/tool feed can attribute parent-to-subagent communication without storing raw message content.
+- Keep the UI within existing Current Activity / Timeline components: show meaningful labels such as nickname, agent type, status, last activity, and concrete tool/file targets; avoid new Codex-only panels or raw internal JSON.
 - Use deterministic ingest IDs so re-reading the same rollout events does not duplicate lifecycle events.
 
 Acceptance:
 
 - Active sub-agents appear through the existing StateEngine `active_subagents` output.
+- Active sub-agent rows include useful status/last-activity fields without exposing raw sub-agent prompts.
 - Completed or closed sub-agents are removed through canonical `subagent_stop`.
+- Timed-out `wait_agent` events keep the sub-agent active and mark it waiting.
 - `send_input` does not persist raw sub-agent prompt/message content.
 - Duplicate collection does not create duplicate sub-agent lifecycle events.
 

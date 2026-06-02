@@ -314,6 +314,43 @@ test('subagent description can come from canonical event metadata', () => {
   assert.equal(state.active_subagents[0].agent_type, 'worker');
 });
 
+test('subagent update tracks status, nickname, and last activity', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: {
+      agent_id: 'agent-1',
+      agent_type: 'worker',
+      nickname: 'Ada',
+      description: 'Inspect runtime events'
+    }
+  });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_update',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'main-sess',
+    summary: 'Waiting for subagent',
+    metadata: {
+      agent_id: 'agent-1',
+      status: 'waiting',
+      last_activity: 'Waiting for completion'
+    }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(state.active_subagents[0].nickname, 'Ada');
+  assert.equal(state.active_subagents[0].status, 'waiting');
+  assert.equal(state.active_subagents[0].last_activity, 'Waiting for subagent');
+  assert.equal(state.active_subagents[0].description, 'Inspect runtime events');
+});
+
 test('Codex runtime source health ignores Claude-only runtime progress', () => {
   const store = {
     ...makeMockStore(),

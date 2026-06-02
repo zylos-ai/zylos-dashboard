@@ -493,23 +493,29 @@ function renderSubagents(p) {
 
   for (const agent of agents) {
     let grp = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
-    const label = agent.description || agent.agent_type || t('activity.subagent');
+    const label = agent.nickname || agent.description || agent.agent_type || t('activity.subagent');
     const shortId = agent.agent_id.slice(0, 7);
-    const subtitle = agent.description ? agent.agent_type : null;
+    const subtitleParts = [];
+    if (agent.nickname && agent.description) subtitleParts.push(agent.description);
+    if (agent.agent_type && (agent.nickname || agent.description)) subtitleParts.push(agent.agent_type);
+    if (agent.status && agent.status !== 'running') subtitleParts.push(agent.status);
+    if (agent.last_activity && agent.last_activity !== 'Subagent started') subtitleParts.push(agent.last_activity);
+    const subtitle = subtitleParts.length ? subtitleParts.join(' · ') : shortId;
+    const labelHtml = `${esc(label)} <span style="opacity:0.5">${esc(subtitle)}</span>`;
 
     if (!grp) {
       grp = document.createElement('div');
       grp.className = 'subagent-group';
       grp.dataset.agentId = agent.agent_id;
-      const subtitleHtml = subtitle ? ` <span style="opacity:0.5">${esc(subtitle)}</span>` : ` <span style="opacity:0.5">${esc(shortId)}</span>`;
       grp.innerHTML =
         `<div class="subagent-group-head">` +
-          `<span class="subagent-group-label">${esc(label)}${subtitleHtml}</span>` +
+          `<span class="subagent-group-label">${labelHtml}</span>` +
           `<span class="subagent-group-time">${dur(agent.duration_s || 0)}</span>` +
         `</div>` +
         `<div class="tool-feed"></div>`;
       list.appendChild(grp);
     } else if (!grp.classList.contains('done')) {
+      grp.querySelector('.subagent-group-label').innerHTML = labelHtml;
       grp.querySelector('.subagent-group-time').textContent = dur(agent.duration_s || 0);
     }
 
