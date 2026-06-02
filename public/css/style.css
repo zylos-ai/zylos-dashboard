@@ -1071,6 +1071,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .latency-head {
   display: flex;
   align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 

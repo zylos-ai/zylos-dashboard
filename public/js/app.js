@@ -1175,7 +1175,8 @@ function initTips() {
     ['#cost-tip', '#cost-popover'],
     ['#cost-trend-tip', '#cost-trend-popover'],
     ['#projects-tip', '#projects-popover'],
-    ['#context-tip', '#context-popover']
+    ['#context-tip', '#context-popover'],
+    ['#latency-tip', '#latency-popover']
   ];
   const allPops = [];
 
