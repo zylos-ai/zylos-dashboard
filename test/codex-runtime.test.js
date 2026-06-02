@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { Store } from '../src/lib/store.js';
 import { Sanitizer } from '../src/lib/sanitizer.js';
+import { MetricResolver } from '../src/lib/metric-resolver.js';
 import { CodexRolloutCollector } from '../src/lib/collectors/codex-rollout-collector.js';
 import { DEFAULT_CODEX_MODEL_PRICES, DEFAULT_CODEX_PRIORITY_MODEL_PRICES } from '../src/lib/config.js';
 
@@ -261,6 +262,32 @@ test('CodexRolloutCollector backfills rate limits when cursor already passed ini
   assert.equal(weekly[0].metric_value, 12.25);
 
   assert.equal(collector.collect(), 0);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('MetricResolver preserves rate-limit reset metadata when falling back to stale rollout data', () => {
+  const dir = tmpDir();
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  const staleTimestamp = new Date(Date.now() - 2000).toISOString();
+  store.insertMetric({
+    timestamp: staleTimestamp,
+    runtime: 'codex',
+    session_id: 'codex-session-1',
+    metric_name: 'rate_limit',
+    metric_value: 37.5,
+    dimensions: { window_minutes: 300, resets_at: 1779516000 },
+    source: 'rollout',
+    confidence: 'actual'
+  });
+
+  const resolver = new MetricResolver(store, {}, { metricStalenessSeconds: 1 });
+  const rate = resolver.resolve('rate_limit');
+
+  assert.equal(rate.value, 37.5);
+  assert.equal(rate.selected_source, 'rollout');
+  assert.equal(rate.dimensions.resets_at, 1779516000);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

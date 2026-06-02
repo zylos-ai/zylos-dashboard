@@ -138,10 +138,14 @@ export class MetricResolver {
 
     if (!selectedSource && alternatives.length > 0) {
       const best = alternatives[0];
+      const latest = this._getLatestMetric(metricName, best.source);
       selectedSource = best.source;
       selectedValue = best.value;
       selectedFreshness = best.age_s;
       selectedConfidence = best.confidence;
+      selectedDimensions = latest?.dimensions
+        ? (typeof latest.dimensions === 'string' ? JSON.parse(latest.dimensions) : latest.dimensions)
+        : null;
       fallbackReason = `All sources stale, using most recent: ${best.source} (${best.age_s}s old)`;
     }
 

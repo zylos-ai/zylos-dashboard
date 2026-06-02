@@ -987,7 +987,13 @@ function applySse(name, data) {
     refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
-    if (mn) { state.metrics.set(mn, data); state.metricsUpdatedAt = new Date().toISOString(); renderMetrics(); }
+    if (mn) {
+      const previous = state.metrics.get(mn);
+      const next = data.dimensions ? data : { ...data, dimensions: previous?.dimensions ?? null };
+      state.metrics.set(mn, next);
+      state.metricsUpdatedAt = new Date().toISOString();
+      renderMetrics();
+    }
   } else if (name === 'system_update') {
     state.system = data; state.healthUpdatedAt = new Date().toISOString(); renderHealth();
   } else if (name === 'health_update') {
