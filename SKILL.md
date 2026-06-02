@@ -27,7 +27,7 @@ lifecycle:
 http_routes:
   - path: /dashboard/*
     type: reverse_proxy
-    target: localhost:3470
+    target: 127.0.0.1:3470
     strip_prefix: /dashboard
 
 config:
