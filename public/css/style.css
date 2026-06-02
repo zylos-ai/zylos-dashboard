@@ -1025,9 +1025,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .latency-item {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-sm);
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -1040,6 +1039,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .latency-item small {
   color: var(--text-muted);
   font-size: 11px;
+  line-height: 1.2;
 }
 
 /* ─── ③ Runtime ─── */
