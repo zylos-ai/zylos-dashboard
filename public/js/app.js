@@ -479,6 +479,12 @@ function subagentActivityHtml(agent) {
   }).join('')}</div>`;
 }
 
+function compactSubagentText(value, limit = 80) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
 function renderSubagents(p) {
   const agents = p?.active_subagents || [];
   const section = $('#subagent-section');
@@ -519,15 +525,15 @@ function renderSubagents(p) {
 
   for (const agent of agents) {
     let grp = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
-    const label = agent.nickname || agent.description || agent.agent_type || t('activity.subagent');
+    const label = compactSubagentText(agent.nickname || agent.description || agent.agent_type || t('activity.subagent'), 32);
     const shortId = agent.agent_id.slice(0, 7);
     const subtitleParts = [];
-    if (agent.nickname && agent.description) subtitleParts.push(agent.description);
+    if (agent.nickname && agent.description) subtitleParts.push(compactSubagentText(agent.description, 64));
     if (agent.agent_type && (agent.nickname || agent.description)) subtitleParts.push(agent.agent_type);
     if (agent.status && agent.status !== 'running') subtitleParts.push(agent.status);
-    if (agent.last_activity && agent.last_activity !== 'Subagent started') subtitleParts.push(agent.last_activity);
-    const subtitle = subtitleParts.length ? subtitleParts.join(' · ') : shortId;
-    const labelHtml = `${esc(label)} <span style="opacity:0.5">${esc(subtitle)}</span>`;
+    if (agent.last_activity && agent.last_activity !== 'Subagent started') subtitleParts.push(compactSubagentText(agent.last_activity, 48));
+    const subtitle = compactSubagentText(subtitleParts.length ? subtitleParts.join(' · ') : shortId, 96);
+    const labelHtml = `<span class="subagent-label-main">${esc(label)}</span><span class="subagent-label-sub">${esc(subtitle)}</span>`;
     const diagnostics = subagentDiagnosticParts(agent);
     const diagnosticsHtml = diagnostics.length
       ? `<div class="subagent-diagnostics">${diagnostics.map((part) => `<span>${esc(part)}</span>`).join('')}</div>`
