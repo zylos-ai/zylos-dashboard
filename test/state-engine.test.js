@@ -500,6 +500,83 @@ test('runtime boundary event resets foreground runtime state', () => {
   assert.equal(state.state, 'IDLE');
 });
 
+test('session_start for a new session resets stale foreground runtime state', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-old'
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'codex-old',
+    metadata: { tool_use_id: 'tool-old', tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'codex-old',
+    metadata: { agent_id: 'agent-old', agent_type: 'worker' }
+  });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'session_start',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'codex-new'
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'old session tool should be cleared');
+  assert.equal(state.active_subagents.length, 0, 'old session subagent should be cleared');
+  assert.equal(state.last_prompt, null, 'old prompt should be cleared');
+  assert.equal(engine.getCurrentSessionId(), 'codex-new');
+  assert.equal(state.state, 'IDLE');
+});
+
+test('duplicate session_start for current session preserves foreground runtime state', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-current'
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'codex-current',
+    metadata: { tool_use_id: 'tool-current', tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'codex-current',
+    metadata: { agent_id: 'agent-current', agent_type: 'worker' }
+  });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'session_start',
+    timestamp: new Date(1000300).toISOString(),
+    session_id: 'codex-current'
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 1, 'current session tool should be preserved');
+  assert.equal(state.active_subagents.length, 1, 'current session subagent should be preserved');
+  assert.equal(engine.getCurrentSessionId(), 'codex-current');
+  assert.equal(state.state, 'BUSY');
+});
+
 test('Claude runtime source health keeps Claude runtime progress', () => {
   const store = {
     ...makeMockStore(),

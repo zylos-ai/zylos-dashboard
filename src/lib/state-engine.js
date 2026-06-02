@@ -228,6 +228,23 @@ export class StateEngine {
         }
         break;
 
+      case 'session_start':
+        if (this._isSubagentSession(event.session_id)) {
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            last_activity: event.summary || 'Subagent session started'
+          });
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
+        if (this._isNewMainSessionBoundary(event.session_id)) {
+          this._resetRuntimeForegroundState();
+        }
+        if (event.session_id) this._state.mainSessionId = event.session_id;
+        this._state.lastProgressAt = now;
+        this._clearPossiblyStuck();
+        break;
+
       case 'user_prompt_submit':
         if (this._isSubagentSession(event.session_id)) {
           this._updateSubagentActivity(event.session_id, event.timestamp, {
@@ -673,6 +690,23 @@ export class StateEngine {
   _isForeignRuntimeEvent(event) {
     const currentRuntime = this._config.runtime || 'claude';
     return Boolean(event?.runtime && event.runtime !== currentRuntime);
+  }
+
+  _isNewMainSessionBoundary(sessionId) {
+    if (!sessionId) return false;
+    if (this._state.mainSessionId) return sessionId !== this._state.mainSessionId;
+
+    const foregroundSessionIds = new Set();
+    if (this._state.openTurn?.session_id) foregroundSessionIds.add(this._state.openTurn.session_id);
+    if (this._state.pendingPermission?.session_id) foregroundSessionIds.add(this._state.pendingPermission.session_id);
+    for (const [, tool] of this._state.runningTools) {
+      if (!tool.agent_id && tool.session_id) foregroundSessionIds.add(tool.session_id);
+    }
+    for (const [, agent] of this._state.activeSubagents) {
+      if (agent.session_id) foregroundSessionIds.add(agent.session_id);
+    }
+
+    return foregroundSessionIds.size > 0 && !foregroundSessionIds.has(sessionId);
   }
 
   _resetRuntimeForegroundState() {
