@@ -77,7 +77,8 @@ test('CodexRolloutCollector reports unavailable without hook transcript path', (
 test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived path only', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
-  fs.copyFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), rolloutPath);
+  const fixtureText = fs.readFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), 'utf8');
+  fs.writeFileSync(rolloutPath, fixtureText);
 
   const store = new Store(path.join(dir, 'dashboard.db'));
   store.upsertCodexRolloutPath({
@@ -113,6 +114,13 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(tokens[0].dimensions.model, 'gpt-5.3-codex');
   assert.equal(tokens[0].dimensions.output, 800);
   assert.equal(tokens[0].dimensions.reasoning, 150);
+  assert.equal(tokens[0].dimensions.total_input, 12000);
+  assert.equal(tokens[0].dimensions.uncached_input, 9000);
+  assert.equal(tokens[0].dimensions.runtime_semantics, 'openai_input_includes_cached');
+  const tokenOffset = Buffer.byteLength(`${fixtureText.split('\n')[0]}\n`, 'utf8');
+  assert.equal(tokens[0].dimensions.rollout_offset, tokenOffset);
+  assert.equal(tokens[0].dimensions.rollout_line, 2);
+  assert.ok(tokens[0].dimensions.event_id.startsWith(`token_count-codex-session-1-${tokenOffset}-2-`));
 
   const aggregateTokens = store.aggregateTokens({ sessionId: 'codex-session-1' });
   assert.equal(aggregateTokens.input, 12000);
@@ -147,6 +155,78 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(cursor.byte_offset, fs.statSync(rolloutPath).size);
 
   assert.equal(collector.collect(), 0);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Project distribution uses canonical total input without double-counting Codex cached tokens', () => {
+  const dir = tmpDir();
+  const store = new Store(path.join(dir, 'dashboard.db'));
+
+  store.insertMetric({
+    timestamp: '2026-05-23T01:00:01.000Z',
+    runtime: 'codex',
+    session_id: 'codex-session-1',
+    metric_name: 'api_request_tokens',
+    metric_value: 12000,
+    dimensions: {
+      input: 12000,
+      total_input: 12000,
+      uncached_input: 9000,
+      output: 800,
+      cache_read: 3000,
+      cache_creation: 0,
+      runtime_semantics: 'openai_input_includes_cached',
+      projects: ['zylos-dashboard']
+    },
+    source: 'jsonl_usage',
+    confidence: 'actual'
+  });
+
+  const distribution = store.getProjectDistribution({
+    since: '2026-05-23T00:00:00.000Z',
+    until: '2026-05-23T02:00:00.000Z'
+  });
+
+  assert.equal(distribution.totalTokens, 12800);
+  assert.equal(distribution.totalOutput, 800);
+  assert.equal(distribution.items[0].name, 'zylos-dashboard');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector uses rollout position identity when response item call_id is absent', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const line = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.exec_command',
+      arguments: JSON.stringify({ cmd: 'npm test' })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${line}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 1);
+
+  const [event] = store.queryEvents({ limit: 10, order: 'asc' });
+  assert.equal(event.metadata.call_id, null);
+  assert.equal(event.metadata.rollout_offset, 0);
+  assert.equal(event.metadata.rollout_line, 1);
+  assert.ok(event.ingest_id.includes('response_item-codex-session-1-0-1-'));
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

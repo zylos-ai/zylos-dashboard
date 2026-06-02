@@ -84,18 +84,27 @@ export class CodexRolloutCollector {
     }
 
     const complete = chunk.slice(0, lastNewline + 1);
-    const lines = complete.split('\n').filter(l => l.trim());
     const nextOffset = offset + Buffer.byteLength(complete, 'utf8');
 
     let written = 0;
-    for (const line of lines) {
+    let currentOffset = offset;
+    let lineIndex = 0;
+    for (const rawLine of complete.split('\n')) {
+      const line = rawLine.trim();
+      const lineOffset = currentOffset;
+      currentOffset += Buffer.byteLength(`${rawLine}\n`, 'utf8');
+      lineIndex++;
+      if (!line) continue;
       let event;
       try {
         event = JSON.parse(line);
       } catch {
         continue;
       }
-      written += this._ingestEvent(event, mapping, sessionMeta);
+      written += this._ingestEvent(event, mapping, sessionMeta, {
+        byteOffset: lineOffset,
+        lineIndex
+      });
     }
 
     this.store.upsertCodexRolloutCursor?.({
@@ -129,7 +138,7 @@ export class CodexRolloutCollector {
     }
   }
 
-  _ingestEvent(event, mapping, sessionMeta = {}) {
+  _ingestEvent(event, mapping, sessionMeta = {}, position = {}) {
     const payload = event.payload || {};
     if (event.type === 'turn_context' && payload.model) {
       sessionMeta.model = payload.model;
@@ -137,7 +146,7 @@ export class CodexRolloutCollector {
       return 0;
     }
     if (event.type === 'response_item') {
-      return this._ingestResponseItem(payload, timestampForEvent(event), mapping);
+      return this._ingestResponseItem(payload, timestampForEvent(event), mapping, position);
     }
     if (event.type !== 'event_msg' || !payload.type) return 0;
 
@@ -146,14 +155,15 @@ export class CodexRolloutCollector {
       return this._ingestTokenCount(payload.info || {}, timestamp, mapping, {
         rateLimits: payload.rate_limits || payload.info?.rate_limits,
         model: sessionMeta.model,
-        serviceTier: normalizeServiceTier(payload.service_tier ?? payload.serviceTier ?? payload.info?.service_tier ?? payload.info?.serviceTier ?? sessionMeta.serviceTier)
+        serviceTier: normalizeServiceTier(payload.service_tier ?? payload.serviceTier ?? payload.info?.service_tier ?? payload.info?.serviceTier ?? sessionMeta.serviceTier),
+        position
       });
     }
     if (payload.type === 'task_complete') {
       return this._ingestTaskComplete(payload, timestamp, mapping);
     }
     if (payload.type === 'response_item') {
-      return this._ingestResponseItem(payload, timestamp, mapping);
+      return this._ingestResponseItem(payload, timestamp, mapping, position);
     }
     return 0;
   }
@@ -165,7 +175,8 @@ export class CodexRolloutCollector {
     const usage = Object.keys(lastUsage).length > 0 ? lastUsage : totalUsage;
     const model = info.model || info.model_slug || context.model || null;
     const serviceTier = normalizeServiceTier(info.service_tier ?? info.serviceTier ?? context.serviceTier);
-    const eventId = info.id || crypto.randomUUID();
+    const position = context.position || {};
+    const eventId = info.id || rolloutPositionId('token_count', mapping, position);
 
     const contextInput = numberOrNull(lastUsage.input_tokens);
     const contextWindow = numberOrNull(info.model_context_window);
@@ -189,9 +200,14 @@ export class CodexRolloutCollector {
     const tokenDims = normalizeUsage(usage);
     const totalInput = tokenDims.input;
     if (totalInput > 0 || tokenDims.output > 0 || tokenDims.reasoning > 0) {
+      tokenDims.total_input = totalInput;
+      tokenDims.uncached_input = Math.max(totalInput - tokenDims.cache_read - tokenDims.cache_creation, 0);
+      tokenDims.runtime_semantics = 'openai_input_includes_cached';
       tokenDims.model = model;
       tokenDims.service_tier = serviceTier;
       tokenDims.event_id = eventId;
+      tokenDims.rollout_offset = position.byteOffset ?? null;
+      tokenDims.rollout_line = position.lineIndex ?? null;
       this.store.insertMetric({
         timestamp,
         runtime: 'codex',
@@ -211,7 +227,13 @@ export class CodexRolloutCollector {
           session_id: mapping.session_id,
           metric_name: 'cache_hit_rate',
           metric_value: tokenDims.cache_read / totalInput,
-          dimensions: { event_id: eventId, model, service_tier: serviceTier },
+          dimensions: {
+            event_id: eventId,
+            model,
+            service_tier: serviceTier,
+            rollout_offset: position.byteOffset ?? null,
+            rollout_line: position.lineIndex ?? null
+          },
           source: 'jsonl_usage',
           confidence: 'actual'
         });
@@ -227,7 +249,13 @@ export class CodexRolloutCollector {
           session_id: mapping.session_id,
           metric_name: 'api_request_cost',
           metric_value: cost,
-          dimensions: { event_id: eventId, model, service_tier: serviceTier },
+          dimensions: {
+            event_id: eventId,
+            model,
+            service_tier: serviceTier,
+            rollout_offset: position.byteOffset ?? null,
+            rollout_line: position.lineIndex ?? null
+          },
           source: 'jsonl_usage',
           confidence: 'estimated'
         });
@@ -297,10 +325,10 @@ export class CodexRolloutCollector {
     return written;
   }
 
-  _ingestResponseItem(payload, timestamp, mapping) {
+  _ingestResponseItem(payload, timestamp, mapping, position = {}) {
     const item = payload.item || payload.response_item || payload || {};
     if (item.type === 'message' && item.role === 'assistant') {
-      return this._ingestMessage(item, payload, timestamp, mapping);
+      return this._ingestMessage(item, payload, timestamp, mapping, position);
     }
     if (!['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(item.type)) return 0;
     const name = item.name || payload.name || null;
@@ -319,15 +347,18 @@ export class CodexRolloutCollector {
       });
     }
 
+    const positionId = rolloutPositionId('response_item', mapping, position);
+    const eventKey = callId || positionId;
     const summary = isOutput
       ? this._toolSummaryByCallId.get(callId) || 'Tool completed'
       : this._summarizeToolCall(name, item.arguments || item.input || payload.arguments || payload.input);
     if (callId && !isOutput) this._toolSummaryByCallId.set(callId, summary);
 
+    const ingestId = `codex-rollout-${mapping.session_id || 'unknown'}-${eventKey}-${item.type}`;
     let written = 0;
     const toolEvent = {
-      id: crypto.randomUUID(),
-      ingest_id: `codex-rollout-${mapping.session_id || 'unknown'}-${callId || crypto.randomUUID()}-${item.type}`,
+      id: stableEventId(ingestId),
+      ingest_id: ingestId,
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
@@ -335,7 +366,14 @@ export class CodexRolloutCollector {
       category: 'tool',
       summary,
       duration_ms: null,
-      metadata: { tool_name: name, call_id: callId, source_event: 'response_item', raw_type: item.type },
+      metadata: {
+        tool_name: name,
+        call_id: callId,
+        source_event: 'response_item',
+        raw_type: item.type,
+        rollout_offset: position.byteOffset ?? null,
+        rollout_line: position.lineIndex ?? null
+      },
       source: 'rollout',
       confidence: 'actual'
     };
@@ -347,23 +385,24 @@ export class CodexRolloutCollector {
     written += toolResult?.inserted ? 1 : 0;
 
     if (isOutput) {
-      written += this._ingestSubagentLifecycleOutput(normalizedName, callId, item.output ?? payload.output, timestamp, mapping);
+      written += this._ingestSubagentLifecycleOutput(normalizedName, callId, item.output ?? payload.output, timestamp, mapping, position);
     } else {
-      written += this._ingestSubagentLifecycleCall(normalizedName, toolArgs, timestamp, mapping);
+      written += this._ingestSubagentLifecycleCall(normalizedName, toolArgs, timestamp, mapping, position);
     }
 
     return written;
   }
 
-  _ingestSubagentLifecycleOutput(toolName, callId, output, timestamp, mapping) {
+  _ingestSubagentLifecycleOutput(toolName, callId, output, timestamp, mapping, position = {}) {
     if (toolName === 'spawn_agent') {
       const parsed = parseToolArgs(output);
       const agentId = parsed.agent_id || parsed.id || null;
       if (!agentId) return 0;
       const spawn = this._subagentSpawnByCallId.get(callId) || {};
+      const ingestId = `codex-subagent-start-${mapping.session_id || 'unknown'}-${agentId}`;
       const result = this.store.insertEvent({
-        id: crypto.randomUUID(),
-        ingest_id: `codex-subagent-start-${mapping.session_id || 'unknown'}-${agentId}`,
+        id: stableEventId(ingestId),
+        ingest_id: ingestId,
         timestamp,
         runtime: 'codex',
         session_id: mapping.session_id,
@@ -376,7 +415,9 @@ export class CodexRolloutCollector {
           agent_type: spawn.agent_type || 'default',
           description: spawn.description || null,
           source_event: 'response_item',
-          source_tool: 'spawn_agent'
+          source_tool: 'spawn_agent',
+          rollout_offset: position.byteOffset ?? null,
+          rollout_line: position.lineIndex ?? null
         },
         source: 'rollout',
         confidence: 'actual'
@@ -388,7 +429,7 @@ export class CodexRolloutCollector {
       const parsed = parseToolArgs(output);
       let written = 0;
       for (const agentId of completedAgentIds(parsed)) {
-        written += this._insertSubagentStop(agentId, timestamp, mapping, 'wait_agent');
+        written += this._insertSubagentStop(agentId, timestamp, mapping, 'wait_agent', position);
       }
       return written;
     }
@@ -396,22 +437,23 @@ export class CodexRolloutCollector {
     if (toolName === 'close_agent') {
       const parsed = parseToolArgs(output);
       const agentId = parsed.agent_id || parsed.id || parsed.target || parsed.previous_status?.agent_id || null;
-      return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent') : 0;
+      return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent', position) : 0;
     }
 
     return 0;
   }
 
-  _ingestSubagentLifecycleCall(toolName, args, timestamp, mapping) {
+  _ingestSubagentLifecycleCall(toolName, args, timestamp, mapping, position = {}) {
     if (toolName !== 'close_agent') return 0;
     const agentId = args.target || args.id || null;
-    return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent') : 0;
+    return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent', position) : 0;
   }
 
-  _insertSubagentStop(agentId, timestamp, mapping, sourceTool) {
+  _insertSubagentStop(agentId, timestamp, mapping, sourceTool, position = {}) {
+    const ingestId = `codex-subagent-stop-${mapping.session_id || 'unknown'}-${agentId}`;
     const result = this.store.insertEvent({
-      id: crypto.randomUUID(),
-      ingest_id: `codex-subagent-stop-${mapping.session_id || 'unknown'}-${agentId}`,
+      id: stableEventId(ingestId),
+      ingest_id: ingestId,
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
@@ -422,7 +464,9 @@ export class CodexRolloutCollector {
       metadata: {
         agent_id: agentId,
         source_event: 'response_item',
-        source_tool: sourceTool
+        source_tool: sourceTool,
+        rollout_offset: position.byteOffset ?? null,
+        rollout_line: position.lineIndex ?? null
       },
       source: 'rollout',
       confidence: 'actual'
@@ -430,7 +474,7 @@ export class CodexRolloutCollector {
     return result?.inserted ? 1 : 0;
   }
 
-  _ingestMessage(item, payload, timestamp, mapping) {
+  _ingestMessage(item, payload, timestamp, mapping, position = {}) {
     const textBlocks = Array.isArray(item.content)
       ? item.content
         .filter(c => c.type === 'output_text' && c.text?.trim())
@@ -440,9 +484,10 @@ export class CodexRolloutCollector {
 
     const text = textBlocks.join('\n');
     const summary = truncateText(redactCredentials(text), ASSISTANT_MESSAGE_SUMMARY_LIMIT);
+    const ingestId = this._messageIngestId(item.role, mapping.session_id, timestamp, summary);
     const event = {
-      id: crypto.randomUUID(),
-      ingest_id: this._messageIngestId(item.role, mapping.session_id, timestamp, summary),
+      id: stableEventId(ingestId),
+      ingest_id: ingestId,
       timestamp,
       runtime: 'codex',
       session_id: mapping.session_id,
@@ -453,7 +498,9 @@ export class CodexRolloutCollector {
       metadata: {
         role: item.role,
         phase: payload.phase || item.phase || null,
-        content_types: [...new Set(item.content.map(c => c.type).filter(Boolean))]
+        content_types: [...new Set(item.content.map(c => c.type).filter(Boolean))],
+        rollout_offset: position.byteOffset ?? null,
+        rollout_line: position.lineIndex ?? null
       },
       source: 'rollout',
       confidence: 'actual'
@@ -559,6 +606,24 @@ export class CodexRolloutCollector {
 function numberOrNull(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function stableEventId(seed) {
+  return crypto.createHash('sha256')
+    .update(String(seed))
+    .digest('hex');
+}
+
+function rolloutPositionId(kind, mapping, position = {}) {
+  const transcriptPath = mapping?.transcript_path || 'unknown';
+  const sessionId = mapping?.session_id || 'unknown';
+  const byteOffset = Number.isFinite(position.byteOffset) ? position.byteOffset : 'unknown';
+  const lineIndex = Number.isFinite(position.lineIndex) ? position.lineIndex : 'unknown';
+  const hash = crypto.createHash('sha256')
+    .update(`${kind}\n${sessionId}\n${transcriptPath}\n${byteOffset}\n${lineIndex}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `${kind}-${sessionId}-${byteOffset}-${lineIndex}-${hash}`;
 }
 
 function timestampForEvent(event) {

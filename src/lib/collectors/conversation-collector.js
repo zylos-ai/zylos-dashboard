@@ -214,7 +214,18 @@ export class ConversationCollector {
 
     if (this._hasUsageForUuid(uuid)) return 0;
 
-    const dims = { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, speed, uuid };
+    const dims = {
+      input: inputTokens,
+      total_input: totalInput,
+      uncached_input: inputTokens,
+      output: outputTokens,
+      cache_read: cacheRead,
+      cache_creation: cacheCreation,
+      runtime_semantics: 'claude_split_cache',
+      model,
+      speed,
+      uuid
+    };
     if (projects.length > 0) dims.projects = projects;
 
     let written = 0;

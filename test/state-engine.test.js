@@ -346,6 +346,57 @@ test('Codex runtime source health ignores Claude-only runtime progress', () => {
   assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
 });
 
+test('runtime boundary event resets foreground runtime state', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session'
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session',
+    metadata: { tool_use_id: 'tool-1', tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'permission_request',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session',
+    metadata: { tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session',
+    metadata: { agent_id: 'agent-1', agent_type: 'worker' }
+  });
+
+  let state = engine.getState();
+  assert.equal(state.running_tools.length, 1);
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(engine.getCurrentSessionId(), 'codex-session');
+
+  engine.onEvent({
+    runtime: 'claude',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'claude-session'
+  });
+
+  state = engine.getState();
+  assert.equal(state.running_tools.length, 0);
+  assert.equal(state.active_subagents.length, 0);
+  assert.equal(state.last_prompt, null);
+  assert.equal(engine.getCurrentSessionId(), null);
+  assert.equal(state.state, 'IDLE');
+});
+
 test('Claude runtime source health keeps Claude runtime progress', () => {
   const store = {
     ...makeMockStore(),

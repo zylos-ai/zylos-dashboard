@@ -48,9 +48,9 @@ These gates must stay explicit in code and tests before the MVP is considered re
 | Gate | Requirement |
 |---|---|
 | Shared sanitizer/privacy boundary | All hook and rollout ingestion stores only safe structured metadata or redacted summaries; raw prompt, tool input, tool output, and assistant text are not persisted. Redaction happens before truncation. |
-| Canonical token/cache/cost contract | Codex `input_tokens` already includes cached input. Cache hit rate is `cached_input_tokens / input_tokens`; estimated cost charges only uncached input at input price plus cached input at cache-read price. |
-| Deterministic rollout high-water dedup | Rollout ingestion advances a durable cursor by `transcript_path` and byte offset. Re-collection must not duplicate metric or event rows. |
-| Runtime-switch state reset | Runtime-specific state and source health must not make Claude and Codex sessions appear active at the same time after a runtime switch. |
+| Canonical token/cache/cost contract | Codex `input_tokens` already includes cached input. Token rows must write canonical fields such as `total_input`, `uncached_input`, `cache_read`, `cache_creation`, `output`, and `runtime_semantics`; aggregate code must use canonical `metric_value` for total input rather than reinterpreting runtime-specific raw fields. Cache hit rate is `cached_input_tokens / input_tokens`; estimated cost charges only uncached input at input price plus cached input at cache-read price. |
+| Deterministic rollout high-water dedup | Rollout ingestion advances a durable cursor by `transcript_path` and byte offset. Usage/event identities must be deterministic from rollout position (`transcript_path` plus byte offset / line), never from random UUID fallbacks. Re-collection must not duplicate metric or event rows. |
+| Runtime-switch state reset | Runtime-specific state and source health must not make Claude and Codex sessions appear active at the same time after a runtime switch. The current runtime StateEngine must clear foreground state and ignore events from another runtime instead of replaying old open turns, running tools, pending permission, or active sub-agents. |
 | Current-scope Codex sub-agent lifecycle | Codex sub-agent activity is reconstructed from rollout `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` tool call/output events. This is part of the MVP, not deferred. |
 
 ## Current Code Baseline

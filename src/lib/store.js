@@ -652,7 +652,7 @@ export class Store {
 
     // Get rows with project attribution from JSONL-ingested metrics
     const rows = this.db.prepare(`
-      SELECT dimensions FROM metric_points
+      SELECT metric_value, dimensions FROM metric_points
       WHERE metric_name = 'api_request_tokens'
         AND timestamp >= @since AND timestamp <= @until
     `).all({ since: s, until: u });
@@ -665,8 +665,8 @@ export class Store {
       let dims;
       try { dims = JSON.parse(row.dimensions); } catch { continue; }
       const output = dims.output || 0;
-      const input = (dims.input || 0) + (dims.cache_read || 0) + (dims.cache_creation || 0) + output;
-      totalTokens += input;
+      const totalInput = Number(row.metric_value) || dims.total_input || 0;
+      totalTokens += totalInput + output;
       totalOutput += output;
 
       const projects = dims.projects;

@@ -182,6 +182,13 @@ export class StateEngine {
   }
 
   onEvent(event) {
+    if (this._isForeignRuntimeEvent(event)) {
+      this._resetRuntimeForegroundState();
+      this._broadcastStateChange();
+      this._maybeSnapshot();
+      return;
+    }
+
     const now = new Date(this._now());
 
     switch (event.event_type) {
@@ -546,6 +553,21 @@ export class StateEngine {
 
   _clearPossiblyStuck() {
     this._state.possiblyStuckSince = null;
+  }
+
+  _isForeignRuntimeEvent(event) {
+    const currentRuntime = this._config.runtime || 'claude';
+    return Boolean(event?.runtime && event.runtime !== currentRuntime);
+  }
+
+  _resetRuntimeForegroundState() {
+    this._state.runningTools.clear();
+    this._state.openTurn = null;
+    this._state.pendingPermission = null;
+    this._state.possiblyStuckSince = null;
+    this._state.mainSessionId = null;
+    this._state.activeSubagents.clear();
+    this._state.lastPrompt = null;
   }
 
   _isCollectorLivenessFresh() {
