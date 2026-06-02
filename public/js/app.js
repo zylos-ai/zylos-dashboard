@@ -74,6 +74,7 @@ function tok(v) {
 }
 
 function usd(v) {
+  if (v == null) return '--';
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
   return new Intl.NumberFormat('en-US', {
@@ -655,7 +656,7 @@ function renderMetrics() {
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
 
   const costSessionLabel = $('#metric-cost-session-label');
-  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? t('cost.session') : t('cost.lifetime');
+  if (costSessionLabel) costSessionLabel.textContent = t('cost.session');
 
   // Tokens — stacked bar + cache ring
   const ts = agg.tokens_session;

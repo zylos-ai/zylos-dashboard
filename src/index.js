@@ -27,6 +27,7 @@ import { ConversationCollector } from './lib/collectors/conversation-collector.j
 import { CodexRolloutCollector } from './lib/collectors/codex-rollout-collector.js';
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
+import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
 import { handleAction, getActionsMeta } from './lib/actions.js';
@@ -387,16 +388,15 @@ function handleApi(req, res, pathname, url) {
       sendJson(res, 400, { error: 'metric must be "cost", "cache", or "tokens"' });
       return true;
     }
-    const bounds = periodBounds(period, tz, stateEngine);
+    let bounds = periodBounds(period, tz, stateEngine);
     if (bounds === undefined) { sendJson(res, 400, { error: `invalid period: ${period}` }); return true; }
+    const resolved = resolveAggregateValue(store, metric, bounds, { runtime: activeRuntime, period });
+    const value = resolved.value;
+    bounds = resolved.bounds;
     if (bounds === null) {
       sendJson(res, 200, { metric, period, value: null, since: null, until: null, sessionId: null });
       return true;
     }
-    let value;
-    if (metric === 'cost') value = store.aggregateCost(bounds);
-    else if (metric === 'cache') value = store.aggregateCacheRate(bounds);
-    else value = store.aggregateTokens(bounds);
     sendJson(res, 200, { metric, period, value, since: bounds.since, until: bounds.until, sessionId: bounds.sessionId || null });
     return true;
   }
