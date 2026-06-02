@@ -13,6 +13,8 @@ const STRIP_KEYS = new Set([
   'prompt', 'content', 'message'
 ]);
 
+const DEFAULT_SUMMARY_LIMIT = 500;
+
 export class Sanitizer {
   constructor(zylosDir) {
     this.zylosDir = zylosDir;
@@ -65,8 +67,7 @@ export class Sanitizer {
       if (hookEventName === 'SubagentStop' || hookEventName === 'Stop') {
         const msg = rawPayload.last_assistant_message;
         if (typeof msg === 'string' && msg.length > 0) {
-          const redacted = this.redactCredentials(msg);
-          metadata.assistant_summary = redacted.length > 200 ? redacted.slice(0, 197) + '...' : redacted;
+          metadata.assistant_summary = this.safeAssistantSummary(msg, 200);
         }
       }
 
@@ -99,6 +100,17 @@ export class Sanitizer {
       result = result.replace(pattern, replacement);
     }
     return result;
+  }
+
+  safeSummary(text, limit = DEFAULT_SUMMARY_LIMIT) {
+    if (typeof text !== 'string') return null;
+    const redacted = this.redactCredentials(text.trim().replace(/\s+/g, ' '));
+    if (!redacted) return null;
+    return redacted.length > limit ? redacted.slice(0, limit - 3) + '...' : redacted;
+  }
+
+  safeAssistantSummary(text, limit = DEFAULT_SUMMARY_LIMIT) {
+    return this.safeSummary(text, limit);
   }
 
   buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource, assistantSummary) {

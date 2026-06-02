@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { modelPricesForRuntime, normalizeServiceTier } from '../config.js';
+import { Sanitizer } from '../sanitizer.js';
 
 const PER_MTOK = 1_000_000;
 const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
@@ -15,6 +16,7 @@ export class CodexRolloutCollector {
     this._toolNameByCallId = new Map();
     this._subagentSpawnByCallId = new Map();
     this._onEvent = null;
+    this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || process.cwd());
   }
 
   collect() {
@@ -343,7 +345,7 @@ export class CodexRolloutCollector {
     if (!isOutput && normalizedName === 'spawn_agent' && callId) {
       this._subagentSpawnByCallId.set(callId, {
         agent_type: toolArgs.agent_type || 'default',
-        description: summarizeAgentMessage(toolArgs.message)
+        description: this._sanitizer.safeSummary(toolArgs.message, 200)
       });
     }
 
@@ -483,7 +485,8 @@ export class CodexRolloutCollector {
     if (textBlocks.length === 0) return 0;
 
     const text = textBlocks.join('\n');
-    const summary = truncateText(redactCredentials(text), ASSISTANT_MESSAGE_SUMMARY_LIMIT);
+    const summary = this._sanitizer.safeAssistantSummary(text, ASSISTANT_MESSAGE_SUMMARY_LIMIT);
+    if (!summary) return 0;
     const ingestId = this._messageIngestId(item.role, mapping.session_id, timestamp, summary);
     const event = {
       id: stableEventId(ingestId),
@@ -674,11 +677,6 @@ function completedAgentIds(output) {
     }
   }
   return ids;
-}
-
-function summarizeAgentMessage(message) {
-  if (typeof message !== 'string' || !message.trim()) return null;
-  return truncateText(redactCredentials(message.trim().replace(/\s+/g, ' ')), 200);
 }
 
 function truncateText(text, limit) {

@@ -151,6 +151,27 @@ test('extracts usage even when no text content (tool_use only)', () => {
   fs.rmSync(tmpDir, { recursive: true });
 });
 
+test('assistant summaries redact before truncation', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+  const text = `${'x'.repeat(430)} sk-abcdefghijklmnopqrstuvwxyz123456 user@example.com ${'tail '.repeat(80)}`;
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-redact-summary', {
+    content: [{ type: 'text', text }]
+  }) + '\n');
+  collector.collect();
+
+  assert.equal(store.events.length, 1);
+  assert.ok(store.events[0].summary.length <= 500);
+  assert.ok(!store.events[0].summary.includes('sk-'));
+  assert.ok(!store.events[0].summary.includes('user@example.com'));
+  assert.ok(store.events[0].summary.includes('[REDACTED]'));
+  assert.ok(store.events[0].summary.includes('[EMAIL]'));
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
 test('does not double-count on re-read of same data', () => {
   const tmpDir = makeTmpDir();
   const store = makeMockStore();

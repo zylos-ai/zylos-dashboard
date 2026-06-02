@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fastModeMultiplierForRuntime, modelPricesForRuntime } from '../config.js';
+import { Sanitizer } from '../sanitizer.js';
 
 const PER_MTOK = 1_000_000;
+const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 
 export class ConversationCollector {
   constructor(store, config, { stateEngine } = {}) {
@@ -15,6 +17,7 @@ export class ConversationCollector {
     this._currentFile = null;
     this._seenUuids = new Set();
     this._onEvent = null;
+    this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || path.join(process.env.HOME, 'zylos'));
     this._restoreOffset();
   }
 
@@ -157,6 +160,8 @@ export class ConversationCollector {
       const eventId = crypto.randomUUID();
 
       try {
+        const summary = this._sanitizer.safeAssistantSummary(text, ASSISTANT_MESSAGE_SUMMARY_LIMIT);
+        if (!summary) continue;
         const event = {
           id: eventId,
           ingest_id: ingestId,
@@ -165,7 +170,7 @@ export class ConversationCollector {
           session_id: sessionId,
           event_type: 'assistant_message',
           category: 'assistant',
-          summary: text.length > 500 ? text.slice(0, 497) + '...' : text,
+          summary,
           duration_ms: null,
           metadata: JSON.stringify({
             uuid,

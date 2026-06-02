@@ -494,6 +494,13 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
     'Run shell command: python scripts/do_custom_thing.py --token [REDACTED] --file zylos-dashboard/src/index.js'
   ]);
   assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call']);
+  const patchEvent = events.find(e => e.metadata.call_id === 'call-patch');
+  assert.equal(patchEvent.metadata.tool_name, 'apply_patch');
+  assert.ok(patchEvent.summary.includes('src/lib/store.js'));
+  assert.ok(patchEvent.summary.includes('test/new-fixture.js'));
+  assert.equal(patchEvent.metadata.input, undefined);
+  assert.equal(patchEvent.metadata.arguments, undefined);
+  assert.equal(patchEvent.metadata.tool_input, undefined);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
