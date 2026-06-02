@@ -18,6 +18,7 @@ export class CodexRolloutCollector {
     this._subagentStartedAt = new Map();
     this._subagentWaitByCallId = new Map();
     this._onEvent = null;
+    this._onMetric = null;
     this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || process.cwd());
   }
 
@@ -375,6 +376,9 @@ export class CodexRolloutCollector {
       return 0;
     }
     this.store.insertMetric(point);
+    if (this._onMetric) {
+      this._onMetric(point);
+    }
     return 1;
   }
 

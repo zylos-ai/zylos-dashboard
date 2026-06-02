@@ -189,8 +189,23 @@ test('CodexRolloutCollector deduplicates metrics when rollout cursor is replayed
       'gpt-5.3-codex': { input: 2, output: 8, cacheRead: 0.5, cacheCreation: 2 }
     }
   });
+  const liveMetrics = [];
+  collector._onMetric = (metric) => liveMetrics.push(metric);
 
   assert.equal(collector.collect(), 10);
+  assert.deepEqual(
+    liveMetrics.map(m => m.metric_name),
+    [
+      'context_pct',
+      'rate_limit',
+      'rate_limit_7d',
+      'api_request_tokens',
+      'cache_hit_rate',
+      'api_request_cost',
+      'turn_duration',
+      'ttft'
+    ]
+  );
   store.upsertCodexRolloutCursor({
     transcriptPath: rolloutPath,
     byteOffset: 0,
@@ -198,6 +213,7 @@ test('CodexRolloutCollector deduplicates metrics when rollout cursor is replayed
   });
 
   assert.equal(collector.collect(), 0);
+  assert.equal(liveMetrics.length, 8);
   assert.equal(store.queryMetrics({ name: 'context_pct' }).length, 1);
   assert.equal(store.queryMetrics({ name: 'rate_limit' }).length, 1);
   assert.equal(store.queryMetrics({ name: 'rate_limit_7d' }).length, 1);

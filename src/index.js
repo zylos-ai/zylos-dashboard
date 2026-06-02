@@ -177,6 +177,16 @@ if (conversationCollector) {
 }
 if (codexRolloutCollector) {
   codexRolloutCollector._onEvent = (event) => stateEngine.onEvent(event);
+  codexRolloutCollector._onMetric = (metric) => {
+    sse.broadcast('metric_update', {
+      metric_name: metric.metric_name,
+      value: Number(metric.metric_value),
+      dimensions: metric.dimensions || null,
+      source: metric.source || 'rollout',
+      confidence: metric.confidence || 'actual',
+      timestamp: metric.timestamp || new Date().toISOString()
+    });
+  };
 }
 
 // 8. Metric resolver
