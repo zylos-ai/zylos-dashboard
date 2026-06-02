@@ -383,7 +383,7 @@ export class CodexRolloutCollector {
     const targetAgentId = subagentTargetFromArgs(normalizedName, toolArgs);
     if (targetAgentId) toolEvent.metadata.agent_id = targetAgentId;
 
-    const toolResult = this.store.insertEvent(toolEvent);
+    const toolResult = this._insertEvent(toolEvent);
     written += toolResult?.inserted ? 1 : 0;
 
     if (isOutput) {
@@ -402,7 +402,7 @@ export class CodexRolloutCollector {
       if (!agentId) return 0;
       const spawn = this._subagentSpawnByCallId.get(callId) || {};
       const ingestId = `codex-subagent-start-${mapping.session_id || 'unknown'}-${agentId}`;
-      const result = this.store.insertEvent({
+      const result = this._insertEvent({
         id: stableEventId(ingestId),
         ingest_id: ingestId,
         timestamp,
@@ -485,7 +485,7 @@ export class CodexRolloutCollector {
     const positionId = rolloutPositionId('subagent_update', mapping, position);
     const eventKey = callId || `${sourceTool}-${positionId}`;
     const ingestId = `codex-subagent-update-${mapping.session_id || 'unknown'}-${agentId}-${eventKey}`;
-    const result = this.store.insertEvent({
+    const result = this._insertEvent({
       id: stableEventId(ingestId),
       ingest_id: ingestId,
       timestamp,
@@ -513,7 +513,7 @@ export class CodexRolloutCollector {
   _insertSubagentStop(agentId, timestamp, mapping, sourceTool, position = {}, completionSummary = null) {
     const ingestId = `codex-subagent-stop-${mapping.session_id || 'unknown'}-${agentId}`;
     const summary = completionSummary ? `Subagent completed: ${completionSummary}` : 'Subagent completed';
-    const result = this.store.insertEvent({
+    const result = this._insertEvent({
       id: stableEventId(ingestId),
       ingest_id: ingestId,
       timestamp,
@@ -571,11 +571,16 @@ export class CodexRolloutCollector {
       confidence: 'actual'
     };
 
+    const result = this._insertEvent(event);
+    return result?.inserted ? 1 : 0;
+  }
+
+  _insertEvent(event) {
     const result = this.store.insertEvent(event);
     if (result?.inserted && this._onEvent) {
       this._onEvent(event);
     }
-    return result?.inserted ? 1 : 0;
+    return result;
   }
 
   _messageIngestId(role, sessionId, timestamp, text) {

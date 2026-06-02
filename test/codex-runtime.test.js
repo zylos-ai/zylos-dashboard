@@ -582,6 +582,8 @@ test('CodexRolloutCollector reconstructs subagent lifecycle from rollout tools',
   });
 
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  const liveEvents = [];
+  collector._onEvent = (event) => liveEvents.push(event);
   assert.equal(collector.collect(), 9);
 
   const subagentEvents = store.queryEvents({ types: ['subagent_start', 'subagent_stop'] });
@@ -607,6 +609,10 @@ test('CodexRolloutCollector reconstructs subagent lifecycle from rollout tools',
   assert.equal(updates[0].metadata.input, undefined);
   assert.equal(updates[1].summary, 'Waiting for subagent');
   assert.equal(updates[1].metadata.status, 'waiting');
+  assert.deepEqual(
+    liveEvents.filter(e => e.event_type.startsWith('subagent_')).map(e => e.event_type),
+    ['subagent_start', 'subagent_update', 'subagent_update', 'subagent_stop']
+  );
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

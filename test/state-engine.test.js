@@ -183,6 +183,58 @@ test('subagent tools are separated from main session tools via agent_id', () => 
   assert.equal(state.active_subagents[0].running_tools[0].tool_name, 'Bash');
 });
 
+test('subagent child session tools attach to active subagent row', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'default', nickname: 'Ada' }
+  });
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'agent-1',
+    summary: 'Prompt received'
+  });
+
+  engine.onEvent({
+    event_type: 'assistant_message',
+    timestamp: new Date(1000150).toISOString(),
+    session_id: 'agent-1',
+    summary: 'I will run a read-only check.'
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'agent-1',
+    metadata: { tool_use_id: 'tool-child', tool_name: 'Bash', tool_detail: 'sleep 45' }
+  });
+
+  let state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'child session tool should not appear in main feed');
+  assert.equal(state.subagent_tools.length, 1, 'child session tool should appear in subagent feed');
+  assert.equal(state.active_subagents[0].running_tools.length, 1, 'active subagent row should show child tool');
+  assert.equal(state.active_subagents[0].running_tools[0].tool_name, 'Bash');
+  assert.equal(state.active_subagents[0].last_activity, 'Bash: sleep 45');
+  assert.equal(state.last_message, null, 'child assistant message should not replace main assistant message');
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000300).toISOString(),
+    session_id: 'agent-1',
+    summary: 'child complete'
+  });
+
+  state = engine.getState();
+  assert.equal(state.active_subagents.length, 1, 'child stop should not remove parent-tracked subagent');
+  assert.equal(state.active_subagents[0].status, 'completed');
+  assert.equal(state.active_subagents[0].running_tools.length, 0);
+});
+
 test('background subagent: main and subagent tools separated by agent_id', () => {
   const { engine } = makeEngine();
 

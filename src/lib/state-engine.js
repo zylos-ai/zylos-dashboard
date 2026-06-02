@@ -194,13 +194,23 @@ export class StateEngine {
     switch (event.event_type) {
       case 'pre_tool_use':
         if (event.metadata?.tool_use_id) {
+          const agentId = this._agentIdForEvent(event);
           this._state.runningTools.set(event.metadata.tool_use_id, {
             tool_name: event.metadata.tool_name,
             tool_detail: event.metadata.tool_detail || null,
             started_at: event.timestamp,
             session_id: event.session_id,
-            agent_id: event.metadata.agent_id || null
+            agent_id: agentId
           });
+          if (agentId) {
+            const toolActivity = event.summary ||
+              (event.metadata.tool_detail
+                ? `${event.metadata.tool_name || 'Tool'}: ${event.metadata.tool_detail}`
+                : event.metadata.tool_name || 'Tool started');
+            this._updateSubagentActivity(agentId, event.timestamp, {
+              last_activity: toolActivity
+            });
+          }
         }
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
@@ -219,6 +229,14 @@ export class StateEngine {
         break;
 
       case 'user_prompt_submit':
+        if (this._isSubagentSession(event.session_id)) {
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            last_activity: event.summary || 'Prompt received'
+          });
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
         this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
         if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
@@ -232,6 +250,21 @@ export class StateEngine {
         break;
 
       case 'stop':
+        if (this._isSubagentSession(event.session_id)) {
+          for (const [id, tool] of this._state.runningTools) {
+            if (tool.agent_id === event.session_id || tool.session_id === event.session_id) {
+              this._state.runningTools.delete(id);
+            }
+          }
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            status: 'completed',
+            last_activity: event.summary || 'Subagent completed'
+          });
+          this._cleanupStaleTools();
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
         if (event.session_id) {
           for (const [id, tool] of this._state.runningTools) {
             if (tool.session_id === event.session_id && !tool.agent_id) {
@@ -257,6 +290,13 @@ export class StateEngine {
         break;
 
       case 'assistant_message':
+        if (this._isSubagentSession(event.session_id)) {
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            last_activity: event.summary || 'Subagent message'
+          });
+          this._state.lastProgressAt = now;
+          break;
+        }
         this._state.lastAssistantMessage = {
           text: event.summary,
           timestamp: event.timestamp
@@ -586,6 +626,26 @@ export class StateEngine {
 
   _clearPossiblyStuck() {
     this._state.possiblyStuckSince = null;
+  }
+
+  _agentIdForEvent(event) {
+    if (event.metadata?.agent_id) return event.metadata.agent_id;
+    return this._isSubagentSession(event.session_id) ? event.session_id : null;
+  }
+
+  _isSubagentSession(sessionId) {
+    return !!sessionId && this._state.activeSubagents.has(sessionId);
+  }
+
+  _updateSubagentActivity(agentId, timestamp, patch = {}) {
+    const existing = this._state.activeSubagents.get(agentId);
+    if (!existing) return;
+    this._state.activeSubagents.set(agentId, {
+      ...existing,
+      status: patch.status || existing.status || 'running',
+      updated_at: timestamp || existing.updated_at || existing.started_at,
+      last_activity: patch.last_activity || existing.last_activity || null
+    });
   }
 
   _isForeignRuntimeEvent(event) {
