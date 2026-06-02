@@ -449,7 +449,7 @@ export class CodexRolloutCollector {
   _ingestSubagentLifecycleOutput(toolName, callId, output, timestamp, mapping, position = {}) {
     if (toolName === 'spawn_agent') {
       const parsed = parseToolArgs(output);
-      const agentId = parsed.agent_id || parsed.id || null;
+      const agentId = agentIdFromObject(parsed);
       if (!agentId) return 0;
       const spawn = this._subagentSpawnByCallId.get(callId) || {};
       const ingestId = `codex-subagent-start-${mapping.session_id || 'unknown'}-${agentId}`;
@@ -485,7 +485,7 @@ export class CodexRolloutCollector {
       const parsed = parseToolArgs(output);
       const wait = this._subagentWaitByCallId.get(callId) || null;
       let written = 0;
-      for (const status of waitAgentStatuses(parsed)) {
+      for (const status of waitAgentStatuses(parsed, wait?.targets || [])) {
         const waitLatencyMs = wait ? elapsedMs(wait.startedAt, timestamp) : null;
         if (status.completed) {
           written += this._insertSubagentStop(status.agentId, timestamp, mapping, 'wait_agent', position, status.summary, {
@@ -509,7 +509,7 @@ export class CodexRolloutCollector {
 
     if (toolName === 'close_agent') {
       const parsed = parseToolArgs(output);
-      const agentId = parsed.agent_id || parsed.id || parsed.target || parsed.previous_status?.agent_id || null;
+      const agentId = agentIdFromObject(parsed) || agentIdFromObject(parsed.previous_status);
       return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent', position) : 0;
     }
 
@@ -518,7 +518,7 @@ export class CodexRolloutCollector {
 
   _ingestSubagentLifecycleCall(toolName, args, timestamp, mapping, position = {}, callId = null) {
     if (toolName === 'send_input') {
-      const agentId = args.target || args.id || null;
+      const agentId = agentIdFromObject(args);
       return agentId ? this._insertSubagentUpdate(agentId, timestamp, mapping, 'send_input', position, {
         status: 'running',
         summary: 'Subagent input sent',
@@ -547,7 +547,7 @@ export class CodexRolloutCollector {
       return written;
     }
     if (toolName !== 'close_agent') return 0;
-    const agentId = args.target || args.id || null;
+    const agentId = agentIdFromObject(args);
     return agentId ? this._insertSubagentStop(agentId, timestamp, mapping, 'close_agent', position) : 0;
   }
 
@@ -830,8 +830,8 @@ function summarizeShellContinuation(args) {
 }
 
 function subagentTargetFromArgs(toolName, args) {
-  if (toolName === 'send_input') return args.target || null;
-  if (toolName === 'close_agent') return args.target || args.id || null;
+  if (toolName === 'send_input') return agentIdFromObject(args);
+  if (toolName === 'close_agent') return agentIdFromObject(args);
   const targets = subagentTargetsFromArgs(args);
   if (toolName === 'wait_agent' && targets?.length === 1) return targets[0];
   return null;
@@ -839,27 +839,74 @@ function subagentTargetFromArgs(toolName, args) {
 
 function subagentTargetsFromArgs(args) {
   if (!args || typeof args !== 'object') return [];
-  if (Array.isArray(args.targets)) return args.targets.filter(Boolean);
-  if (Array.isArray(args.ids)) return args.ids.filter(Boolean);
-  if (args.target) return [args.target];
-  if (args.id) return [args.id];
-  return [];
+  const values = [];
+  if (Array.isArray(args.targets)) values.push(...args.targets);
+  if (Array.isArray(args.ids)) values.push(...args.ids);
+  if (Array.isArray(args.agent_ids)) values.push(...args.agent_ids);
+  if (Array.isArray(args.agentIds)) values.push(...args.agentIds);
+  values.push(args.target, args.id, args.agent_id, args.agentId);
+  return uniqueStrings(values);
 }
 
-function waitAgentStatuses(output) {
-  const statuses = [];
-  if (!output || typeof output !== 'object') return statuses;
-  const status = output.status && typeof output.status === 'object' ? output.status : {};
-  for (const [agentId, value] of Object.entries(status)) {
-    if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'completed')) {
-      statuses.push({
+function waitAgentStatuses(output, fallbackTargets = []) {
+  const statuses = new Map();
+  if (!output || typeof output !== 'object') return [];
+  const parentTimedOut = Boolean(output.timed_out || output.timedOut);
+  const add = (record) => {
+    if (!record?.agentId || (!record.completed && !record.timedOut)) return;
+    const key = `${record.agentId}:${record.completed ? 'completed' : 'timeout'}`;
+    statuses.set(key, record);
+  };
+
+  const collectStatus = (value, fallbackAgentId = null) => {
+    if (Array.isArray(value)) {
+      for (const entry of value) collectStatus(entry);
+      return;
+    }
+    if (!value || typeof value !== 'object') {
+      if (fallbackAgentId) add(normalizeWaitStatus(fallbackAgentId, value, parentTimedOut));
+      return;
+    }
+    const agentId = agentIdFromObject(value) || fallbackAgentId;
+    if (agentId) add(normalizeWaitStatus(agentId, value, parentTimedOut));
+    if (value.status && typeof value.status === 'object' && !Array.isArray(value.status)) {
+      for (const [nestedAgentId, nestedValue] of Object.entries(value.status)) {
+        add(normalizeWaitStatus(nestedAgentId, nestedValue, parentTimedOut));
+      }
+    }
+  };
+
+  if (Array.isArray(output.status)) {
+    collectStatus(output.status);
+  } else if (output.status && typeof output.status === 'object') {
+    for (const [agentId, value] of Object.entries(output.status)) {
+      add(normalizeWaitStatus(agentId, value, parentTimedOut));
+    }
+  } else {
+    collectStatus(output);
+  }
+
+  if (output.completed && typeof output.completed === 'object' && !Array.isArray(output.completed)) {
+    for (const [agentId, value] of Object.entries(output.completed)) {
+      add({
         agentId,
         completed: true,
         timedOut: false,
-        summary: summarizeCompletion(value.completed)
+        summary: summarizeCompletion(value)
       });
-    } else if (output.timed_out) {
-      statuses.push({
+    }
+  } else if (output.completed && fallbackTargets.length === 1) {
+    add({
+      agentId: fallbackTargets[0],
+      completed: true,
+      timedOut: false,
+      summary: summarizeCompletion(output.completed)
+    });
+  }
+
+  if (parentTimedOut) {
+    for (const agentId of fallbackTargets) {
+      add({
         agentId,
         completed: false,
         timedOut: true,
@@ -867,7 +914,63 @@ function waitAgentStatuses(output) {
       });
     }
   }
-  return statuses;
+
+  return [...statuses.values()];
+}
+
+function normalizeWaitStatus(agentId, value, parentTimedOut) {
+  if (!agentId) return null;
+  if (value && typeof value === 'object') {
+    const state = String(value.status || value.state || '').toLowerCase();
+    const completedValue = Object.prototype.hasOwnProperty.call(value, 'completed')
+      ? value.completed
+      : completionValueFromState(state, value);
+    const completed = completedValue != null;
+    const timedOut = Boolean(parentTimedOut || value.timed_out || value.timedOut || state === 'timeout' || state === 'timed_out');
+    return {
+      agentId,
+      completed,
+      timedOut: completed ? false : timedOut,
+      summary: completed ? summarizeCompletion(completedValue) : null
+    };
+  }
+  const state = String(value || '').toLowerCase();
+  const completed = ['completed', 'complete', 'done', 'success', 'succeeded'].includes(state);
+  const timedOut = parentTimedOut || state === 'timeout' || state === 'timed_out';
+  return {
+    agentId,
+    completed,
+    timedOut: completed ? false : timedOut,
+    summary: null
+  };
+}
+
+function completionValueFromState(state, value) {
+  if (!['completed', 'complete', 'done', 'success', 'succeeded'].includes(state)) return null;
+  return value.summary || value.message || value.result || value.output || value.status || true;
+}
+
+function agentIdFromObject(value) {
+  if (!value || typeof value !== 'object') return null;
+  return firstString(value.target, value.id, value.agent_id, value.agentId);
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return null;
+}
+
+function uniqueStrings(values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    if (typeof value !== 'string' || !value.trim() || seen.has(value)) continue;
+    result.push(value);
+    seen.add(value);
+  }
+  return result;
 }
 
 function summarizeCompletion(value) {

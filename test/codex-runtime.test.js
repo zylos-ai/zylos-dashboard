@@ -814,6 +814,119 @@ test('CodexRolloutCollector keeps timed-out wait_agent active', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector handles wait_agent top-level completed map', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const spawnCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:04.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'spawn_agent',
+      call_id: 'call-spawn',
+      arguments: JSON.stringify({ agent_type: 'worker', message: 'Inspect completed map handling' })
+    }
+  });
+  const spawnOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.000Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-spawn',
+      output: JSON.stringify({ agentId: 'agent-map', nickname: 'Mira' })
+    }
+  });
+  const waitCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.500Z',
+    payload: {
+      type: 'function_call',
+      name: 'wait_agent',
+      call_id: 'call-wait',
+      arguments: JSON.stringify({ agentIds: ['agent-map'], timeoutMs: 1000 })
+    }
+  });
+  const waitOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.250Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-wait',
+      output: JSON.stringify({ completed: { 'agent-map': { summary: 'Mapped completion' } }, timedOut: false })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${spawnCall}\n${spawnOutput}\n${waitCall}\n${waitOutput}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 7);
+
+  const stops = store.queryEvents({ types: ['subagent_stop'] });
+  assert.equal(stops.length, 1);
+  assert.equal(stops[0].metadata.agent_id, 'agent-map');
+  assert.equal(stops[0].metadata.completion_summary, 'Mapped completion');
+  assert.equal(stops[0].metadata.wait_latency_ms, 750);
+  assert.equal(stops[0].duration_ms, 1250);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector handles wait_agent array status timeout and agent_id aliases', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const waitCall = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:05.500Z',
+    payload: {
+      type: 'function_call',
+      name: 'wait_agent',
+      call_id: 'call-wait',
+      arguments: JSON.stringify({ agent_id: 'agent-array', timeout_ms: 1000 })
+    }
+  });
+  const waitOutput = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.000Z',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call-wait',
+      output: JSON.stringify({ status: [{ agent_id: 'agent-array', state: 'timed_out' }] })
+    }
+  });
+  fs.writeFileSync(rolloutPath, `${waitCall}\n${waitOutput}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), 4);
+
+  const updates = store.queryEvents({ types: ['subagent_update'] });
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0].metadata.agent_id, 'agent-array');
+  assert.equal(updates[0].summary, 'Waiting for subagent');
+  assert.equal(updates[1].summary, 'Subagent wait timed out');
+  assert.equal(updates[1].metadata.wait_timed_out, true);
+  assert.equal(updates[1].metadata.failure_reason, 'wait_timeout');
+  assert.equal(updates[1].metadata.wait_latency_ms, 500);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector computes cost from Codex priority prices when fast tier is recorded', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
