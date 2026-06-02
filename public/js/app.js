@@ -222,7 +222,10 @@ function renderInfoBar() {
     parts.push(esc(short));
   }
   if (ri.effort) parts.push(esc(effortLabel(ri.effort)));
-  if (ri.cc_version) {
+  if (ri.runtime === 'codex') {
+    const codexVersion = ri.codex_version || ri.codex_installed;
+    if (codexVersion) parts.push(`Codex v${esc(codexVersion)}`);
+  } else if (ri.cc_version) {
     let cv = `CC v${esc(ri.cc_version)}`;
     if (ri.cc_restart) cv += ` <span class="info-bar-update" title="${esc(t('info.restart_available', { version: ri.cc_restart }))}">↑${esc(ri.cc_restart)}</span>`;
     else if (ri.cc_update) cv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.cc_update }))}">↑${esc(ri.cc_update)}</span>`;

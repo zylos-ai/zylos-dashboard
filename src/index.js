@@ -3,6 +3,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
@@ -133,12 +134,29 @@ function readClaudeSettings() {
   } catch { return {}; }
 }
 
+function readCodexRootString(key) {
+  try {
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const paths = [
+      path.join(codexHome, 'config.toml'),
+      path.join(config.zylosDir, '.codex', 'config.toml')
+    ];
+    const configPath = paths.find(p => fs.existsSync(p));
+    if (!configPath) return null;
+    const text = fs.readFileSync(configPath, 'utf8');
+    const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"\\s*$`, 'm'));
+    return match?.[1] || null;
+  } catch { return null; }
+}
+
 function buildRuntimeInfo() {
   const slInfo = statuslineCollector?.getRuntimeInfo();
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
 
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
+  const codexModel = activeRuntime === 'codex' ? readCodexRootString('model') : null;
+  const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort') : null;
   const needsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
@@ -147,10 +165,11 @@ function buildRuntimeInfo() {
   const info = {
     zylos_version: zylosVersion,
     runtime: activeRuntime,
-    model: slInfo?.model || null,
-    effort: slInfo?.effort || null,
+    model: activeRuntime === 'codex' ? codexModel : slInfo?.model || null,
+    effort: activeRuntime === 'codex' ? codexEffort : slInfo?.effort || null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
+    codex_version: codexInstalledVersion || null,
     codex_installed: codexInstalledVersion || null,
     pending_restart: !!needsRestart,
   };
