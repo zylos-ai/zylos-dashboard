@@ -335,7 +335,8 @@ export class StateEngine {
             started_at: event.timestamp,
             updated_at: event.timestamp,
             last_activity: event.summary || 'Subagent started',
-            session_id: event.session_id
+            session_id: event.session_id,
+            recent_activity: subagentActivityHistory(null, event.timestamp, event.summary || 'Subagent started', event.metadata?.status || 'running')
           });
         }
         this._state.lastProgressAt = now;
@@ -360,7 +361,18 @@ export class StateEngine {
             description: event.metadata.description || existing.description || null,
             updated_at: event.timestamp,
             last_activity: event.summary || event.metadata.last_activity || existing.last_activity || null,
-            session_id: event.session_id || existing.session_id
+            session_id: event.session_id || existing.session_id,
+            wait_started_at: event.metadata.wait_started_at || (event.metadata.status === 'waiting' ? existing.wait_started_at : null),
+            wait_timeout_ms: event.metadata.wait_timeout_ms ?? existing.wait_timeout_ms ?? null,
+            wait_latency_ms: event.metadata.wait_latency_ms ?? existing.wait_latency_ms ?? null,
+            wait_timed_out: event.metadata.wait_timed_out || existing.wait_timed_out || false,
+            failure_reason: event.metadata.failure_reason || existing.failure_reason || null,
+            recent_activity: subagentActivityHistory(
+              existing.recent_activity,
+              event.timestamp,
+              event.summary || event.metadata.last_activity || existing.last_activity || 'Subagent updated',
+              event.metadata.status || existing.status || 'running'
+            )
           });
         }
         this._state.lastProgressAt = now;
@@ -429,6 +441,12 @@ export class StateEngine {
         updated_at: agent.updated_at || agent.started_at,
         last_activity: agent.last_activity || null,
         duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
+        wait_duration_s: agent.wait_started_at ? Math.floor((this._now() - new Date(agent.wait_started_at).getTime()) / 1000) : null,
+        wait_timeout_ms: agent.wait_timeout_ms ?? null,
+        wait_latency_ms: agent.wait_latency_ms ?? null,
+        wait_timed_out: agent.wait_timed_out || false,
+        failure_reason: agent.failure_reason || null,
+        recent_activity: agent.recent_activity || [],
         running_tools: subagentToolsMap.get(id) || []
       });
     }
@@ -640,11 +658,15 @@ export class StateEngine {
   _updateSubagentActivity(agentId, timestamp, patch = {}) {
     const existing = this._state.activeSubagents.get(agentId);
     if (!existing) return;
+    const activity = patch.last_activity || existing.last_activity || null;
     this._state.activeSubagents.set(agentId, {
       ...existing,
       status: patch.status || existing.status || 'running',
       updated_at: timestamp || existing.updated_at || existing.started_at,
-      last_activity: patch.last_activity || existing.last_activity || null
+      last_activity: activity,
+      recent_activity: activity
+        ? subagentActivityHistory(existing.recent_activity, timestamp, activity, patch.status || existing.status || 'running')
+        : existing.recent_activity || []
     });
   }
 
@@ -914,4 +936,20 @@ function sourceHealthDetail(row, reason, fresh) {
   if (reason === 'stale') return 'No new source data since the last check';
   if (fresh) return 'Fresh source signal';
   return 'Source signal is stale or has not reported a successful sample';
+}
+
+function subagentActivityHistory(existing, timestamp, summary, status) {
+  const items = Array.isArray(existing) ? existing : [];
+  const text = typeof summary === 'string' ? summary.trim() : '';
+  if (!text) return items.slice(-4);
+  const entry = {
+    timestamp,
+    status: status || 'running',
+    summary: text
+  };
+  const last = items[items.length - 1];
+  if (last?.summary === entry.summary && last?.status === entry.status) {
+    return [...items.slice(0, -1), entry].slice(-4);
+  }
+  return [...items, entry].slice(-4);
 }

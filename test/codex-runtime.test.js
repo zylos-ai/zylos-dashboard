@@ -623,6 +623,8 @@ test('CodexRolloutCollector reconstructs subagent lifecycle from rollout tools',
   assert.ok(!subagentEvents[0].metadata.description.includes('sk-abcdefghijklmnopqrstuvwxyz123456'));
   assert.equal(subagentEvents[1].metadata.source_tool, 'wait_agent');
   assert.equal(subagentEvents[1].metadata.completion_summary, 'Done');
+  assert.equal(subagentEvents[1].metadata.wait_latency_ms, 500);
+  assert.equal(subagentEvents[1].duration_ms, 2000);
 
   const sendEvent = store.queryEvents({ limit: 10 }).find(e => e.metadata?.call_id === 'call-send');
   assert.equal(sendEvent.metadata.agent_id, 'agent-1');
@@ -636,6 +638,8 @@ test('CodexRolloutCollector reconstructs subagent lifecycle from rollout tools',
   assert.equal(updates[0].metadata.input, undefined);
   assert.equal(updates[1].summary, 'Waiting for subagent');
   assert.equal(updates[1].metadata.status, 'waiting');
+  assert.equal(updates[1].metadata.wait_timeout_ms, 1000);
+  assert.equal(updates[1].metadata.wait_started_at, '2026-05-23T01:00:06.500Z');
   assert.deepEqual(
     liveEvents.filter(e => e.event_type.startsWith('subagent_')).map(e => e.event_type),
     ['subagent_start', 'subagent_update', 'subagent_update', 'subagent_stop']
@@ -706,6 +710,10 @@ test('CodexRolloutCollector keeps timed-out wait_agent active', () => {
   assert.deepEqual(updates.map(e => e.summary), ['Waiting for subagent', 'Subagent wait timed out']);
   assert.equal(updates[1].metadata.agent_id, 'agent-timeout');
   assert.equal(updates[1].metadata.status, 'waiting');
+  assert.equal(updates[1].metadata.wait_timed_out, true);
+  assert.equal(updates[1].metadata.failure_reason, 'wait_timeout');
+  assert.equal(updates[1].metadata.wait_timeout_ms, 1000);
+  assert.equal(updates[1].metadata.wait_latency_ms, 500);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

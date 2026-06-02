@@ -38,13 +38,12 @@ Status as of branch head `c3e5726` plus the in-progress source signal work:
 | Token/cache/cost contract | Landed. Codex/OpenAI input includes cached tokens, so collector writes canonical dimensions and cost uses uncached input plus cache read/write plus output. Aggregates use canonical totals. |
 | Rollout dedup | Landed. The rollout collector uses hook-provided `transcript_path` plus durable byte-offset cursors and deterministic rollout-position identities instead of random usage IDs. |
 | Runtime switch boundary | Landed. StateEngine clears foreground runtime state and ignores foreign-runtime foreground events so Claude and Codex sessions do not appear active at the same time. |
-| Sub-agent lifecycle | Landed for lifecycle/current-activity MVP. Codex `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` rollout records reconstruct parent lifecycle rows; child-session events attach to the active sub-agent row when collectable. |
-| Source signals | In progress. `/api/health.source` is being expanded from raw freshness booleans into capability/reason/detail entries so Codex-specific missing data can be explained as unsupported, stale, unavailable, missing rollout path, or runtime mismatch. |
+| Sub-agent lifecycle | Landed for lifecycle/current-activity MVP. Codex `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` rollout records reconstruct parent lifecycle rows; child-session events attach to the active sub-agent row when collectable. Diagnostics are being expanded with duration, wait latency, timeout reason, and recent activity history. |
+| Source signals | Landed. `/api/health.source` now returns capability/reason/detail entries so Codex-specific missing data can be explained as unsupported, stale, unavailable, missing rollout path, runtime mismatch, or no signal. The Runtime card renders these as compact Source Signals. |
 
 Remaining PR #131 work before merge:
 
-- Productize source health/capability in the Runtime card and keep it compact enough for repeated use.
-- Add Codex sub-agent diagnostics beyond lifecycle: duration, wait latency, timeout/failure classification, stale explanation, and recent tool/activity history.
+- Extend Codex sub-agent diagnostics beyond the first landed set: stale explanation, richer recent tool/activity history, and historical statistics.
 - Surface Codex TTFT and turn duration as first-class runtime metrics where the current UI can explain them clearly.
 - Harden Codex work trace classification for command outcomes, permission flow, patch history, failures, and tool latency.
 - Add mixed Claude/Codex runtime validation for daily/7d token, cache, cost, and project attribution semantics.

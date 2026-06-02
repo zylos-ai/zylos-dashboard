@@ -453,6 +453,32 @@ function renderAssistantMessage(p) {
 // ─── Render: Subagents ───
 const prevSubagentIds = new Set();
 
+function subagentDiagnosticParts(agent) {
+  const parts = [];
+  if (agent.wait_timed_out || agent.failure_reason) {
+    parts.push(t(`subagent.reason.${agent.failure_reason}`) || agent.failure_reason || t('subagent.wait_timed_out'));
+  }
+  if (agent.status === 'waiting' && agent.wait_duration_s != null) {
+    parts.push(`${t('subagent.waiting_for')} ${dur(agent.wait_duration_s)}`);
+  }
+  if (agent.wait_timeout_ms != null) {
+    parts.push(`${t('subagent.timeout')} ${fmtDuration(agent.wait_timeout_ms)}`);
+  }
+  if (agent.wait_latency_ms != null) {
+    parts.push(`${t('subagent.wait_latency')} ${fmtDuration(agent.wait_latency_ms)}`);
+  }
+  return parts;
+}
+
+function subagentActivityHtml(agent) {
+  const items = (agent.recent_activity || []).slice(-3);
+  if (items.length === 0) return '';
+  return `<div class="subagent-activity">${items.map((item) => {
+    const age = item.timestamp ? fmtAge(item.timestamp) : '';
+    return `<div class="subagent-activity-item"><span>${esc(item.summary || '')}</span><span>${esc(age)}</span></div>`;
+  }).join('')}</div>`;
+}
+
 function renderSubagents(p) {
   const agents = p?.active_subagents || [];
   const section = $('#subagent-section');
@@ -502,6 +528,10 @@ function renderSubagents(p) {
     if (agent.last_activity && agent.last_activity !== 'Subagent started') subtitleParts.push(agent.last_activity);
     const subtitle = subtitleParts.length ? subtitleParts.join(' · ') : shortId;
     const labelHtml = `${esc(label)} <span style="opacity:0.5">${esc(subtitle)}</span>`;
+    const diagnostics = subagentDiagnosticParts(agent);
+    const diagnosticsHtml = diagnostics.length
+      ? `<div class="subagent-diagnostics">${diagnostics.map((part) => `<span>${esc(part)}</span>`).join('')}</div>`
+      : '';
 
     if (!grp) {
       grp = document.createElement('div');
@@ -512,11 +542,15 @@ function renderSubagents(p) {
           `<span class="subagent-group-label">${labelHtml}</span>` +
           `<span class="subagent-group-time">${dur(agent.duration_s || 0)}</span>` +
         `</div>` +
+        `<div class="subagent-diagnostics-slot">${diagnosticsHtml}</div>` +
+        `<div class="subagent-activity-slot">${subagentActivityHtml(agent)}</div>` +
         `<div class="tool-feed"></div>`;
       list.appendChild(grp);
     } else if (!grp.classList.contains('done')) {
       grp.querySelector('.subagent-group-label').innerHTML = labelHtml;
       grp.querySelector('.subagent-group-time').textContent = dur(agent.duration_s || 0);
+      grp.querySelector('.subagent-diagnostics-slot').innerHTML = diagnosticsHtml;
+      grp.querySelector('.subagent-activity-slot').innerHTML = subagentActivityHtml(agent);
     }
 
     if (!grp.classList.contains('done')) {

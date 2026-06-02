@@ -15,6 +15,8 @@ export class CodexRolloutCollector {
     this._toolSummaryByCallId = new Map();
     this._toolNameByCallId = new Map();
     this._subagentSpawnByCallId = new Map();
+    this._subagentStartedAt = new Map();
+    this._subagentWaitByCallId = new Map();
     this._onEvent = null;
     this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || process.cwd());
   }
@@ -402,6 +404,7 @@ export class CodexRolloutCollector {
       if (!agentId) return 0;
       const spawn = this._subagentSpawnByCallId.get(callId) || {};
       const ingestId = `codex-subagent-start-${mapping.session_id || 'unknown'}-${agentId}`;
+      this._subagentStartedAt.set(agentId, timestamp);
       const result = this._insertEvent({
         id: stableEventId(ingestId),
         ingest_id: ingestId,
@@ -431,15 +434,24 @@ export class CodexRolloutCollector {
 
     if (toolName === 'wait_agent') {
       const parsed = parseToolArgs(output);
+      const wait = this._subagentWaitByCallId.get(callId) || null;
       let written = 0;
       for (const status of waitAgentStatuses(parsed)) {
+        const waitLatencyMs = wait ? elapsedMs(wait.startedAt, timestamp) : null;
         if (status.completed) {
-          written += this._insertSubagentStop(status.agentId, timestamp, mapping, 'wait_agent', position, status.summary);
+          written += this._insertSubagentStop(status.agentId, timestamp, mapping, 'wait_agent', position, status.summary, {
+            waitLatencyMs
+          });
         } else if (status.timedOut) {
           written += this._insertSubagentUpdate(status.agentId, timestamp, mapping, 'wait_agent', position, {
             status: 'waiting',
             summary: 'Subagent wait timed out',
-            lastActivity: 'Wait timed out'
+            lastActivity: 'Wait timed out',
+            waitStartedAt: wait?.startedAt || null,
+            waitLatencyMs,
+            waitTimeoutMs: wait?.timeoutMs ?? null,
+            waitTimedOut: true,
+            failureReason: 'wait_timeout'
           });
         }
       }
@@ -467,11 +479,20 @@ export class CodexRolloutCollector {
     if (toolName === 'wait_agent') {
       const targets = subagentTargetsFromArgs(args);
       let written = 0;
+      if (callId) {
+        this._subagentWaitByCallId.set(callId, {
+          startedAt: timestamp,
+          targets,
+          timeoutMs: numberOrNull(args.timeout_ms ?? args.timeoutMs)
+        });
+      }
       for (const agentId of targets) {
         written += this._insertSubagentUpdate(agentId, timestamp, mapping, 'wait_agent', position, {
           status: 'waiting',
           summary: 'Waiting for subagent',
-          lastActivity: 'Waiting for completion'
+          lastActivity: 'Waiting for completion',
+          waitStartedAt: timestamp,
+          waitTimeoutMs: numberOrNull(args.timeout_ms ?? args.timeoutMs)
         }, callId);
       }
       return written;
@@ -502,7 +523,12 @@ export class CodexRolloutCollector {
         source_event: 'response_item',
         source_tool: sourceTool,
         rollout_offset: position.byteOffset ?? null,
-        rollout_line: position.lineIndex ?? null
+        rollout_line: position.lineIndex ?? null,
+        wait_started_at: opts.waitStartedAt || null,
+        wait_latency_ms: opts.waitLatencyMs ?? null,
+        wait_timeout_ms: opts.waitTimeoutMs ?? null,
+        wait_timed_out: opts.waitTimedOut || false,
+        failure_reason: opts.failureReason || null
       },
       source: 'rollout',
       confidence: 'actual'
@@ -510,9 +536,10 @@ export class CodexRolloutCollector {
     return result?.inserted ? 1 : 0;
   }
 
-  _insertSubagentStop(agentId, timestamp, mapping, sourceTool, position = {}, completionSummary = null) {
+  _insertSubagentStop(agentId, timestamp, mapping, sourceTool, position = {}, completionSummary = null, opts = {}) {
     const ingestId = `codex-subagent-stop-${mapping.session_id || 'unknown'}-${agentId}`;
     const summary = completionSummary ? `Subagent completed: ${completionSummary}` : 'Subagent completed';
+    const durationMs = elapsedMs(this._subagentStartedAt.get(agentId), timestamp);
     const result = this._insertEvent({
       id: stableEventId(ingestId),
       ingest_id: ingestId,
@@ -522,11 +549,12 @@ export class CodexRolloutCollector {
       event_type: 'subagent_stop',
       category: 'subagent',
       summary,
-      duration_ms: null,
+      duration_ms: durationMs,
       metadata: {
         agent_id: agentId,
         status: 'completed',
         completion_summary: completionSummary,
+        wait_latency_ms: opts.waitLatencyMs ?? null,
         source_event: 'response_item',
         source_tool: sourceTool,
         rollout_offset: position.byteOffset ?? null,
@@ -535,6 +563,7 @@ export class CodexRolloutCollector {
       source: 'rollout',
       confidence: 'actual'
     });
+    if (result?.inserted) this._subagentStartedAt.delete(agentId);
     return result?.inserted ? 1 : 0;
   }
 
@@ -707,6 +736,14 @@ function rolloutPositionId(kind, mapping, position = {}) {
 
 function timestampForEvent(event) {
   return event.timestamp || event.payload?.timestamp || new Date().toISOString();
+}
+
+function elapsedMs(startedAt, endedAt) {
+  if (!startedAt || !endedAt) return null;
+  const start = new Date(startedAt).getTime();
+  const end = new Date(endedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return end - start;
 }
 
 function normalizeUsage(usage) {
