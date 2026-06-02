@@ -253,6 +253,65 @@ test('Project distribution uses canonical total input without double-counting Co
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('Project distribution falls back to Codex rollout project signals', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.writeFileSync(rolloutPath, [
+    JSON.stringify({
+      type: 'response_item',
+      timestamp: '2026-05-23T01:00:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'exec_command',
+        arguments: JSON.stringify({
+          cmd: 'npm test',
+          workdir: '/Users/howard/zylos/workspace/zylos-dashboard'
+        }),
+        call_id: 'call-project'
+      }
+    }),
+    ''
+  ].join('\n'));
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:01.000Z'
+  });
+  store.insertMetric({
+    timestamp: '2026-05-23T01:00:02.000Z',
+    runtime: 'codex',
+    session_id: 'codex-session-1',
+    metric_name: 'api_request_tokens',
+    metric_value: 12000,
+    dimensions: {
+      input: 12000,
+      total_input: 12000,
+      output: 800,
+      cache_read: 3000,
+      cache_creation: 0,
+      runtime_semantics: 'openai_input_includes_cached'
+    },
+    source: 'jsonl_usage',
+    confidence: 'actual'
+  });
+
+  const distribution = store.getProjectDistribution({
+    since: '2026-05-23T00:00:00.000Z',
+    until: '2026-05-23T02:00:00.000Z'
+  });
+
+  assert.equal(distribution.totalTokens, 12800);
+  assert.equal(distribution.items.length, 1);
+  assert.equal(distribution.items[0].name, 'zylos-dashboard');
+  assert.equal(distribution.items[0].outputTokens, 800);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector uses rollout position identity when response item call_id is absent', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');

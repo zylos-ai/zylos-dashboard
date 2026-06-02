@@ -707,14 +707,18 @@ export class Store {
     if (unattributedOutput > 0) {
       const events = this.db.prepare(`
         SELECT summary FROM runtime_events
-        WHERE event_type = 'post_tool_use' AND timestamp >= @since AND timestamp <= @until
+        WHERE event_type IN ('post_tool_use', 'tool_call', 'tool_result')
+          AND timestamp >= @since AND timestamp <= @until
       `).all({ since: s, until: u });
 
       const hookCounts = {};
       for (const e of events) {
-        const fp = this._extractFilePath(e.summary);
-        const project = this._extractProject(fp);
-        if (project) hookCounts[project] = (hookCounts[project] || 0) + 1;
+        for (const project of this._extractProjectsFromSummary(e.summary)) {
+          hookCounts[project] = (hookCounts[project] || 0) + 1;
+        }
+      }
+      for (const [project, count] of Object.entries(this._projectWeightsFromCodexRollouts({ since: s, until: u }))) {
+        hookCounts[project] = (hookCounts[project] || 0) + count;
       }
       const totalHookCalls = Object.values(hookCounts).reduce((a, b) => a + b, 0) || 1;
       for (const [p, count] of Object.entries(hookCounts)) {
@@ -746,10 +750,89 @@ export class Store {
     return { items, totalTokens, totalOutput, totalCost };
   }
 
-  _extractFilePath(summary) {
-    if (!summary) return null;
-    const m = summary.match(/^(?:Read|Edit|Write):\s+(\S+)/);
-    return m ? m[1] : null;
+  _extractProjectsFromSummary(summary) {
+    const projects = new Set();
+    for (const filePath of this._extractFilePaths(summary)) {
+      const project = this._extractProject(filePath);
+      if (project) projects.add(project);
+    }
+    return [...projects];
+  }
+
+  _extractFilePaths(summary) {
+    if (!summary) return [];
+    const paths = new Set();
+    const pathPattern = /(?:~\/|\/)?(?:Users\/[^/\s]+\/zylos\/|zylos\/)?(?:workspace|\.claude\/skills|skills)\/[^\s,'")]+/g;
+    for (const match of summary.matchAll(pathPattern)) {
+      paths.add(match[0]);
+    }
+    return [...paths];
+  }
+
+  _projectWeightsFromCodexRollouts({ since, until } = {}) {
+    const rows = this.db.prepare(`
+      SELECT transcript_path FROM codex_rollout_paths
+      WHERE runtime = 'codex'
+        AND last_event_at >= @since AND last_event_at <= @until
+    `).all({ since, until });
+
+    const weights = {};
+    for (const row of rows) {
+      const transcriptPath = row.transcript_path;
+      if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
+      let content;
+      try {
+        content = fs.readFileSync(transcriptPath, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        const payload = event.type === 'session_meta'
+          ? { ...(event.payload || {}), type: 'session_meta' }
+          : event.payload || {};
+        for (const project of this._extractProjectsFromRolloutPayload(payload)) {
+          weights[project] = (weights[project] || 0) + 1;
+        }
+      }
+    }
+    return weights;
+  }
+
+  _extractProjectsFromRolloutPayload(payload) {
+    const projects = new Set();
+    const addFromValue = (value) => {
+      if (!value) return;
+      if (typeof value === 'string') {
+        for (const filePath of this._extractFilePaths(value)) {
+          const project = this._extractProject(filePath);
+          if (project) projects.add(project);
+        }
+        const directProject = this._extractProject(value);
+        if (directProject) projects.add(directProject);
+      } else if (Array.isArray(value)) {
+        for (const item of value) addFromValue(item);
+      } else if (typeof value === 'object') {
+        for (const item of Object.values(value)) addFromValue(item);
+      }
+    };
+
+    if (payload.type === 'session_meta') addFromValue(payload.cwd);
+    if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') return [...projects];
+
+    addFromValue(payload.name);
+    addFromValue(payload.input);
+    if (payload.arguments) {
+      try {
+        addFromValue(JSON.parse(payload.arguments));
+      } catch {
+        addFromValue(payload.arguments);
+      }
+    }
+
+    return [...projects];
   }
 
   _extractProject(filePath) {
