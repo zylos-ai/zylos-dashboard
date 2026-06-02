@@ -29,7 +29,7 @@ Out of scope:
 
 ## Current Implementation Outcome
 
-Status as of branch head `328596f`:
+Status as of branch head `1ecf851`:
 
 | Area | Outcome |
 |---|---|
@@ -41,6 +41,7 @@ Status as of branch head `328596f`:
 | Sub-agent lifecycle | Landed for lifecycle/current-activity MVP. Codex `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` rollout records reconstruct parent lifecycle rows; child-session events attach to the active sub-agent row when collectable. Parser hardening covers common `agent_id` / `agentId` / array aliases, completed maps, timeout variants, and safe bounded completion summaries. |
 | Source signals | Landed as API diagnostics. `/api/health.source` returns capability/reason/detail entries so Codex-specific missing data can be explained as unsupported, stale, unavailable, missing rollout path, runtime mismatch, or no signal. These signals are intentionally not rendered in the main page UI. |
 | Turn latency | Landed. Codex rollout `task_complete.time_to_first_token_ms` and `duration_ms` resolve through `/api/metrics/ttft` and `/api/metrics/turn_duration`, then render as a compact Runtime Latency row with an inline explanation tip for latest-turn semantics. |
+| Metric refresh | Landed. Codex rollout metrics now emit `metric_update` SSE events on insert, matching Claude's live StatusLine update path instead of waiting for the browser's 30-second fallback poll. |
 | Work trace | Landed and polished. Timeline emits turn-complete events, dedupes duplicate tool-result rows, uses localized event-kind chips, makes turn/session boundaries visually distinct, and summarizes noisy validation commands without persisting raw arguments. |
 | Trends | Landed for Codex token, cost, cache, throughput, and project distribution semantics. Project attribution falls back from missing token `projects` dimensions to safe project slugs derived from sanitized summaries and rollout workdir/path signals without storing raw tool arguments. |
 | Session boundary behavior | Landed. Same-runtime Codex `session_start` clears stale foreground state from the prior main session, duplicate starts for the current session preserve active work, and child sub-agent session starts update the active sub-agent row instead of resetting the main session. |
