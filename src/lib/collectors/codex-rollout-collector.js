@@ -598,6 +598,7 @@ export class CodexRolloutCollector {
     }
     if (normalizedName === 'close_agent') return `Close subagent: ${shortAgentId(toolArgs.target || toolArgs.id)}`;
     if (normalizedName === 'spawn_agent') return `Start subagent${toolArgs.agent_type ? `: ${toolArgs.agent_type}` : ''}`;
+    if (normalizedName === 'write_stdin') return summarizeShellContinuation(toolArgs);
     if (name === 'exec_command' || name === 'functions.exec_command') {
       return summarizeShellCommand(toolArgs);
     }
@@ -727,6 +728,14 @@ function parseToolArgs(args) {
 function normalizeToolName(name) {
   if (!name || typeof name !== 'string') return '';
   return name.replace(/^functions\./, '');
+}
+
+function summarizeShellContinuation(args) {
+  const sessionId = args?.session_id != null ? String(args.session_id) : null;
+  const chars = typeof args?.chars === 'string' ? args.chars : '';
+  const hasInput = chars.length > 0;
+  const action = hasInput ? 'Continue shell session' : 'Wait for command output';
+  return sessionId ? `${action}: ${sessionId}` : action;
 }
 
 function subagentTargetFromArgs(toolName, args) {

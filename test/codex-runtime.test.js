@@ -463,6 +463,16 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
       input: '*** Begin Patch\n*** Update File: /Users/howard/zylos/workspace/zylos-dashboard/src/lib/store.js\n@@\n*** Add File: test/new-fixture.js\n+ok\n*** End Patch\n'
     }
   });
+  const shellWaitLine = JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-05-23T01:00:06.500Z',
+    payload: {
+      type: 'function_call',
+      name: 'functions.write_stdin',
+      call_id: 'call-shell-wait',
+      arguments: JSON.stringify({ session_id: 95158, chars: '', yield_time_ms: 1000 })
+    }
+  });
   const fallbackLine = JSON.stringify({
     type: 'response_item',
     timestamp: '2026-05-23T01:00:07.000Z',
@@ -473,7 +483,7 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
       arguments: JSON.stringify({ cmd: 'python scripts/do_custom_thing.py --token sk-abcdefghijklmnopqrstuvwxyz123456 --file /Users/howard/zylos/workspace/zylos-dashboard/src/index.js' })
     }
   });
-  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n${fallbackLine}\n`);
+  fs.writeFileSync(rolloutPath, `${shellLine}\n${shellOutputLine}\n${patchLine}\n${shellWaitLine}\n${fallbackLine}\n`);
 
   const store = new Store(path.join(dir, 'dashboard.db'));
   store.upsertCodexRolloutPath({
@@ -484,16 +494,17 @@ test('CodexRolloutCollector uses human-friendly summaries for shell and patch ca
   });
 
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
-  assert.equal(collector.collect(), 4);
+  assert.equal(collector.collect(), 5);
 
   const events = store.queryEvents({ limit: 10, order: 'asc' });
   assert.deepEqual(events.map(e => e.summary), [
     'Run verification: npm test',
     'Run verification: npm test',
     'Edit files: src/lib/store.js, test/new-fixture.js',
+    'Wait for command output: 95158',
     'Run shell command: python scripts/do_custom_thing.py --token [REDACTED] --file zylos-dashboard/src/index.js'
   ]);
-  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call']);
+  assert.deepEqual(events.map(e => e.event_type), ['tool_call', 'tool_result', 'tool_call', 'tool_call', 'tool_call']);
   const patchEvent = events.find(e => e.metadata.call_id === 'call-patch');
   assert.equal(patchEvent.metadata.tool_name, 'apply_patch');
   assert.ok(patchEvent.summary.includes('src/lib/store.js'));
