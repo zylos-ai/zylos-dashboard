@@ -685,8 +685,6 @@ function renderMetrics() {
   if (ttftEl) ttftEl.textContent = metVal(ttft) == null ? '--' : fmtDuration(metVal(ttft));
   const turnEl = $('#metric-turn-duration');
   if (turnEl) turnEl.textContent = metVal(turnDuration) == null ? '--' : fmtDuration(metVal(turnDuration));
-  const latencySourceEl = $('#metric-latency-source');
-  if (latencySourceEl) latencySourceEl.textContent = srcLabel(ttft || turnDuration);
 
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
