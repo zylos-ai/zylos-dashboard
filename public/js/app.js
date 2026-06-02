@@ -5,7 +5,7 @@ const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
 setAssetRoot(ASSET_ROOT);
 
-const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost'];
+const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
@@ -655,6 +655,8 @@ function renderMetrics() {
   const ts = agg.tokens_session;
   const tt = agg.tokens_today;
   const t7 = agg['tokens_7d'];
+  const ttft = state.metrics.get('ttft');
+  const turnDuration = state.metrics.get('turn_duration');
 
   // Session input/output stacked bar
   $('#metric-tokens-input').textContent = ts ? tok(ts.input) : '--';
@@ -678,6 +680,13 @@ function renderMetrics() {
   $('#metric-tokens-7d').textContent = tokLine(t7);
   setTokenBar('tokens-bar-today', tt);
   setTokenBar('tokens-bar-7d', t7);
+
+  const ttftEl = $('#metric-ttft');
+  if (ttftEl) ttftEl.textContent = metVal(ttft) == null ? '--' : fmtDuration(metVal(ttft));
+  const turnEl = $('#metric-turn-duration');
+  if (turnEl) turnEl.textContent = metVal(turnDuration) == null ? '--' : fmtDuration(metVal(turnDuration));
+  const latencySourceEl = $('#metric-latency-source');
+  if (latencySourceEl) latencySourceEl.textContent = srcLabel(ttft || turnDuration);
 
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
@@ -820,7 +829,7 @@ function timelineDotType(eventType) {
 }
 
 function fmtDuration(ms) {
-  if (!ms) return '';
+  if (ms == null || !Number.isFinite(Number(ms))) return '';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }

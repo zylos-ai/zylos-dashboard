@@ -40,11 +40,11 @@ Status as of branch head `c3e5726` plus the in-progress source signal work:
 | Runtime switch boundary | Landed. StateEngine clears foreground runtime state and ignores foreign-runtime foreground events so Claude and Codex sessions do not appear active at the same time. |
 | Sub-agent lifecycle | Landed for lifecycle/current-activity MVP. Codex `spawn_agent`, `send_input`, `wait_agent`, and `close_agent` rollout records reconstruct parent lifecycle rows; child-session events attach to the active sub-agent row when collectable. Diagnostics are being expanded with duration, wait latency, timeout reason, and recent activity history. |
 | Source signals | Landed as API diagnostics. `/api/health.source` returns capability/reason/detail entries so Codex-specific missing data can be explained as unsupported, stale, unavailable, missing rollout path, runtime mismatch, or no signal. These signals are intentionally not rendered in the main page UI. |
+| Turn latency | Landed. Codex rollout `task_complete.time_to_first_token_ms` and `duration_ms` resolve through `/api/metrics/ttft` and `/api/metrics/turn_duration`, then render as a compact Latency row in Capacity & Cost. |
 
 Remaining PR #131 work before merge:
 
 - Extend Codex sub-agent diagnostics beyond the first landed set: stale explanation, richer recent tool/activity history, and historical statistics.
-- Surface Codex TTFT and turn duration as first-class runtime metrics where the current UI can explain them clearly.
 - Harden Codex work trace classification for command outcomes, permission flow, patch history, failures, and tool latency.
 - Add mixed Claude/Codex runtime validation for daily/7d token, cache, cost, and project attribution semantics.
 - Add rollout edge-case tests for rotation/truncation, partial lines, missing previous path, child-session path gaps, collector restart, and source-health explanations.

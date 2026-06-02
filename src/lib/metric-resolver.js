@@ -46,6 +46,12 @@ const METRIC_CHAINS = {
     { source: 'statusline_current_usage', confidence: 'actual' },
     { source: 'jsonl_usage', confidence: 'actual' }
   ],
+  ttft: [
+    { source: 'rollout', confidence: 'actual' }
+  ],
+  turn_duration: [
+    { source: 'rollout', confidence: 'actual' }
+  ],
   tool_duration: [
     { source: 'hook_postToolUse', confidence: 'actual' }
   ]

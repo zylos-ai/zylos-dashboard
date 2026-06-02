@@ -1010,6 +1010,38 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   flex-shrink: 0;
 }
 
+.latency-section {
+  display: grid;
+  gap: 6px;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+}
+
+.latency-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.latency-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.latency-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.latency-item small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 /* ─── ③ Runtime ─── */
 .runtime-subsection {
   margin-top: var(--space-md);

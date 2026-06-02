@@ -293,6 +293,46 @@ test('MetricResolver preserves rate-limit reset metadata when falling back to st
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('MetricResolver exposes Codex rollout TTFT and turn duration', () => {
+  const dir = tmpDir();
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  const timestamp = new Date().toISOString();
+  store.insertMetric({
+    timestamp,
+    runtime: 'codex',
+    session_id: 'codex-session-1',
+    metric_name: 'ttft',
+    metric_value: 987,
+    dimensions: null,
+    source: 'rollout',
+    confidence: 'actual'
+  });
+  store.insertMetric({
+    timestamp,
+    runtime: 'codex',
+    session_id: 'codex-session-1',
+    metric_name: 'turn_duration',
+    metric_value: 45123,
+    dimensions: null,
+    source: 'rollout',
+    confidence: 'actual'
+  });
+
+  const resolver = new MetricResolver(store, {}, { metricStalenessSeconds: 120 });
+  const ttft = resolver.resolve('ttft');
+  const duration = resolver.resolve('turn_duration');
+
+  assert.equal(ttft.value, 987);
+  assert.equal(ttft.selected_source, 'rollout');
+  assert.equal(ttft.confidence, 'actual');
+  assert.equal(duration.value, 45123);
+  assert.equal(duration.selected_source, 'rollout');
+  assert.equal(duration.confidence, 'actual');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector skips cost when model price is missing', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
