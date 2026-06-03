@@ -278,7 +278,7 @@ Zylos Dashboard 的 agent 可观测性探索可反哺 COCO Dashboard 的 AI Ops 
 | 数据源与 Adapter | OTel 事件/指标目录（Claude + Codex）、hook 事件对比、文件数据源、adapter 接口规格 | [data-sources.md](modules/data-sources.md) |
 | 部署与安全 | 组件目录结构、Caddy 路由、PM2 服务、认证、只读保护、OTel 安全清单、验证清单 | [deployment.md](modules/deployment.md) |
 
-原始素材（v2.0 迭代期间的工作文档，含全部字段级细节）→ [solution-raw.md](solution-raw.md)
+原始素材与历史实施计划已迁至内部文档仓库。
 
 ---
 
