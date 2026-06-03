@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DEFAULT_CODEX_MODEL_PRICES } from './config.js';
+import { compareVersions, isNewerVersion } from './version-utils.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +32,47 @@ function codexModelsCachePath() {
 
 function c4ControlPath(zylosDir) {
   return path.join(zylosDir, '.claude', 'skills', 'comm-bridge', 'scripts', 'c4-control.js');
+}
+
+function dashboardDataDir(zylosDir) {
+  return path.join(zylosDir, 'components', 'dashboard');
+}
+
+function zylosUpgradeMarkerPath(zylosDir) {
+  return path.join(dashboardDataDir(zylosDir), 'upgrade-zylos-pending.json');
+}
+
+export function consumeZylosUpgradeMarker(zylosDir, currentVersion) {
+  const markerPath = zylosUpgradeMarkerPath(zylosDir);
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+  } catch {
+    return null;
+  }
+
+  try { fs.rmSync(markerPath, { force: true }); } catch { /* best effort */ }
+
+  const targetVersion = marker.targetVersion || null;
+  const fromVersion = marker.fromVersion || null;
+  const current = currentVersion || null;
+  let status = 'warning';
+
+  if (current && targetVersion) {
+    const cmp = compareVersions(current, targetVersion);
+    if (cmp !== null && cmp >= 0) status = 'success';
+  } else if (current && fromVersion) {
+    const cmp = compareVersions(current, fromVersion);
+    if (cmp !== null && cmp > 0) status = 'success';
+  }
+
+  return {
+    status,
+    fromVersion,
+    targetVersion,
+    currentVersion: current,
+    startedAt: marker.startedAt || null
+  };
 }
 
 const DEDUP_WINDOW_MS = 2000;
@@ -136,7 +178,7 @@ export async function handleAction(action, body, config) {
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
       case 'set-threshold': result = await setThreshold(reqId, body, config, zylosDir); break;
-      case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
+      case 'upgrade-zylos': result = await upgradeZylos(reqId, zylosDir); break;
       case 'upgrade-cc': result = await upgradeRuntimeCli(reqId, config); break;
       default: result = { ok: false, error: 'unknown_action', messageKey: 'result.unknown_action' };
     }
@@ -323,7 +365,7 @@ function fetchLatestGitHubTag(repo) {
   });
 }
 
-async function upgradeZylos(reqId) {
+async function upgradeZylos(reqId, zylosDir) {
   let currentVersion;
   try {
     const { stdout } = await execFileAsync('zylos', ['--version'], { timeout: 5000 });
@@ -339,7 +381,7 @@ async function upgradeZylos(reqId) {
     log(reqId, `version check failed: ${err.message}, proceeding with upgrade`);
   }
 
-  if (currentVersion && latestVersion && currentVersion === latestVersion) {
+  if (currentVersion && latestVersion && !isNewerVersion(latestVersion, currentVersion)) {
     log(reqId, `already up to date: v${currentVersion}`);
     return { ok: false, error: 'already_up_to_date', message: `Already on the latest version (v${currentVersion}).`, messageKey: 'result.already_up_to_date', messageParams: { version: currentVersion } };
   }
@@ -350,8 +392,27 @@ async function upgradeZylos(reqId) {
   const upgradeMsgKey = latestVersion && currentVersion ? 'result.upgrading_zylos' : 'result.upgrading_zylos_simple';
   const upgradeMsgParams = latestVersion && currentVersion ? { from: currentVersion, to: latestVersion } : undefined;
 
-  log(reqId, `spawn detached: zylos upgrade --self -y (${currentVersion || '?'} → ${latestVersion || '?'})`);
-  const child = spawn('zylos', ['upgrade', '--self', '-y'], {
+  const markerPath = zylosUpgradeMarkerPath(zylosDir);
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, JSON.stringify({
+    action: 'upgrade-zylos',
+    fromVersion: currentVersion,
+    targetVersion: latestVersion,
+    startedAt: new Date().toISOString()
+  }, null, 2) + '\n');
+
+  const script = `
+    const { spawn } = require('node:child_process');
+    const child = spawn('zylos', ['upgrade', '--self', '-y'], {
+      detached: true,
+      stdio: 'ignore',
+      env: process.env
+    });
+    child.unref();
+  `;
+
+  log(reqId, `spawn double-fork detached: zylos upgrade --self -y (${currentVersion || '?'} → ${latestVersion || '?'})`);
+  const child = spawn(process.execPath, ['-e', script], {
     detached: true, stdio: 'ignore', env: { ...process.env }
   });
   child.unref();

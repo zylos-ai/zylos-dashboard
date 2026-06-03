@@ -237,6 +237,8 @@
   "result.already_up_to_date": "Already on the latest version (v{version}).",
   "result.upgrading_zylos": "Upgrading v{from} → v{to}. All services will restart.",
   "result.upgrading_zylos_simple": "Upgrade started. All services will restart.",
+  "result.zylos_upgrade_succeeded": "zylos-core upgrade completed. Current version: v{version}.",
+  "result.zylos_upgrade_unverified": "zylos-core upgrade result could not be verified. Current version: v{version}.",
   "result.cc_updated": "Claude Code updated. Restart session to apply.",
   "result.codex_updated": "Codex CLI updated. Restart session to apply.",
   "result.invalid_threshold": "Threshold must be between 10 and 95",

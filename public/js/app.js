@@ -8,6 +8,7 @@ setAssetRoot(ASSET_ROOT);
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
+const PROMPT_TRANSIENT_SECONDS = 5;
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
 const state = {
@@ -329,7 +330,7 @@ function renderToolFeed(tools, p) {
       existingPrompt.remove();
     }
     const current = isNewPrompt ? null : existingPrompt;
-    if (promptAge < 30) {
+    if (promptAge < PROMPT_TRANSIENT_SECONDS) {
       if (!current) {
         const el = document.createElement('div');
         el.className = 'tool-feed-item prompt-source';
@@ -1878,6 +1879,15 @@ async function openActionsModal() {
   const statusEl = modal.querySelector('#action-status');
   statusEl.hidden = true;
   updateRestartDot();
+  const upgradeResult = state.dashboardState?.runtime_info?.zylos_upgrade_result;
+  if (upgradeResult && statusEl) {
+    statusEl.hidden = false;
+    statusEl.className = upgradeResult.status === 'success' ? 'modal-status success' : 'modal-status error';
+    const key = upgradeResult.status === 'success' ? 'result.zylos_upgrade_succeeded' : 'result.zylos_upgrade_unverified';
+    statusEl.textContent = t(key, {
+      version: upgradeResult.currentVersion || upgradeResult.targetVersion || ''
+    });
+  }
 
   try {
     const meta = await fetchJson('/api/actions/meta');

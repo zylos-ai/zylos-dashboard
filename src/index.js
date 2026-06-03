@@ -30,8 +30,9 @@ import { MetricResolver } from './lib/metric-resolver.js';
 import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
-import { handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
+import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
+import { isNewerVersion } from './lib/version-utils.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
@@ -72,6 +73,7 @@ function refreshInstalledVersions() {
 
 const config = loadConfig();
 ensureDataDirs(config);
+let zylosUpgradeResult = consumeZylosUpgradeMarker(config.zylosDir, zylosVersion);
 
 const activeRuntime = loadZylosConfig(config.zylosDir).runtime || process.env.ZYLOS_RUNTIME || 'claude';
 const isClaudeRuntime = activeRuntime === 'claude';
@@ -161,6 +163,7 @@ function buildRuntimeInfo() {
     codex_version: codexInstalledVersion || null,
     codex_installed: codexInstalledVersion || null,
     pending_restart: !!needsRestart,
+    zylos_upgrade_result: zylosUpgradeResult,
   };
   // info bar: running != installed → show restart hint
   if (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning) {
@@ -168,11 +171,11 @@ function buildRuntimeInfo() {
   }
   // upgrade button: installed != GitHub latest → show upgrade dot
   const ccEffective = ccInstalledVersion || ccRunning;
-  if (latest.cc && ccEffective && latest.cc !== ccEffective) {
+  if (latest.cc && ccEffective && isNewerVersion(latest.cc, ccEffective)) {
     info.cc_update = latest.cc;
   }
   // same pattern for zylos
-  if (latest.zylos && zylosVersion && latest.zylos !== zylosVersion) {
+  if (latest.zylos && zylosVersion && isNewerVersion(latest.zylos, zylosVersion)) {
     info.zylos_update = latest.zylos;
   }
   return info;
