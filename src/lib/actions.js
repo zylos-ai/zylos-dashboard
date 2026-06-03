@@ -21,6 +21,10 @@ function codexConfigPath() {
   return path.join(codexHome(), 'config.toml');
 }
 
+function codexProjectConfigPath(zylosDir) {
+  return path.join(zylosDir || path.join(os.homedir(), 'zylos'), '.codex', 'config.toml');
+}
+
 function codexModelsCachePath() {
   return path.join(codexHome(), 'models_cache.json');
 }
@@ -44,26 +48,29 @@ function writeSettings(zylosDir, settings) {
   fs.writeFileSync(settingsPath(zylosDir), JSON.stringify(settings, null, 2) + '\n');
 }
 
-export function readCodexRootString(key) {
+export function readCodexRootString(key, zylosDir) {
   try {
-    const text = fs.readFileSync(codexConfigPath(), 'utf8');
+    const text = fs.readFileSync(codexProjectConfigPath(zylosDir), 'utf8');
     const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"\\s*$`, 'm'));
     return match?.[1] || null;
-  } catch {
-    return null;
-  }
+  } catch { /* fall through */ }
+  return null;
 }
 
-function writeCodexRootString(key, value) {
-  fs.mkdirSync(codexHome(), { recursive: true });
+function writeCodexRootString(key, value, zylosDir) {
+  const configPath = codexProjectConfigPath(zylosDir);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
   let text = '';
-  try { text = fs.readFileSync(codexConfigPath(), 'utf8'); } catch { /* create below */ }
+  try { text = fs.readFileSync(configPath, 'utf8'); } catch { /* create below */ }
+  if (!text) {
+    text = '# Zylos project-level Codex config.\n';
+  }
   const line = `${key} = ${JSON.stringify(value)}`;
   const pattern = new RegExp(`^\\s*${key}\\s*=\\s*"[^"]*"\\s*$`, 'm');
   text = pattern.test(text)
     ? text.replace(pattern, line)
     : `${line}\n${text}`;
-  fs.writeFileSync(codexConfigPath(), text.endsWith('\n') ? text : text + '\n', { mode: 0o600 });
+  fs.writeFileSync(configPath, text.endsWith('\n') ? text : text + '\n', { mode: 0o600 });
 }
 
 export function readCodexModels() {
@@ -236,13 +243,13 @@ async function switchModel(reqId, body, config, zylosDir) {
     return { ok: true, message: `Model changed to ${model}.`, previous: prev, requires_restart: true, messageKey: 'result.model_changed', messageParams: { value: model } };
   }
 
-  const prev = readCodexRootString('model');
+  const prev = readCodexRootString('model', zylosDir);
   if (prev === model) {
     log(reqId, `no-op: codex model already "${model}"`);
     return { ok: false, error: 'already_set', message: `Model already set to ${model}`, messageKey: 'result.already_set_model', messageParams: { value: model } };
   }
-  writeCodexRootString('model', model);
-  log(reqId, `write ${codexConfigPath()}: model "${prev ?? '(unset)'}" → "${model}"`);
+  writeCodexRootString('model', model, zylosDir);
+  log(reqId, `write ${codexProjectConfigPath(zylosDir)}: model "${prev ?? '(unset)'}" → "${model}"`);
   return { ok: true, message: `Model changed to ${model}.`, previous: prev, requires_restart: true, messageKey: 'result.model_changed', messageParams: { value: model } };
 }
 
@@ -277,20 +284,20 @@ async function switchEffort(reqId, body, config, zylosDir) {
   }
 
   const codexModels = readCodexModels();
-  const currentModel = readCodexRootString('model') || codexModels[0]?.id || '';
+  const currentModel = readCodexRootString('model', zylosDir) || codexModels[0]?.id || '';
   const match = codexModels.find(m => m.id === currentModel);
   const valid = match?.efforts?.length ? match.efforts : ['low', 'medium', 'high', 'xhigh'];
   if (!effort || !valid.includes(effort)) {
     return { ok: false, error: 'invalid_effort', message: `effort must be one of: ${valid.join(', ')}`, messageKey: 'result.invalid_effort', messageParams: { values: valid.join(', ') } };
   }
 
-  const prev = readCodexRootString('model_reasoning_effort');
+  const prev = readCodexRootString('model_reasoning_effort', zylosDir);
   if (prev === effort) {
     log(reqId, `no-op: codex model_reasoning_effort already "${effort}"`);
     return { ok: false, error: 'already_set', message: `Effort already set to ${effort}`, messageKey: 'result.already_set_effort', messageParams: { value: effort } };
   }
-  writeCodexRootString('model_reasoning_effort', effort);
-  log(reqId, `write ${codexConfigPath()}: model_reasoning_effort "${prev ?? '(unset)'}" → "${effort}"`);
+  writeCodexRootString('model_reasoning_effort', effort, zylosDir);
+  log(reqId, `write ${codexProjectConfigPath(zylosDir)}: model_reasoning_effort "${prev ?? '(unset)'}" → "${effort}"`);
   return { ok: true, message: `Effort changed to ${effort}.`, previous: prev, requires_restart: true, messageKey: 'result.effort_changed', messageParams: { value: effort } };
 }
 
@@ -423,8 +430,8 @@ export function getActionsMeta(config, runtimeInfo) {
 
   const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
   const settings = runtime === 'claude' ? readSettings(zylosDir) : {};
-  const codexModel = runtime === 'codex' ? readCodexRootString('model') : null;
-  const codexEffort = runtime === 'codex' ? readCodexRootString('model_reasoning_effort') : null;
+  const codexModel = runtime === 'codex' ? readCodexRootString('model', zylosDir) : null;
+  const codexEffort = runtime === 'codex' ? readCodexRootString('model_reasoning_effort', zylosDir) : null;
   const currentCodexModel = runtime === 'codex'
     ? codexModel || runtimeInfo?.model_id || models[0]?.id || null
     : null;

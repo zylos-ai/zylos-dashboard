@@ -19,9 +19,16 @@ async function withCodexHome(fn) {
   }
 }
 
-test('getActionsMeta exposes model and effort controls for Codex runtime', () => withCodexHome((dir) => {
-  fs.writeFileSync(path.join(dir, 'config.toml'), 'model = "gpt-5.4"\nmodel_reasoning_effort = "high"\n');
-  fs.writeFileSync(path.join(dir, 'models_cache.json'), JSON.stringify({
+function makeZylosDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-zylos-'));
+  fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });
+  return dir;
+}
+
+test('getActionsMeta exposes model and effort controls for Codex runtime', () => withCodexHome((codexHome) => {
+  const zylosDir = makeZylosDir();
+  fs.writeFileSync(path.join(zylosDir, '.codex', 'config.toml'), 'model = "gpt-5.4"\nmodel_reasoning_effort = "high"\n');
+  fs.writeFileSync(path.join(codexHome, 'models_cache.json'), JSON.stringify({
     models: [{
       slug: 'gpt-5.4',
       visibility: 'list',
@@ -29,7 +36,7 @@ test('getActionsMeta exposes model and effort controls for Codex runtime', () =>
     }]
   }));
 
-  const meta = getActionsMeta({ runtime: 'codex', codex_new_session_threshold: '75' }, {});
+  const meta = getActionsMeta({ runtime: 'codex', codex_new_session_threshold: '75', zylosDir }, {});
 
   assert.equal(meta.runtime, 'codex');
   assert.deepEqual(meta.models, [{ id: 'gpt-5.4' }]);
@@ -37,6 +44,27 @@ test('getActionsMeta exposes model and effort controls for Codex runtime', () =>
   assert.equal(meta.current_model, 'gpt-5.4');
   assert.equal(meta.current_effort, 'high');
   assert.equal(meta.new_session_threshold, 75);
+
+  fs.rmSync(zylosDir, { recursive: true, force: true });
+}));
+
+test('getActionsMeta ignores user-level Codex root model config', () => withCodexHome((codexHome) => {
+  const zylosDir = makeZylosDir();
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model = "gpt-5.4"\nmodel_reasoning_effort = "low"\n');
+  fs.writeFileSync(path.join(zylosDir, '.codex', 'config.toml'), 'model = "gpt-5.5"\nmodel_reasoning_effort = "medium"\n');
+  fs.writeFileSync(path.join(codexHome, 'models_cache.json'), JSON.stringify({
+    models: [
+      { slug: 'gpt-5.4', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }] },
+      { slug: 'gpt-5.5', visibility: 'list', supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'high' }] }
+    ]
+  }));
+
+  const meta = getActionsMeta({ runtime: 'codex', zylosDir }, {});
+
+  assert.equal(meta.current_model, 'gpt-5.5');
+  assert.equal(meta.current_effort, 'medium');
+
+  fs.rmSync(zylosDir, { recursive: true, force: true });
 }));
 
 test('getActionsMeta falls back to Codex runtime model and model default effort', () => withCodexHome((dir) => {
@@ -73,8 +101,9 @@ test('getActionsMeta keeps Claude model and effort controls for Claude runtime',
 });
 
 test('handleAction stores Codex model and effort in config.toml', async () => {
-  await withCodexHome(async (dir) => {
-    fs.writeFileSync(path.join(dir, 'models_cache.json'), JSON.stringify({
+  await withCodexHome(async (codexHome) => {
+    const zylosDir = makeZylosDir();
+    fs.writeFileSync(path.join(codexHome, 'models_cache.json'), JSON.stringify({
       models: [{
         slug: 'gpt-5.5',
         visibility: 'list',
@@ -82,14 +111,17 @@ test('handleAction stores Codex model and effort in config.toml', async () => {
       }]
     }));
 
-    const modelResult = await handleAction('switch-model', { model: 'gpt-5.5' }, { runtime: 'codex' });
+    const modelResult = await handleAction('switch-model', { model: 'gpt-5.5' }, { runtime: 'codex', zylosDir });
     assert.equal(modelResult.ok, true);
-    const effortResult = await handleAction('switch-effort', { effort: 'xhigh' }, { runtime: 'codex' });
+    const effortResult = await handleAction('switch-effort', { effort: 'xhigh' }, { runtime: 'codex', zylosDir });
     assert.equal(effortResult.ok, true);
 
-    const config = fs.readFileSync(path.join(dir, 'config.toml'), 'utf8');
+    const config = fs.readFileSync(path.join(zylosDir, '.codex', 'config.toml'), 'utf8');
     assert.match(config, /^model = "gpt-5\.5"$/m);
     assert.match(config, /^model_reasoning_effort = "xhigh"$/m);
+    assert.equal(fs.existsSync(path.join(codexHome, 'config.toml')), false);
+
+    fs.rmSync(zylosDir, { recursive: true, force: true });
   });
 });
 

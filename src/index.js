@@ -141,9 +141,9 @@ function buildRuntimeInfo() {
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
   const codexModels = activeRuntime === 'codex' ? readCodexModels() : [];
   const codexRuntimeInfo = codexRolloutCollector?.getRuntimeInfo?.() || null;
-  const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model') : null;
+  const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model', config.zylosDir) : null;
   const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
-  const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort') : null;
+  const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort', config.zylosDir) : null;
   const needsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
