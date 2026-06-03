@@ -3,7 +3,6 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
@@ -31,7 +30,7 @@ import { MetricResolver } from './lib/metric-resolver.js';
 import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
-import { handleAction, getActionsMeta } from './lib/actions.js';
+import { handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
 import Database from 'better-sqlite3';
 
@@ -134,28 +133,15 @@ function readClaudeSettings() {
   } catch { return {}; }
 }
 
-function readCodexRootString(key) {
-  try {
-    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-    const paths = [
-      path.join(codexHome, 'config.toml'),
-      path.join(config.zylosDir, '.codex', 'config.toml')
-    ];
-    const configPath = paths.find(p => fs.existsSync(p));
-    if (!configPath) return null;
-    const text = fs.readFileSync(configPath, 'utf8');
-    const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"\\s*$`, 'm'));
-    return match?.[1] || null;
-  } catch { return null; }
-}
-
 function buildRuntimeInfo() {
   const slInfo = statuslineCollector?.getRuntimeInfo();
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
 
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
+  const codexModels = activeRuntime === 'codex' ? readCodexModels() : [];
   const codexModel = activeRuntime === 'codex' ? readCodexRootString('model') : null;
+  const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
   const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort') : null;
   const needsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
@@ -165,8 +151,8 @@ function buildRuntimeInfo() {
   const info = {
     zylos_version: zylosVersion,
     runtime: activeRuntime,
-    model: activeRuntime === 'codex' ? codexModel : slInfo?.model || null,
-    effort: activeRuntime === 'codex' ? codexEffort : slInfo?.effort || null,
+    model: activeRuntime === 'codex' ? codexModelInfo?.display_name || codexModelInfo?.id || codexModel : slInfo?.model || null,
+    effort: activeRuntime === 'codex' ? codexEffort || codexModelInfo?.default_effort || null : slInfo?.effort || null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
     codex_version: codexInstalledVersion || null,

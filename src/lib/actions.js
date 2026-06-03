@@ -44,7 +44,7 @@ function writeSettings(zylosDir, settings) {
   fs.writeFileSync(settingsPath(zylosDir), JSON.stringify(settings, null, 2) + '\n');
 }
 
-function readCodexRootString(key) {
+export function readCodexRootString(key) {
   try {
     const text = fs.readFileSync(codexConfigPath(), 'utf8');
     const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"\\s*$`, 'm'));
@@ -66,7 +66,7 @@ function writeCodexRootString(key, value) {
   fs.writeFileSync(codexConfigPath(), text.endsWith('\n') ? text : text + '\n', { mode: 0o600 });
 }
 
-function readCodexModels() {
+export function readCodexModels() {
   try {
     const data = JSON.parse(fs.readFileSync(codexModelsCachePath(), 'utf8'));
     if (Array.isArray(data.models)) {
@@ -74,6 +74,7 @@ function readCodexModels() {
         .filter(m => m?.visibility !== 'hide' && typeof m.slug === 'string' && m.slug)
         .map(m => ({
           id: m.slug,
+          display_name: m.display_name || m.slug,
           default_effort: m.default_reasoning_level || null,
           efforts: Array.isArray(m.supported_reasoning_levels)
             ? m.supported_reasoning_levels.map(e => e?.effort).filter(Boolean)
@@ -83,6 +84,7 @@ function readCodexModels() {
   } catch { /* fall back below */ }
   return Object.keys(DEFAULT_CODEX_MODEL_PRICES).map(id => ({
     id,
+    display_name: id,
     default_effort: 'medium',
     efforts: ['low', 'medium', 'high', 'xhigh']
   }));
