@@ -525,13 +525,15 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/actions/meta') {
     const zylosConfig = loadZylosConfig(config.zylosDir);
     zylosConfig.zylosDir = config.zylosDir;
-    const slMeta = statuslineCollector?.getRuntimeInfo();
-    const meta = getActionsMeta(zylosConfig, slMeta);
+    const runtimeMeta = activeRuntime === 'codex'
+      ? buildRuntimeInfo()
+      : statuslineCollector?.getRuntimeInfo();
+    const meta = getActionsMeta(zylosConfig, runtimeMeta);
     meta.zylos_version = zylosVersion;
     meta.runtime_cli = activeRuntime === 'codex' ? 'codex' : 'claude';
     meta.cc_version = activeRuntime === 'codex'
       ? codexInstalledVersion || null
-      : ccInstalledVersion || slMeta?.cc_version || null;
+      : ccInstalledVersion || runtimeMeta?.cc_version || null;
     sendJson(res, 200, meta);
     return true;
   }

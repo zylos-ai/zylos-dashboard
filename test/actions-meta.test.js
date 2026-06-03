@@ -39,6 +39,26 @@ test('getActionsMeta exposes model and effort controls for Codex runtime', () =>
   assert.equal(meta.new_session_threshold, 75);
 }));
 
+test('getActionsMeta falls back to Codex runtime model and model default effort', () => withCodexHome((dir) => {
+  fs.writeFileSync(path.join(dir, 'models_cache.json'), JSON.stringify({
+    models: [{
+      slug: 'gpt-5.5',
+      display_name: 'GPT-5.5',
+      visibility: 'list',
+      default_reasoning_level: 'medium',
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' }]
+    }]
+  }));
+
+  const meta = getActionsMeta(
+    { runtime: 'codex', codex_new_session_threshold: '75' },
+    { model: 'GPT-5.5', model_id: 'gpt-5.5' }
+  );
+
+  assert.equal(meta.current_model, 'gpt-5.5');
+  assert.equal(meta.current_effort, 'medium');
+}));
+
 test('getActionsMeta keeps Claude model and effort controls for Claude runtime', () => {
   const meta = getActionsMeta(
     { runtime: 'claude', new_session_threshold: '36', zylosDir: '/tmp/zylos-dashboard-missing' },

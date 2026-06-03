@@ -425,6 +425,12 @@ export function getActionsMeta(config, runtimeInfo) {
   const settings = runtime === 'claude' ? readSettings(zylosDir) : {};
   const codexModel = runtime === 'codex' ? readCodexRootString('model') : null;
   const codexEffort = runtime === 'codex' ? readCodexRootString('model_reasoning_effort') : null;
+  const currentCodexModel = runtime === 'codex'
+    ? codexModel || runtimeInfo?.model_id || models[0]?.id || null
+    : null;
+  const currentCodexModelInfo = runtime === 'codex'
+    ? codexModels.find(m => m.id === currentCodexModel) || codexModels[0] || null
+    : null;
 
   const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
   const defaultThreshold = runtime === 'codex' ? 75 : 70;
@@ -432,8 +438,10 @@ export function getActionsMeta(config, runtimeInfo) {
 
   return {
     runtime,
-    current_model: runtime === 'claude' ? settings.model || null : codexModel || runtimeInfo?.model || models[0]?.id || null,
-    current_effort: runtime === 'claude' ? runtimeInfo?.effort || settings.effortLevel || null : codexEffort || runtimeInfo?.effort || null,
+    current_model: runtime === 'claude' ? settings.model || null : currentCodexModel,
+    current_effort: runtime === 'claude'
+      ? runtimeInfo?.effort || settings.effortLevel || null
+      : codexEffort || runtimeInfo?.effort || currentCodexModelInfo?.default_effort || null,
     models,
     efforts_by_model,
     new_session_threshold: newSessionThreshold
