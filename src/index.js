@@ -140,7 +140,8 @@ function buildRuntimeInfo() {
 
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
   const codexModels = activeRuntime === 'codex' ? readCodexModels() : [];
-  const codexModel = activeRuntime === 'codex' ? readCodexRootString('model') : null;
+  const codexRuntimeInfo = codexRolloutCollector?.getRuntimeInfo?.() || null;
+  const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model') : null;
   const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
   const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort') : null;
   const needsRestart = isClaudeRuntime &&
@@ -151,8 +152,10 @@ function buildRuntimeInfo() {
   const info = {
     zylos_version: zylosVersion,
     runtime: activeRuntime,
-    model: activeRuntime === 'codex' ? codexModelInfo?.display_name || codexModelInfo?.id || codexModel : slInfo?.model || null,
+    model: activeRuntime === 'codex' ? codexModelInfo?.display_name || codexRuntimeInfo?.model || codexModelInfo?.id || codexModel : slInfo?.model || null,
+    model_id: activeRuntime === 'codex' ? codexModel || null : slInfo?.model_id || null,
     effort: activeRuntime === 'codex' ? codexEffort || codexModelInfo?.default_effort || null : slInfo?.effort || null,
+    service_tier: activeRuntime === 'codex' ? codexRuntimeInfo?.service_tier || null : null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
     codex_version: codexInstalledVersion || null,
@@ -192,6 +195,11 @@ if (conversationCollector) {
 }
 if (codexRolloutCollector) {
   codexRolloutCollector._onEvent = (event) => stateEngine.onEvent(event);
+  codexRolloutCollector._onRuntimeInfo = () => {
+    const st = stateEngine.getState();
+    st.runtime_info = buildRuntimeInfo();
+    sse.broadcast('state_change', st);
+  };
   codexRolloutCollector._onMetric = (metric) => {
     sse.broadcast('metric_update', {
       metric_name: metric.metric_name,

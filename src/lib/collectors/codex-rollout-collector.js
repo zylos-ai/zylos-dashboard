@@ -19,6 +19,8 @@ export class CodexRolloutCollector {
     this._subagentWaitByCallId = new Map();
     this._onEvent = null;
     this._onMetric = null;
+    this._onRuntimeInfo = null;
+    this._runtimeInfo = null;
     this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || process.cwd());
   }
 
@@ -53,6 +55,14 @@ export class CodexRolloutCollector {
     if (stat.size < offset) offset = 0;
 
     const sessionMeta = this._getTranscriptMetadata(mapping.transcript_path);
+    if (sessionMeta.model) {
+      this._updateRuntimeInfo({
+        sessionId: mapping.session_id,
+        model: sessionMeta.model,
+        serviceTier: sessionMeta.serviceTier,
+        timestamp: sessionMeta.modelTimestamp || now
+      });
+    }
 
     if (stat.size === offset) {
       const backfilled = offset > 0 ? this._backfillRateLimits(mapping, sessionMeta) : 0;
@@ -143,11 +153,21 @@ export class CodexRolloutCollector {
     }
   }
 
+  getRuntimeInfo() {
+    return this._runtimeInfo;
+  }
+
   _ingestEvent(event, mapping, sessionMeta = {}, position = {}) {
     const payload = event.payload || {};
     if (event.type === 'turn_context' && payload.model) {
       sessionMeta.model = payload.model;
       sessionMeta.serviceTier = normalizeServiceTier(payload.service_tier ?? payload.serviceTier);
+      this._updateRuntimeInfo({
+        sessionId: mapping.session_id,
+        model: sessionMeta.model,
+        serviceTier: sessionMeta.serviceTier,
+        timestamp: event.timestamp || new Date().toISOString()
+      });
       return 0;
     }
     if (event.type === 'response_item') {
@@ -711,6 +731,28 @@ export class CodexRolloutCollector {
     return input + output + cacheRead + cacheCreation;
   }
 
+  _updateRuntimeInfo({ sessionId, model, serviceTier, timestamp }) {
+    if (!model) return;
+    const next = {
+      model,
+      model_id: model,
+      session_id: sessionId || null,
+      service_tier: serviceTier || null,
+      updated_at: timestamp || new Date().toISOString()
+    };
+    const prev = this._runtimeInfo;
+    if (
+      prev?.model_id === next.model_id &&
+      prev?.session_id === next.session_id &&
+      prev?.service_tier === next.service_tier
+    ) {
+      this._runtimeInfo = { ...prev, updated_at: next.updated_at };
+      return;
+    }
+    this._runtimeInfo = next;
+    if (this._onRuntimeInfo) this._onRuntimeInfo(next);
+  }
+
   _getTranscriptMetadata(transcriptPath) {
     const stat = fs.statSync(transcriptPath);
     const cached = this._metadataByPath.get(transcriptPath);
@@ -732,6 +774,7 @@ export class CodexRolloutCollector {
         if (event.type === 'turn_context' && event.payload?.model) {
           metadata.model = event.payload.model;
           metadata.serviceTier = normalizeServiceTier(event.payload.service_tier ?? event.payload.serviceTier);
+          metadata.modelTimestamp = event.timestamp || null;
         }
         if (event.type === 'event_msg' && event.payload?.type === 'token_count' && event.payload.rate_limits) {
           metadata.rateLimits = event.payload.rate_limits;

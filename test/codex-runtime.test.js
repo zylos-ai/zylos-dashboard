@@ -94,9 +94,15 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
       'gpt-5.3-codex': { input: 2, output: 8, cacheRead: 0.5, cacheCreation: 2 }
     }
   });
+  const runtimeUpdates = [];
+  collector._onRuntimeInfo = (info) => runtimeUpdates.push(info);
 
   const written = collector.collect();
   assert.equal(written, 10);
+  assert.equal(runtimeUpdates.length, 1);
+  assert.equal(runtimeUpdates[0].model_id, 'gpt-5.3-codex');
+  assert.equal(runtimeUpdates[0].session_id, 'codex-session-1');
+  assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
 
   const context = store.queryMetrics({ name: 'context_pct' });
   assert.equal(context.length, 1);
