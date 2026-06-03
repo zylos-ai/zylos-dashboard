@@ -9,6 +9,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
 const CODEX_HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 const CODEX_HOOK_FEATURE = 'hooks';
+const CODEX_HOOK_EVENT_KEYS = {
+  SessionStart: 'session_start',
+  PreToolUse: 'pre_tool_use',
+  PostToolUse: 'post_tool_use',
+  UserPromptSubmit: 'user_prompt_submit',
+  Stop: 'stop',
+  PermissionRequest: 'permission_request'
+};
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
 
@@ -228,6 +236,46 @@ export class HookInstaller {
     return state;
   }
 
+  _codexHookKey(event, groupIndex, hookIndex) {
+    const eventKey = CODEX_HOOK_EVENT_KEYS[event] || String(event || '').replace(/[A-Z]/g, (m, i) => `${i ? '_' : ''}${m.toLowerCase()}`);
+    return `${this._codexPath()}:${eventKey}:${groupIndex}:${hookIndex}`;
+  }
+
+  _removeCodexTrustState(hookKeys = []) {
+    const p = this._codexConfigPath();
+    const keys = new Set(hookKeys.filter(Boolean));
+    if (keys.size === 0) return { removed: 0, path: p };
+
+    let text;
+    try {
+      text = fs.readFileSync(p, 'utf8');
+    } catch {
+      return { removed: 0, path: p };
+    }
+
+    let removed = 0;
+    let skip = false;
+    const lines = text.split('\n');
+    const kept = [];
+    for (const line of lines) {
+      if (/^\[/.test(line)) {
+        const match = line.match(/^\[hooks\.state\."([^"]+)"\]$/);
+        skip = match ? keys.has(match[1]) : false;
+        if (skip) {
+          removed++;
+          continue;
+        }
+      }
+      if (!skip) kept.push(line);
+    }
+    const next = kept.join('\n').replace(/\n{3,}/g, '\n\n');
+
+    if (removed > 0) {
+      fs.writeFileSync(p, next.endsWith('\n') ? next : `${next}\n`);
+    }
+    return { removed, path: p };
+  }
+
   _trustCodexHooks() {
     const script = String.raw`
 const { spawn } = require('node:child_process');
@@ -445,21 +493,34 @@ send('initialize', {
 
   uninstallCodexHooks() {
     const config = this._readCodex();
-    if (!config.hooks) return { runtime: 'codex', removed: 0 };
+    if (!config.hooks) {
+      return { runtime: 'codex', removed: 0, trust: this._removeCodexTrustState() };
+    }
 
     let removed = 0;
+    const removedHookKeys = [];
     for (const event of Object.keys(config.hooks)) {
       if (!Array.isArray(config.hooks[event])) continue;
-      const before = config.hooks[event].length;
-      config.hooks[event] = config.hooks[event].filter(g =>
-        !g.hooks?.some(h => this._isOwn(h.command))
-      );
-      removed += before - config.hooks[event].length;
+      const nextGroups = [];
+      config.hooks[event].forEach((group, groupIndex) => {
+        const hooks = group.hooks || [];
+        const shouldRemove = hooks.some(h => this._isOwn(h.command));
+        if (shouldRemove) {
+          removed++;
+          hooks.forEach((hook, hookIndex) => {
+            if (this._isOwn(hook.command)) removedHookKeys.push(this._codexHookKey(event, groupIndex, hookIndex));
+          });
+        } else {
+          nextGroups.push(group);
+        }
+      });
+      config.hooks[event] = nextGroups;
       if (config.hooks[event].length === 0) delete config.hooks[event];
     }
 
     if (removed > 0) this._writeCodex(config);
-    return { runtime: 'codex', removed, path: this._codexPath() };
+    const trust = this._removeCodexTrustState(removedHookKeys);
+    return { runtime: 'codex', removed, path: this._codexPath(), trust };
   }
 
   // --- StatusLine ---

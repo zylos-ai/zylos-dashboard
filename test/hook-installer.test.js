@@ -237,18 +237,45 @@ test('HookInstaller — Codex', async (t) => {
   });
 
   await t.test('uninstall removes only own hooks', () => {
+    fs.mkdirSync(path.dirname(installer._codexConfigPath()), { recursive: true });
+    fs.writeFileSync(installer._codexConfigPath(), `
+[hooks.state."${installer._codexPath()}:pre_tool_use:0:0"]
+enabled = true
+trusted_hash = "sha256:same-path-other"
+
+[hooks.state."${installer._codexPath()}:pre_tool_use:1:0"]
+enabled = true
+trusted_hash = "sha256:dashboard-pre"
+
+[hooks.state."${installer._codexPath()}:stop:0:0"]
+enabled = true
+trusted_hash = "sha256:dashboard-stop"
+
+[hooks.state."/tmp/other-hooks.json:pre_tool_use:0:0"]
+enabled = true
+trusted_hash = "sha256:other"
+`);
+
     const result = installer.uninstallCodexHooks();
     assert.equal(result.removed, 6);
+    assert.equal(result.trust.removed, 2);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     assert.equal(config.hooks.PreToolUse.length, 1);
     assert.ok(config.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
     assert.equal(config.hooks.PostToolUse, undefined);
+
+    const codexConfig = fs.readFileSync(installer._codexConfigPath(), 'utf8');
+    assert.match(codexConfig, new RegExp(`\\[hooks\\.state\\."${installer._codexPath().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:pre_tool_use:0:0"\\]`));
+    assert.doesNotMatch(codexConfig, new RegExp(`\\[hooks\\.state\\."${installer._codexPath().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:pre_tool_use:1:0"\\]`));
+    assert.doesNotMatch(codexConfig, new RegExp(`\\[hooks\\.state\\."${installer._codexPath().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:stop:0:0"\\]`));
+    assert.match(codexConfig, /\[hooks\.state\."\/tmp\/other-hooks\.json:pre_tool_use:0:0"\]/);
   });
 
   await t.test('uninstall is idempotent', () => {
     const result = installer.uninstallCodexHooks();
     assert.equal(result.removed, 0);
+    assert.equal(result.trust.removed, 0);
   });
 
   await t.test('enables existing false Codex hook feature flag in-place', () => {
