@@ -52,7 +52,7 @@ try {
   codexInstalledVersion = raw.replace(/^codex-cli\s+/, '').replace(/\s.*$/, '');
 } catch { /* codex CLI not available */ }
 
-function refreshInstalledVersions() {
+function readInstalledVersions() {
   try {
     zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
   } catch { /* ignore */ }
@@ -64,6 +64,10 @@ function refreshInstalledVersions() {
     const raw = execFileSync('codex', ['--version'], { timeout: 5000 }).toString().trim();
     codexInstalledVersion = raw.replace(/^codex-cli\s+/, '').replace(/\s.*$/, '');
   } catch { /* ignore */ }
+}
+
+function refreshInstalledVersions() {
+  readInstalledVersions();
   const st = stateEngine?.getState();
   if (st) {
     st.runtime_info = buildRuntimeInfo();
@@ -136,6 +140,7 @@ function readClaudeSettings() {
 }
 
 function buildRuntimeInfo() {
+  readInstalledVersions();
   const slInfo = statuslineCollector?.getRuntimeInfo();
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
@@ -149,7 +154,7 @@ function buildRuntimeInfo() {
   const needsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
-    (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning));
+    (ccInstalledVersion && ccRunning && isNewerVersion(ccInstalledVersion, ccRunning)));
 
   const info = {
     zylos_version: zylosVersion,
@@ -165,8 +170,8 @@ function buildRuntimeInfo() {
     pending_restart: !!needsRestart,
     zylos_upgrade_result: zylosUpgradeResult,
   };
-  // info bar: running != installed → show restart hint
-  if (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning) {
+  // info bar: installed newer than running → show restart hint
+  if (ccInstalledVersion && ccRunning && isNewerVersion(ccInstalledVersion, ccRunning)) {
     info.cc_restart = ccInstalledVersion;
   }
   // upgrade button: installed != GitHub latest → show upgrade dot
