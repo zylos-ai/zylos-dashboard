@@ -17,6 +17,7 @@ export class ConversationCollector {
     this._currentFile = null;
     this._seenUuids = new Set();
     this._onEvent = null;
+    this._lastUserPromptAt = null;
     this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || path.join(process.env.HOME, 'zylos'));
     this._restoreOffset();
   }
@@ -124,10 +125,27 @@ export class ConversationCollector {
       let msg;
       try { msg = JSON.parse(line); } catch { continue; }
 
-      if (msg.type !== 'assistant') continue;
       const uuid = msg.uuid;
       if (!uuid || this._seenUuids.has(uuid)) continue;
       this._seenUuids.add(uuid);
+
+      const timestamp = msg.timestamp || now;
+      const sessionId = msg.sessionId || null;
+
+      if (msg.type === 'user') {
+        written += this._emitEvent({
+          ingestId: `user-${uuid}`,
+          timestamp, sessionId,
+          eventType: 'user_prompt_submit',
+          category: 'turn',
+          summary: 'User prompt',
+          metadata: { uuid }
+        });
+        this._lastUserPromptAt = timestamp;
+        continue;
+      }
+
+      if (msg.type !== 'assistant') continue;
 
       const message = msg.message;
       if (!message) continue;
@@ -135,8 +153,6 @@ export class ConversationCollector {
       const content = message.content;
       const usage = message.usage;
       const model = message.model;
-      const timestamp = msg.timestamp || now;
-      const sessionId = msg.sessionId || null;
 
       const projects = this._extractProjectsFromContent(content);
 
@@ -147,6 +163,19 @@ export class ConversationCollector {
 
       if (!Array.isArray(content)) continue;
 
+      for (const block of content) {
+        if (block.type === 'tool_use' && block.name) {
+          written += this._emitEvent({
+            ingestId: `tool-${block.id || uuid}-${block.name}`,
+            timestamp, sessionId,
+            eventType: 'tool_use',
+            category: 'tool',
+            summary: block.name,
+            metadata: { uuid, tool_name: block.name, tool_id: block.id }
+          });
+        }
+      }
+
       const textBlocks = content
         .filter(c => c.type === 'text' && c.text?.trim())
         .map(c => c.text.trim());
@@ -155,23 +184,23 @@ export class ConversationCollector {
 
       const text = textBlocks.join('\n');
       const hasToolUse = content.some(c => c.type === 'tool_use');
-
-      const ingestId = `conv-${uuid}`;
-      const eventId = crypto.randomUUID();
+      const turnDuration = this._lastUserPromptAt
+        ? Math.max(0, new Date(timestamp).getTime() - new Date(this._lastUserPromptAt).getTime())
+        : null;
 
       try {
         const summary = this._sanitizer.safeAssistantSummary(text, ASSISTANT_MESSAGE_SUMMARY_LIMIT);
         if (!summary) continue;
         const event = {
-          id: eventId,
-          ingest_id: ingestId,
+          id: crypto.randomUUID(),
+          ingest_id: `conv-${uuid}`,
           timestamp,
           runtime: 'claude',
           session_id: sessionId,
           event_type: 'assistant_message',
           category: 'assistant',
           summary,
-          duration_ms: null,
+          duration_ms: hasToolUse ? null : turnDuration,
           metadata: JSON.stringify({
             uuid,
             has_tool_use: hasToolUse,
@@ -192,6 +221,19 @@ export class ConversationCollector {
           process.stderr.write(`[conversation-collector] ${err.message}\n`);
         }
       }
+
+      if (!hasToolUse) {
+        written += this._emitEvent({
+          ingestId: `stop-${uuid}`,
+          timestamp, sessionId,
+          eventType: 'stop',
+          category: 'turn',
+          summary: 'Turn complete',
+          durationMs: turnDuration,
+          metadata: { uuid }
+        });
+        this._lastUserPromptAt = null;
+      }
     }
 
     // Persist offset only AFTER all writes succeed — crash-safe: on restart,
@@ -206,6 +248,35 @@ export class ConversationCollector {
     }
 
     return written;
+  }
+
+  _emitEvent({ ingestId, timestamp, sessionId, eventType, category, summary, durationMs, metadata }) {
+    try {
+      const event = {
+        id: crypto.randomUUID(),
+        ingest_id: ingestId,
+        timestamp,
+        runtime: 'claude',
+        session_id: sessionId,
+        event_type: eventType,
+        category,
+        summary,
+        duration_ms: durationMs ?? null,
+        metadata: metadata ? JSON.stringify(metadata) : null,
+        source: 'conversation',
+        confidence: 'actual'
+      };
+      const result = this.store.insertEvent(event);
+      if (result?.inserted && this._onEvent) {
+        this._onEvent({ ...event, metadata });
+      }
+      return result?.inserted ? 1 : 0;
+    } catch (err) {
+      if (!err.message?.includes('UNIQUE constraint')) {
+        process.stderr.write(`[conversation-collector] ${err.message}\n`);
+      }
+      return 0;
+    }
   }
 
   _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = []) {

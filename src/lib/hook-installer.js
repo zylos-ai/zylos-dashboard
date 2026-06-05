@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
+const CLAUDE_HOOK_EVENTS = ['PermissionRequest', 'SubagentStart', 'SubagentStop'];
+const CLAUDE_HOOKS_MIGRATED_TO_JSONL = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop'];
 const CODEX_HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 const CODEX_HOOK_FEATURE = 'hooks';
 const CODEX_HOOK_EVENT_KEYS = {
@@ -103,6 +104,23 @@ export class HookInstaller {
 
     if (added > 0) this._writeClaude(settings);
     return { runtime: 'claude', added, total: CLAUDE_HOOK_EVENTS.length, path: this._claudePath() };
+  }
+
+  removeMigratedClaudeHooks() {
+    const settings = this._readClaude();
+    if (!settings.hooks) return { removed: 0 };
+    let removed = 0;
+    for (const event of CLAUDE_HOOKS_MIGRATED_TO_JSONL) {
+      if (!Array.isArray(settings.hooks[event])) continue;
+      const before = settings.hooks[event].length;
+      settings.hooks[event] = settings.hooks[event].filter(g =>
+        !g.hooks?.some(h => this._isOwn(h.command))
+      );
+      removed += before - settings.hooks[event].length;
+      if (settings.hooks[event].length === 0) delete settings.hooks[event];
+    }
+    if (removed > 0) this._writeClaude(settings);
+    return { removed, path: this._claudePath() };
   }
 
   uninstallClaudeHooks() {
