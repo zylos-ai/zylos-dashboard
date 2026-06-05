@@ -8,8 +8,12 @@ const DATA_DIR = process.env.ZYLOS_DATA_DIR
   || path.join(process.env.HOME, 'zylos/components/dashboard');
 const DB_PATH = path.join(DATA_DIR, 'dashboard.db');
 
-function sha256(data) {
-  return crypto.createHash('sha256').update(data).digest('hex');
+const SCRYPT_KEYLEN = 64;
+
+function hashApiKey(key) {
+  const salt = crypto.randomBytes(32);
+  const hash = crypto.scryptSync(key, salt, SCRYPT_KEYLEN);
+  return `scrypt:${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
 function openDb() {
@@ -43,7 +47,7 @@ if (command === 'generate') {
     process.exit(1);
   }
   const key = 'zylos_ak_' + crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO api_keys (name, key_hash, scope) VALUES (?, ?, ?)').run(name, sha256(key), scope);
+  db.prepare('INSERT INTO api_keys (name, key_hash, scope) VALUES (?, ?, ?)').run(name, hashApiKey(key), scope);
   db.close();
   console.log(`API key created: ${name} (scope: ${scope})`);
   console.log(`Key: ${key}`);

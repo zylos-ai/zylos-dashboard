@@ -278,10 +278,14 @@ function generateSessionToken() {
   return API_SESSION_PREFIX + crypto.randomBytes(32).toString('hex');
 }
 
+export function hashApiKey(key) {
+  return hashPassword(key);
+}
+
 export function exchangeApiKeyForToken(apiKey) {
   if (!_store || !apiKey) return null;
-  const keyHash = sha256(apiKey);
-  const row = _store.getApiKeyByHash(keyHash);
+  const candidates = _store.listActiveApiKeys();
+  const row = candidates.find(k => verifyPassword(apiKey, k.key_hash));
   if (!row) return null;
   _store.touchApiKey(row.id);
   const token = generateSessionToken();
@@ -370,7 +374,9 @@ export class AuthGate {
 
     const apiAuth = this.getApiAuth(req);
     if (apiAuth && pathname.startsWith('/api/')) {
-      if (pathname.startsWith('/api/actions') && apiAuth.scope !== 'admin') {
+      const needsAdmin = pathname.startsWith('/api/actions') ||
+        (pathname === '/api/settings' && req.method === 'PUT');
+      if (needsAdmin && apiAuth.scope !== 'admin') {
         sendJson(res, 403, { error: 'insufficient_scope', required: 'admin' });
         return true;
       }

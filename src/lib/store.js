@@ -377,6 +377,10 @@ export class Store {
       SELECT * FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL
     `);
 
+    this._listActiveApiKeys = this.db.prepare(`
+      SELECT * FROM api_keys WHERE revoked_at IS NULL
+    `);
+
     this._getApiKeyByName = this.db.prepare(`
       SELECT * FROM api_keys WHERE name = ?
     `);
@@ -934,6 +938,10 @@ export class Store {
 
   getApiKeyByHash(hash) {
     return this._getApiKeyByHash.get(hash) || null;
+  }
+
+  listActiveApiKeys() {
+    return this._listActiveApiKeys.all();
   }
 
   getApiKeyByName(name) {
