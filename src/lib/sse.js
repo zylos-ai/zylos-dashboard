@@ -37,6 +37,7 @@ export class SseHub {
     this.sequence += 1;
     const payload = `id: ${this.sequence}\nevent: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of this.clients) {
+      if (this._evictIfInvalid(client)) continue;
       try {
         client.res.write(payload);
       } catch {
@@ -53,17 +54,22 @@ export class SseHub {
     this.clients.clear();
   }
 
+  _evictIfInvalid(client) {
+    if (!client.validator || client.validator()) return false;
+    try {
+      client.res.write('event: auth_expired\ndata: {}\n\n');
+      client.res.end();
+    } catch { /* already closed */ }
+    this.clients.delete(client);
+    return true;
+  }
+
   _startKeepalive() {
     if (this.keepaliveTimer) return;
     this.keepaliveTimer = setInterval(() => {
       for (const client of this.clients) {
+        if (this._evictIfInvalid(client)) continue;
         try {
-          if (client.validator && !client.validator()) {
-            client.res.write('event: auth_expired\ndata: {}\n\n');
-            client.res.end();
-            this.clients.delete(client);
-            continue;
-          }
           client.res.write(': keepalive\n\n');
         } catch {
           this.clients.delete(client);
