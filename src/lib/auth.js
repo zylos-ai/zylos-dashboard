@@ -339,7 +339,11 @@ export class AuthGate {
   getApiAuth(req) {
     const bearer = getBearerToken(req);
     if (!bearer) return null;
-    if (bearer.startsWith(API_SESSION_PREFIX)) return validateApiSession(bearer);
+    if (bearer.startsWith(API_SESSION_PREFIX)) {
+      const result = validateApiSession(bearer);
+      if (result) req._apiToken = bearer;
+      return result;
+    }
     return null;
   }
 

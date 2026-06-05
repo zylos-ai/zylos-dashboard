@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AuthGate, exchangeApiKeyForToken, generateApiKey } from './lib/auth.js';
+import { AuthGate, exchangeApiKeyForToken, generateApiKey, validateApiSession } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import {
   DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
@@ -547,7 +547,9 @@ function handleApi(req, res, pathname, url) {
   }
 
   if (pathname === '/api/stream') {
-    sse.addClient(res);
+    const apiToken = req._apiToken;
+    const validator = apiToken ? () => !!validateApiSession(apiToken) : null;
+    sse.addClient(res, validator);
     return true;
   }
 

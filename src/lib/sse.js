@@ -6,7 +6,7 @@ export class SseHub {
     this.sequence = 0;
   }
 
-  addClient(res) {
+  addClient(res, validator) {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-store',
@@ -14,35 +14,41 @@ export class SseHub {
       'x-accel-buffering': 'no'
     });
     res.write(': connected\n\n');
-    this.clients.add(res);
+    const client = { res, validator: validator || null };
+    this.clients.add(client);
     this._startKeepalive();
     res.on('close', () => {
-      this.clients.delete(res);
+      this.clients.delete(client);
       if (this.clients.size === 0) this._stopKeepalive();
     });
   }
 
   removeClient(res) {
-    this.clients.delete(res);
+    for (const client of this.clients) {
+      if (client.res === res) {
+        this.clients.delete(client);
+        break;
+      }
+    }
     if (this.clients.size === 0) this._stopKeepalive();
   }
 
   broadcast(eventType, data) {
     this.sequence += 1;
     const payload = `id: ${this.sequence}\nevent: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
-    for (const res of this.clients) {
+    for (const client of this.clients) {
       try {
-        res.write(payload);
+        client.res.write(payload);
       } catch {
-        this.clients.delete(res);
+        this.clients.delete(client);
       }
     }
   }
 
   closeAll() {
     this._stopKeepalive();
-    for (const res of this.clients) {
-      try { res.end(); } catch { /* already closed */ }
+    for (const client of this.clients) {
+      try { client.res.end(); } catch { /* already closed */ }
     }
     this.clients.clear();
   }
@@ -50,11 +56,17 @@ export class SseHub {
   _startKeepalive() {
     if (this.keepaliveTimer) return;
     this.keepaliveTimer = setInterval(() => {
-      for (const res of this.clients) {
+      for (const client of this.clients) {
         try {
-          res.write(': keepalive\n\n');
+          if (client.validator && !client.validator()) {
+            client.res.write('event: auth_expired\ndata: {}\n\n');
+            client.res.end();
+            this.clients.delete(client);
+            continue;
+          }
+          client.res.write(': keepalive\n\n');
         } catch {
-          this.clients.delete(res);
+          this.clients.delete(client);
         }
       }
     }, this.keepaliveMs);
