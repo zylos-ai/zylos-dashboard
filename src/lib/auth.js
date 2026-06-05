@@ -15,6 +15,9 @@ const WINDOW_MS = 60_000;
 const LOCKOUT_MS = 600_000;
 const GLOBAL_MAX_PER_MIN = 30;
 const MAX_LOGIN_BODY_BYTES = 4096;
+const API_SESSION_TTL_MS = 86_400_000;
+const API_KEY_PREFIX = 'zylos_ak_';
+const API_SESSION_PREFIX = 'zylos_st_';
 
 let _store = null;
 
@@ -267,6 +270,49 @@ function nextTarget(req, base) {
   return isPathWithinBase(target, base) ? target : browserRoot(base);
 }
 
+export function generateApiKey() {
+  return API_KEY_PREFIX + crypto.randomBytes(32).toString('hex');
+}
+
+function generateSessionToken() {
+  return API_SESSION_PREFIX + crypto.randomBytes(32).toString('hex');
+}
+
+export function exchangeApiKeyForToken(apiKey) {
+  if (!_store || !apiKey) return null;
+  const keyHash = sha256(apiKey);
+  const row = _store.getApiKeyByHash(keyHash);
+  if (!row) return null;
+  _store.touchApiKey(row.id);
+  const token = generateSessionToken();
+  const now = Date.now();
+  const expiresAt = now + API_SESSION_TTL_MS;
+  _store.insertApiSession({
+    tokenHash: sha256(token),
+    apiKeyId: row.id,
+    scope: row.scope,
+    createdAt: now,
+    expiresAt,
+  });
+  return { token, expires_at: new Date(expiresAt).toISOString(), ttl_seconds: API_SESSION_TTL_MS / 1000, scope: row.scope };
+}
+
+export function validateApiSession(token) {
+  if (!_store || !token) return null;
+  const hash = sha256(token);
+  const session = _store.getApiSession(hash);
+  if (!session) return null;
+  if (session.key_revoked_at) return null;
+  if (Date.now() > session.expires_at) return null;
+  return { scope: session.scope };
+}
+
+function getBearerToken(req) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return null;
+  return auth.slice(7);
+}
+
 export class AuthGate {
   constructor(config, store) {
     this.config = config;
@@ -276,6 +322,7 @@ export class AuthGate {
       this._cleanupTimer = setInterval(() => {
         const now = Date.now();
         _store.cleanupSessions(now - REMEMBER_ABSOLUTE_MS, now - REMEMBER_IDLE_MS);
+        _store.cleanupExpiredApiSessions();
       }, CLEANUP_INTERVAL_MS);
       this._cleanupTimer.unref?.();
     }
@@ -285,9 +332,17 @@ export class AuthGate {
     return Boolean(this.config.auth?.enabled) && Boolean(this.config.auth?.password);
   }
 
+  getApiAuth(req) {
+    const bearer = getBearerToken(req);
+    if (!bearer) return null;
+    if (bearer.startsWith(API_SESSION_PREFIX)) return validateApiSession(bearer);
+    return null;
+  }
+
   isAuthenticated(req) {
     if (!this.enabled) return true;
-    return validateSession(getSessionCookie(req));
+    if (validateSession(getSessionCookie(req))) return true;
+    return !!this.getApiAuth(req);
   }
 
   async handle(req, res, url) {
@@ -310,6 +365,20 @@ export class AuthGate {
 
     if (validateSession(getSessionCookie(req))) {
       res.setHeader('Cache-Control', 'no-store');
+      return false;
+    }
+
+    const apiAuth = this.getApiAuth(req);
+    if (apiAuth && pathname.startsWith('/api/')) {
+      if (pathname.startsWith('/api/actions') && apiAuth.scope !== 'admin') {
+        sendJson(res, 403, { error: 'insufficient_scope', required: 'admin' });
+        return true;
+      }
+      req._apiScope = apiAuth.scope;
+      return false;
+    }
+
+    if (pathname === '/api/auth/token' && req.method === 'POST') {
       return false;
     }
 

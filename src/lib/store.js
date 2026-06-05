@@ -174,6 +174,29 @@ export class Store {
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(8);
     }
+    if (currentVersion < 9) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          key_hash TEXT NOT NULL,
+          scope TEXT NOT NULL DEFAULT 'read',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_used_at TEXT,
+          revoked_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS api_sessions (
+          token_hash TEXT PRIMARY KEY,
+          api_key_id INTEGER NOT NULL REFERENCES api_keys(id),
+          scope TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_sessions_expires ON api_sessions(expires_at);
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(9);
+    }
   }
 
   _prepareStatements() {
@@ -343,6 +366,46 @@ export class Store {
         byte_offset = @byte_offset,
         session_id = @session_id,
         updated_at = datetime('now')
+    `);
+
+    this._insertApiKey = this.db.prepare(`
+      INSERT INTO api_keys (name, key_hash, scope)
+      VALUES (@name, @key_hash, @scope)
+    `);
+
+    this._getApiKeyByHash = this.db.prepare(`
+      SELECT * FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL
+    `);
+
+    this._getApiKeyByName = this.db.prepare(`
+      SELECT * FROM api_keys WHERE name = ?
+    `);
+
+    this._listApiKeys = this.db.prepare(`
+      SELECT id, name, scope, created_at, last_used_at, revoked_at FROM api_keys ORDER BY created_at DESC
+    `);
+
+    this._revokeApiKey = this.db.prepare(`
+      UPDATE api_keys SET revoked_at = datetime('now') WHERE name = ? AND revoked_at IS NULL
+    `);
+
+    this._touchApiKey = this.db.prepare(`
+      UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?
+    `);
+
+    this._insertApiSession = this.db.prepare(`
+      INSERT INTO api_sessions (token_hash, api_key_id, scope, created_at, expires_at)
+      VALUES (@token_hash, @api_key_id, @scope, @created_at, @expires_at)
+    `);
+
+    this._getApiSession = this.db.prepare(`
+      SELECT s.*, k.revoked_at AS key_revoked_at FROM api_sessions s
+      JOIN api_keys k ON s.api_key_id = k.id
+      WHERE s.token_hash = ?
+    `);
+
+    this._deleteExpiredApiSessions = this.db.prepare(`
+      DELETE FROM api_sessions WHERE expires_at < ?
     `);
   }
 
@@ -863,6 +926,48 @@ export class Store {
     const skillsIdx = parts.indexOf('skills');
     if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
     return null;
+  }
+
+  insertApiKey({ name, keyHash, scope }) {
+    return this._insertApiKey.run({ name, key_hash: keyHash, scope });
+  }
+
+  getApiKeyByHash(hash) {
+    return this._getApiKeyByHash.get(hash) || null;
+  }
+
+  getApiKeyByName(name) {
+    return this._getApiKeyByName.get(name) || null;
+  }
+
+  listApiKeys() {
+    return this._listApiKeys.all();
+  }
+
+  revokeApiKey(name) {
+    return this._revokeApiKey.run(name);
+  }
+
+  touchApiKey(id) {
+    this._touchApiKey.run(id);
+  }
+
+  insertApiSession({ tokenHash, apiKeyId, scope, createdAt, expiresAt }) {
+    this._insertApiSession.run({
+      token_hash: tokenHash,
+      api_key_id: apiKeyId,
+      scope,
+      created_at: createdAt,
+      expires_at: expiresAt,
+    });
+  }
+
+  getApiSession(tokenHash) {
+    return this._getApiSession.get(tokenHash) || null;
+  }
+
+  cleanupExpiredApiSessions() {
+    this._deleteExpiredApiSessions.run(Date.now());
   }
 
   close() {

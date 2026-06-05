@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AuthGate } from './lib/auth.js';
+import { AuthGate, exchangeApiKeyForToken, generateApiKey } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import {
   DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
@@ -826,6 +826,21 @@ export function createServer() {
       } else {
         await handleStatuslineIngest(req, res);
       }
+      return;
+    }
+
+    if (pathname === '/api/auth/token' && req.method === 'POST') {
+      const bearer = req.headers.authorization;
+      if (!bearer || !bearer.startsWith('Bearer zylos_ak_')) {
+        sendJson(res, 401, { error: 'invalid_api_key' });
+        return;
+      }
+      const result = exchangeApiKeyForToken(bearer.slice(7));
+      if (!result) {
+        sendJson(res, 401, { error: 'invalid_api_key' });
+        return;
+      }
+      sendJson(res, 200, result);
       return;
     }
 
