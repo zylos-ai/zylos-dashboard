@@ -162,12 +162,13 @@ test('assistant summaries redact before truncation', () => {
   }) + '\n');
   collector.collect();
 
-  assert.equal(store.events.length, 1);
-  assert.ok(store.events[0].summary.length <= 500);
-  assert.ok(!store.events[0].summary.includes('sk-'));
-  assert.ok(!store.events[0].summary.includes('user@example.com'));
-  assert.ok(store.events[0].summary.includes('[REDACTED]'));
-  assert.ok(store.events[0].summary.includes('[EMAIL]'));
+  const assistantEvents = store.events.filter(e => e.event_type === 'assistant_message');
+  assert.equal(assistantEvents.length, 1);
+  assert.ok(assistantEvents[0].summary.length <= 500);
+  assert.ok(!assistantEvents[0].summary.includes('sk-'));
+  assert.ok(!assistantEvents[0].summary.includes('user@example.com'));
+  assert.ok(assistantEvents[0].summary.includes('[REDACTED]'));
+  assert.ok(assistantEvents[0].summary.includes('[EMAIL]'));
 
   fs.rmSync(tmpDir, { recursive: true });
 });
@@ -361,8 +362,8 @@ test('missing usage field does not crash', () => {
   fs.writeFileSync(jsonlPath, line + '\n');
   collector.collect();
 
-  // Text event written, no metrics
-  assert.equal(store.events.length, 1);
+  const assistantEvents = store.events.filter(e => e.event_type === 'assistant_message');
+  assert.equal(assistantEvents.length, 1);
   assert.equal(store.metrics.length, 0);
 
   fs.rmSync(tmpDir, { recursive: true });

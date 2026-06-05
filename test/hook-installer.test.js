@@ -23,12 +23,12 @@ test('HookInstaller — Claude', async (t) => {
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
 
-  await t.test('install creates hook entries for all 7 events', () => {
+  await t.test('install creates hook entries for all 5 events', () => {
     const result = installer.installClaudeHooks();
-    assert.equal(result.added, 7);
+    assert.equal(result.added, 5);
 
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
+    for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
       assert.ok(settings.hooks[event], `missing event ${event}`);
       assert.ok(settings.hooks[event].length > 0);
     }
@@ -39,7 +39,7 @@ test('HookInstaller — Claude', async (t) => {
     assert.equal(result.added, 0);
 
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
       assert.equal(settings.hooks[event].length, 1);
     }
   });
@@ -48,14 +48,12 @@ test('HookInstaller — Claude', async (t) => {
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     assert.equal(settings.hooks.PreToolUse[0].matcher, '');
     assert.equal(settings.hooks.PostToolUse[0].matcher, '');
-    assert.equal(settings.hooks.UserPromptSubmit[0].matcher, undefined);
-    assert.equal(settings.hooks.Stop[0].matcher, undefined);
     assert.equal(settings.hooks.PermissionRequest[0].matcher, undefined);
   });
 
   await t.test('hooks are registered as async with short timeout', () => {
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
       const hook = settings.hooks[event][0].hooks[0];
       assert.equal(hook.async, true, `${event} hook should be async`);
       assert.equal(hook.timeout, 5, `${event} hook timeout should be 5ms`);
@@ -80,7 +78,7 @@ test('HookInstaller — Claude', async (t) => {
 
   await t.test('upgrades existing sync hooks to async in-place', () => {
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
       if (!settings.hooks[event]) continue;
       for (const group of settings.hooks[event]) {
         for (const h of group.hooks || []) {
@@ -97,7 +95,7 @@ test('HookInstaller — Claude', async (t) => {
     assert.ok(result.added > 0, 'should report updated hooks');
 
     const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+    for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
       const hook = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
       const h = hook.hooks.find(h => installer._isOwn(h.command));
       assert.equal(h.async, true, `${event} should be async after upgrade`);
@@ -107,7 +105,7 @@ test('HookInstaller — Claude', async (t) => {
 
   await t.test('uninstall removes only own hooks', () => {
     const result = installer.uninstallClaudeHooks();
-    assert.equal(result.removed, 7);
+    assert.equal(result.removed, 5);
 
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     assert.equal(settings.hooks.PreToolUse.length, 1);
@@ -488,7 +486,7 @@ test('HookInstaller — install() provisions all supported runtimes', async (t) 
     const installer = makeInstaller(projectRoot, tmpHome);
     const result = installer.install();
     assert.equal(result.claude.runtime, 'claude');
-    assert.equal(result.claude.added, 7);
+    assert.equal(result.claude.added, 5);
     assert.equal(result.codex.runtime, 'codex');
     assert.equal(result.codex.added, 6);
     assert.equal(result.statusline.installed, true);
@@ -496,6 +494,8 @@ test('HookInstaller — install() provisions all supported runtimes', async (t) 
     const claudeSettings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     const codexSettings = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     assert.ok(claudeSettings.hooks.PreToolUse);
+    assert.equal(claudeSettings.hooks.UserPromptSubmit, undefined);
+    assert.equal(claudeSettings.hooks.Stop, undefined);
     assert.ok(codexSettings.hooks.SessionStart);
 
     if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
@@ -517,7 +517,7 @@ test('HookInstaller — install() provisions all supported runtimes', async (t) 
 
     const claudeSettings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     const codexSettings = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.ok(claudeSettings.hooks.UserPromptSubmit);
+    assert.ok(claudeSettings.hooks.PreToolUse);
     assert.ok(codexSettings.hooks.UserPromptSubmit);
 
     if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;

@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const CLAUDE_HOOK_EVENTS = ['PermissionRequest', 'SubagentStart', 'SubagentStop'];
-const CLAUDE_HOOKS_MIGRATED_TO_JSONL = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop'];
+const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
+const CLAUDE_HOOKS_MIGRATED_TO_JSONL = ['UserPromptSubmit', 'Stop'];
 const CODEX_HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 const CODEX_HOOK_FEATURE = 'hooks';
 const CODEX_HOOK_EVENT_KEYS = {
@@ -585,10 +585,12 @@ send('initialize', {
   // --- Combined ---
 
   install() {
+    const migrated = this.removeMigratedClaudeHooks();
     return {
       claude: this.installClaudeHooks(),
       codex: this.installCodexHooks(),
-      statusline: this.installStatusline()
+      statusline: this.installStatusline(),
+      migrated
     };
   }
 

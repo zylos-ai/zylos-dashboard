@@ -133,15 +133,20 @@ export class ConversationCollector {
       const sessionId = msg.sessionId || null;
 
       if (msg.type === 'user') {
-        written += this._emitEvent({
-          ingestId: `user-${uuid}`,
-          timestamp, sessionId,
-          eventType: 'user_prompt_submit',
-          category: 'turn',
-          summary: 'User prompt',
-          metadata: { uuid }
-        });
-        this._lastUserPromptAt = timestamp;
+        const userContent = msg.message?.content;
+        const isToolResult = Array.isArray(userContent) &&
+          userContent.every(c => c.type === 'tool_result');
+        if (!isToolResult) {
+          written += this._emitEvent({
+            ingestId: `user-${uuid}`,
+            timestamp, sessionId,
+            eventType: 'user_prompt_submit',
+            category: 'turn',
+            summary: 'User prompt',
+            metadata: { uuid }
+          });
+          this._lastUserPromptAt = timestamp;
+        }
         continue;
       }
 
@@ -162,19 +167,6 @@ export class ConversationCollector {
       }
 
       if (!Array.isArray(content)) continue;
-
-      for (const block of content) {
-        if (block.type === 'tool_use' && block.name) {
-          written += this._emitEvent({
-            ingestId: `tool-${block.id || uuid}-${block.name}`,
-            timestamp, sessionId,
-            eventType: 'tool_use',
-            category: 'tool',
-            summary: block.name,
-            metadata: { uuid, tool_name: block.name, tool_id: block.id }
-          });
-        }
-      }
 
       const textBlocks = content
         .filter(c => c.type === 'text' && c.text?.trim())
