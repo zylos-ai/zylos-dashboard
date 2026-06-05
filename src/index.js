@@ -909,7 +909,7 @@ if (isMain && process.argv.includes('--smoke')) {
   });
 
   // Start periodic collectors
-  pm2Collector.start(10_000);
+  pm2Collector.start(60_000);
   systemCollector.start(30_000);
   if (statuslineCollector) statuslineCollector.start();
   if (conversationCollector) conversationCollector.start(5_000);
@@ -924,9 +924,12 @@ if (isMain && process.argv.includes('--smoke')) {
   // Retention cleanup timer (hourly)
   const retentionTimer = setInterval(() => {
     try {
-      store.deleteEventsOlderThan(30);
+      store.deletePm2MetricsOlderThan(7);
       store.deleteMetricsOlderThan(90);
+      store.deleteEventsOlderThan(30);
+      store.deleteSnapshotsOlderThan(7);
       store.deleteFactsOlderThan(365);
+      store.walCheckpoint();
     } catch (err) {
       process.stderr.write(`[retention] Error: ${err.message}\n`);
     }

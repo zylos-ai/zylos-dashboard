@@ -250,6 +250,14 @@ export class Store {
       DELETE FROM metric_points WHERE timestamp < datetime('now', '-' || ? || ' days')
     `);
 
+    this._deletePm2Metrics = this.db.prepare(`
+      DELETE FROM metric_points WHERE metric_name LIKE 'pm2_%' AND timestamp < datetime('now', '-' || ? || ' days')
+    `);
+
+    this._deleteOldSnapshots = this.db.prepare(`
+      DELETE FROM state_snapshots WHERE snapshot_at < datetime('now', '-' || ? || ' days')
+    `);
+
     this._insertFact = this.db.prepare(`
       INSERT INTO activity_facts (timestamp, fact_type, runtime, session_id, project, data)
       VALUES (@timestamp, @fact_type, @runtime, @session_id, @project, @data)
@@ -427,6 +435,18 @@ export class Store {
 
   deleteMetricsOlderThan(days) {
     return this._deleteOldMetrics.run(days);
+  }
+
+  deletePm2MetricsOlderThan(days) {
+    return this._deletePm2Metrics.run(days);
+  }
+
+  deleteSnapshotsOlderThan(days) {
+    return this._deleteOldSnapshots.run(days);
+  }
+
+  walCheckpoint() {
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
   }
 
   insertFact(fact) {
