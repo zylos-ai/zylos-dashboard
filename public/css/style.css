@@ -507,6 +507,15 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   .pulse-grid {
     grid-template-columns: 1fr;
   }
+  /* Reclaim horizontal space and give the back control a touch-sized target. */
+  .fleet-view {
+    padding-left: var(--space-md);
+    padding-right: var(--space-md);
+  }
+  .back-to-fleet {
+    height: 40px;
+    margin-left: var(--space-md);
+  }
 }
 
 /* ─── Overview Grid ─── */
