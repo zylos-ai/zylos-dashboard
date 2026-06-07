@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { browserPath } from './browser-base.js';
 import { sendHtml, sendJson, sendText, serveStatic } from './http.js';
+
+const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
+const STREAM_GUARD_TAIL_CHARS = 128;
 
 function decodeAgentName(value) {
   try {
@@ -35,19 +38,53 @@ function stripHopByHop(headers) {
   return result;
 }
 
-function requestBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('end', () => resolve(chunks.length ? Buffer.concat(chunks) : null));
-    req.on('error', reject);
-  });
-}
-
 function remoteUrl(agent, remotePath, search = '') {
   const base = String(agent.base_url || '').replace(/\/+$/, '');
   const cleanPath = String(remotePath || '').replace(/^\/+/, '');
   return `${base}/${cleanPath}${search || ''}`;
+}
+
+function containsSecret(value) {
+  return SECRET_PATTERN.test(String(value || ''));
+}
+
+function isSseResponse(resp) {
+  return /\btext\/event-stream\b/i.test(resp.headers.get('content-type') || '');
+}
+
+function guardedSseStream(onLeak) {
+  let tail = '';
+  let leaked = false;
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      if (leaked) {
+        callback();
+        return;
+      }
+      const text = chunk.toString('utf8');
+      const combined = tail + text;
+      if (containsSecret(combined)) {
+        leaked = true;
+        onLeak();
+        this.push('event: proxy_error\ndata: {"error":"secret_leak_blocked"}\n\n');
+        callback();
+        return;
+      }
+      if (combined.length <= STREAM_GUARD_TAIL_CHARS) {
+        tail = combined;
+        callback();
+        return;
+      }
+      const safeLength = combined.length - STREAM_GUARD_TAIL_CHARS;
+      this.push(combined.slice(0, safeLength));
+      tail = combined.slice(safeLength);
+      callback();
+    },
+    flush(callback) {
+      if (!leaked && tail) this.push(tail);
+      callback();
+    }
+  });
 }
 
 export class FleetProxy {
@@ -101,7 +138,7 @@ export class FleetProxy {
   }
 
   async proxyApi(req, res, agent, suffix, search) {
-    if (req.method === 'POST' && suffix.startsWith('/api/actions/')) {
+    if (!['GET', 'HEAD'].includes(req.method)) {
       sendJson(res, 403, { error: 'read_only_proxy' });
       return;
     }
@@ -114,42 +151,58 @@ export class FleetProxy {
       return;
     }
 
-    let body = null;
-    if (!['GET', 'HEAD'].includes(req.method)) body = await requestBody(req);
-
     let remoteResp;
     try {
-      remoteResp = await this._fetchUpstream(req, agent, suffix, search, token, body);
+      remoteResp = await this._fetchUpstream(req, agent, suffix, search, token);
       if (remoteResp.status === 401) {
         token = await this.poller.getSessionToken(agent.name, { force: true });
-        remoteResp = await this._fetchUpstream(req, agent, suffix, search, token, body);
+        remoteResp = await this._fetchUpstream(req, agent, suffix, search, token);
       }
     } catch {
       sendJson(res, 502, { error: 'upstream_unreachable' });
       return;
     }
 
-    const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
-    responseHeaders['cache-control'] = 'no-store';
-    res.writeHead(remoteResp.status, responseHeaders);
     if (req.method === 'HEAD') {
+      const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
+      responseHeaders['cache-control'] = 'no-store';
+      res.writeHead(remoteResp.status, responseHeaders);
       res.end();
       return;
     }
-    if (remoteResp.body) {
-      Readable.fromWeb(remoteResp.body).pipe(res);
-    } else {
+    if (!remoteResp.body) {
       res.end();
+      return;
+    }
+    if (isSseResponse(remoteResp)) {
+      const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
+      responseHeaders['cache-control'] = 'no-store';
+      res.writeHead(remoteResp.status, responseHeaders);
+      const guarded = guardedSseStream(() => {
+        process.stderr.write(`[fleet-proxy] blocked secret-bearing SSE response from ${agent.name}\n`);
+      });
+      Readable.fromWeb(remoteResp.body).pipe(guarded).pipe(res);
+    } else {
+      const buffer = Buffer.from(await remoteResp.arrayBuffer());
+      const text = buffer.toString('utf8');
+      if (containsSecret(text)) {
+        process.stderr.write(`[fleet-proxy] blocked secret-bearing response from ${agent.name} ${suffix}\n`);
+        sendJson(res, 502, { error: 'secret_leak_blocked' });
+        return;
+      }
+      const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
+      responseHeaders['cache-control'] = 'no-store';
+      res.writeHead(remoteResp.status, responseHeaders);
+      res.end(buffer);
     }
   }
 
-  _fetchUpstream(req, agent, suffix, search, token, body) {
+  _fetchUpstream(req, agent, suffix, search, token) {
     const headers = stripHopByHop(req.headers);
     headers.authorization = `Bearer ${token}`;
     return this.fetch(remoteUrl(agent, suffix, search), {
       method: req.method,
-      headers,
-      body
+      headers
     });
   }
 }

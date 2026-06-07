@@ -181,7 +181,10 @@ export class FleetPoller {
       throw err;
     }
 
-    const expiresAtMs = body.expires_at ? Date.parse(body.expires_at) : now + toNumber(body.ttl_seconds, 86400) * 1000;
+    const parsedExpiresAtMs = body.expires_at ? Date.parse(body.expires_at) : NaN;
+    const expiresAtMs = Number.isFinite(parsedExpiresAtMs)
+      ? parsedExpiresAtMs
+      : now + toNumber(body.ttl_seconds, 86400) * 1000;
     this.tokens.set(agent.name, { token: body.token, expiresAtMs });
     return body.token;
   }

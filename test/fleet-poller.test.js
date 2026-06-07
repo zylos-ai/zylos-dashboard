@@ -85,6 +85,27 @@ test('fleet poller refreshes token after expiry and on state 401', async () => {
   assert.equal(poller.getFleet().agents[0].health_reason, 'idle');
 });
 
+test('fleet poller falls back to ttl when expires_at is invalid', async () => {
+  let now = 0;
+  let tokenCount = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      tokenCount += 1;
+      return jsonResponse({ token: `zylos_st_${tokenCount}`, expires_at: 'not-a-date', ttl_seconds: 3600 });
+    }
+    return jsonResponse({ state: 'IDLE' });
+  };
+
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => now });
+
+  await poller.pollOnce();
+  now = 3000;
+  await poller.pollOnce();
+  assert.equal(tokenCount, 1, 'invalid expires_at should not force every poll to exchange a token');
+});
+
 test('fleet poller maps token 404 and invalid key 401 without blocking other agents', async () => {
   const fetchImpl = async (url) => {
     if (url.includes('old.example.test')) return jsonResponse({ error: 'not_found' }, 404);
@@ -122,4 +143,3 @@ test('fleet poller marks stale successful records offline', async () => {
   assert.equal(poller.getFleet().agents[0].health_reason, 'offline');
   assert.equal(poller.getFleet().agents[0].state, 'OFFLINE');
 });
-

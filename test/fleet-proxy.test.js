@@ -68,6 +68,34 @@ test('fleet proxy injects session token for API and keeps token out of client re
   }
 });
 
+test('fleet proxy blocks reflected session token in proxied response body', async () => {
+  const remote = await listen((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ reflected: req.headers.authorization }));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_reflected_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/debug-echo`);
+    assert.equal(resp.status, 502);
+    const body = await resp.text();
+    assert.match(body, /secret_leak_blocked/);
+    assert.equal(body.includes('Bearer'), false);
+    assert.equal(body.includes('zylos_st_'), false);
+    assert.equal(body.includes('zylos_ak_'), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
 test('fleet proxy refreshes token once when upstream returns 401', async () => {
   const seenAuth = [];
   const remote = await listen((req, res) => {
@@ -100,6 +128,35 @@ test('fleet proxy refreshes token once when upstream returns 401', async () => {
     assert.equal(resp.status, 200);
     assert.deepEqual(tokenRequests, ['cached', 'force']);
     assert.deepEqual(seenAuth, ['Bearer zylos_st_cached', 'Bearer zylos_st_refreshed']);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy rejects unsafe API methods before reaching upstream', async () => {
+  let remoteHit = false;
+  const remote = await listen((_req, res) => {
+    remoteHit = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/state`, {
+      method: 'PUT',
+      body: 'this body must not be proxied'
+    });
+    assert.equal(resp.status, 403);
+    assert.equal(remoteHit, false);
   } finally {
     await hub.close();
     await remote.close();
@@ -139,6 +196,36 @@ test('fleet proxy forwards SSE and blocks action POSTs read-only', async () => {
     const action = await fetch(`${hub.origin}/fleet/Remote/api/actions/upgrade-cc`, { method: 'POST' });
     assert.equal(action.status, 403);
     assert.equal(actionHit, false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy blocks split session token in SSE chunks', async () => {
+  const remote = await listen((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('event: debug\ndata: {"token":"zylos_');
+    setTimeout(() => {
+      res.end('st_split_secret"}\n\n');
+    }, 5);
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/stream`);
+    assert.equal(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, /secret_leak_blocked/);
+    assert.equal(body.includes('zylos_st_'), false);
+    assert.equal(body.includes('Bearer'), false);
   } finally {
     await hub.close();
     await remote.close();
