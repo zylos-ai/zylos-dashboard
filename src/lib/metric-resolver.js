@@ -17,15 +17,21 @@ function dayBoundsUTC(tz, daysBack = 0) {
 
 const METRIC_CHAINS = {
   context_pct: [
+    { metric: 'statusline_summary', source: 'statusline', dimension: 'context_pct', confidence: 'actual' },
+    { metric: 'usage_event', source: 'jsonl_usage', dimension: 'context_pct', confidence: 'actual' },
     { source: 'statusline', confidence: 'actual' },
     { source: 'rollout', confidence: 'actual' },
     { source: 'derived_token_estimate', confidence: 'estimated' }
   ],
   rate_limit: [
+    { metric: 'statusline_summary', source: 'statusline', dimension: 'rate_limit', confidence: 'actual' },
+    { metric: 'usage_event', source: 'jsonl_usage', dimension: 'rate_limit', confidence: 'actual' },
     { source: 'statusline', confidence: 'actual' },
     { source: 'rollout', confidence: 'actual' }
   ],
   rate_limit_7d: [
+    { metric: 'statusline_summary', source: 'statusline', dimension: 'rate_limit_7d', confidence: 'actual' },
+    { metric: 'usage_event', source: 'jsonl_usage', dimension: 'rate_limit_7d', confidence: 'actual' },
     { source: 'statusline', confidence: 'actual' },
     { source: 'rollout', confidence: 'actual' }
   ],
@@ -33,6 +39,7 @@ const METRIC_CHAINS = {
     { source: 'statusline', confidence: 'actual' }
   ],
   session_cost: [
+    { metric: 'statusline_summary', source: 'statusline', dimension: 'session_cost', confidence: 'actual' },
     { source: 'statusline', confidence: 'actual' },
     { source: 'jsonl_usage', confidence: 'actual' },
     { source: 'token_price_estimated', confidence: 'estimated' }
@@ -43,8 +50,30 @@ const METRIC_CHAINS = {
     { source: 'token_price_estimated', confidence: 'estimated' }
   ],
   cache_hit_rate: [
+    { metric: 'statusline_summary', source: 'statusline', dimension: 'cache_hit_rate', confidence: 'actual' },
+    { metric: 'usage_event', source: 'jsonl_usage', dimension: 'cache_hit_rate', confidence: 'actual' },
     { source: 'statusline_current_usage', confidence: 'actual' },
     { source: 'jsonl_usage', confidence: 'actual' }
+  ],
+  cpu_pct: [
+    { metric: 'system_summary', source: 'system', dimension: 'cpu_pct', confidence: 'actual' },
+    { source: 'system', confidence: 'actual' }
+  ],
+  mem_used_bytes: [
+    { metric: 'system_summary', source: 'system', dimension: 'mem_used_bytes', confidence: 'actual' },
+    { source: 'system', confidence: 'actual' }
+  ],
+  mem_total_bytes: [
+    { metric: 'system_summary', source: 'system', dimension: 'mem_total_bytes', confidence: 'actual' },
+    { source: 'system', confidence: 'actual' }
+  ],
+  disk_used_pct: [
+    { metric: 'system_summary', source: 'system', dimension: 'disk_used_pct', confidence: 'actual' },
+    { source: 'system', confidence: 'actual' }
+  ],
+  disk_free_bytes: [
+    { metric: 'system_summary', source: 'system', dimension: 'disk_free_bytes', confidence: 'actual' },
+    { source: 'system', confidence: 'actual' }
   ],
   ttft: [
     { source: 'rollout', confidence: 'actual' }
@@ -115,15 +144,22 @@ export class MetricResolver {
     let preferredSource = chain[0].source;
 
     for (const link of chain) {
-      const latest = this._getLatestMetric(metricName, link.source);
+      const queryMetric = link.metric || metricName;
+      const latest = this._getLatestMetric(queryMetric, link.source);
       if (!latest) continue;
+      const dimensions = latest.dimensions
+        ? (typeof latest.dimensions === 'string' ? JSON.parse(latest.dimensions) : latest.dimensions)
+        : null;
+      const value = link.dimension ? dimensions?.[link.dimension] : latest.metric_value;
+      if (value == null) continue;
 
       const ageMs = now - new Date(latest.timestamp).getTime();
       const fresh = ageMs < this._stalenessThreshold;
 
       alternatives.push({
         source: link.source,
-        value: latest.metric_value,
+        metric: queryMetric,
+        value,
         age_s: Math.floor(ageMs / 1000),
         fresh,
         confidence: link.confidence
@@ -131,10 +167,10 @@ export class MetricResolver {
 
       if (!selectedSource && fresh) {
         selectedSource = link.source;
-        selectedValue = latest.metric_value;
+        selectedValue = value;
         selectedFreshness = Math.floor(ageMs / 1000);
         selectedConfidence = link.confidence;
-        selectedDimensions = latest.dimensions ? (typeof latest.dimensions === 'string' ? JSON.parse(latest.dimensions) : latest.dimensions) : null;
+        selectedDimensions = dimensions;
 
         if (link.source !== preferredSource) {
           fallbackReason = `${preferredSource} data stale or unavailable, using ${link.source}`;
@@ -144,7 +180,8 @@ export class MetricResolver {
 
     if (!selectedSource && alternatives.length > 0) {
       const best = alternatives[0];
-      const latest = this._getLatestMetric(metricName, best.source);
+      const bestLink = chain.find(link => (link.source === best.source) && ((link.metric || metricName) === best.metric));
+      const latest = this._getLatestMetric(best.metric || metricName, best.source);
       selectedSource = best.source;
       selectedValue = best.value;
       selectedFreshness = best.age_s;
@@ -152,6 +189,7 @@ export class MetricResolver {
       selectedDimensions = latest?.dimensions
         ? (typeof latest.dimensions === 'string' ? JSON.parse(latest.dimensions) : latest.dimensions)
         : null;
+      if (bestLink?.dimension && selectedDimensions && selectedDimensions[bestLink.dimension] == null) selectedDimensions = null;
       fallbackReason = `All sources stale, using most recent: ${best.source} (${best.age_s}s old)`;
     }
 

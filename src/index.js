@@ -347,6 +347,15 @@ function periodBounds(period, tz, stateEngine) {
   return undefined;
 }
 
+function latestMetricRow(metricName, source) {
+  const rows = store.queryMetrics({
+    name: metricName,
+    since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    until: new Date().toISOString()
+  }).filter(r => !source || r.source === source);
+  return rows.length > 0 ? rows[rows.length - 1] : null;
+}
+
 function handleApi(req, res, pathname, url) {
   if (pathname === '/api/health') {
     const sourceHealth = stateEngine.getSourceHealth();
@@ -388,14 +397,21 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/system') {
     const pm2Data = pm2Collector.getLatestPM2Data();
     const sysData = systemCollector.getLatestSystemData();
+    const pm2State = store.getAllPm2State?.() || [];
+    const systemSummary = sysData ? null : latestMetricRow('system_summary', 'system');
     const scheduler = readSchedulerStatus(config.zylosDir);
+    const pm2UpdatedAt = pm2State
+      .map(p => p.updated_at)
+      .filter(Boolean)
+      .sort()
+      .at(-1);
     sendJson(res, 200, {
-      pm2: pm2Data ? pm2Data.processes : null,
-      system: sysData || null,
+      pm2: pm2Data ? pm2Data.processes : (pm2State.length > 0 ? pm2State : null),
+      system: sysData || systemSummary?.dimensions || null,
       scheduler: scheduler || null,
       collected_at: {
-        pm2: pm2Data ? new Date(pm2Data.collectedAt).toISOString() : null,
-        system: sysData ? new Date(sysData.collectedAt).toISOString() : null
+        pm2: pm2Data ? new Date(pm2Data.collectedAt).toISOString() : (pm2UpdatedAt || null),
+        system: sysData ? new Date(sysData.collectedAt).toISOString() : (systemSummary?.timestamp || null)
       }
     });
     return true;

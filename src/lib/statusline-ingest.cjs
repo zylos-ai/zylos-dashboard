@@ -69,59 +69,47 @@ function outputStatus(data) {
 function extractMetrics(data) {
   const now = new Date().toISOString();
   const session = data.session_id || null;
-  const metrics = [];
+  const dimensions = {};
 
   if (data.context_window?.used_percentage != null) {
-    metrics.push({
-      timestamp: now, session_id: session,
-      metric_name: 'context_pct', metric_value: data.context_window.used_percentage,
-      source: 'statusline', confidence: 'actual'
-    });
+    dimensions.context_pct = data.context_window.used_percentage;
   }
 
   if (data.cost?.total_cost_usd != null) {
-    metrics.push({
-      timestamp: now, session_id: session,
-      metric_name: 'session_cost', metric_value: data.cost.total_cost_usd,
-      source: 'statusline', confidence: 'actual'
-    });
+    dimensions.session_cost = data.cost.total_cost_usd;
   }
 
   if (data.rate_limits?.five_hour?.used_percentage != null) {
-    const dims5 = { period: '5h' };
-    if (data.rate_limits.five_hour.resets_at != null) dims5.resets_at = data.rate_limits.five_hour.resets_at;
-    metrics.push({
-      timestamp: now, session_id: session,
-      metric_name: 'rate_limit', metric_value: data.rate_limits.five_hour.used_percentage,
-      dimensions: dims5,
-      source: 'statusline', confidence: 'actual'
-    });
+    dimensions.rate_limit = data.rate_limits.five_hour.used_percentage;
+    if (data.rate_limits.five_hour.resets_at != null) dimensions.rate_limit_resets_at = data.rate_limits.five_hour.resets_at;
   }
 
   if (data.rate_limits?.seven_day?.used_percentage != null) {
-    const dims7 = { period: '7d' };
-    if (data.rate_limits.seven_day.resets_at != null) dims7.resets_at = data.rate_limits.seven_day.resets_at;
-    metrics.push({
-      timestamp: now, session_id: session,
-      metric_name: 'rate_limit_7d', metric_value: data.rate_limits.seven_day.used_percentage,
-      dimensions: dims7,
-      source: 'statusline', confidence: 'actual'
-    });
+    dimensions.rate_limit_7d = data.rate_limits.seven_day.used_percentage;
+    if (data.rate_limits.seven_day.resets_at != null) dimensions.rate_limit_7d_resets_at = data.rate_limits.seven_day.resets_at;
   }
 
   const cw = data.context_window?.current_usage;
   if (cw && cw.cache_read_input_tokens != null) {
     const totalIn = (cw.input_tokens || 0) + (cw.cache_creation_input_tokens || 0) + (cw.cache_read_input_tokens || 0);
     if (totalIn > 0) {
-      metrics.push({
-        timestamp: now, session_id: session,
-        metric_name: 'cache_hit_rate', metric_value: cw.cache_read_input_tokens / totalIn,
-        source: 'statusline', confidence: 'actual'
-      });
+      dimensions.cache_hit_rate = cw.cache_read_input_tokens / totalIn;
+      dimensions.input = cw.input_tokens || 0;
+      dimensions.cache_read = cw.cache_read_input_tokens || 0;
+      dimensions.cache_creation = cw.cache_creation_input_tokens || 0;
     }
   }
 
-  return metrics;
+  if (Object.keys(dimensions).length === 0) return [];
+  return [{
+    timestamp: now,
+    session_id: session,
+    metric_name: 'statusline_summary',
+    metric_value: 0,
+    dimensions,
+    source: 'statusline',
+    confidence: 'actual'
+  }];
 }
 
 async function postMetrics(metrics) {
