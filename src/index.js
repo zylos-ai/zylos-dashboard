@@ -124,7 +124,7 @@ if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}"
 // SSE hub
 const sse = new SseHub(15_000);
 
-// 6b. Version checker (polls GitHub every 12h)
+// 6b. Version checker (polls GitHub + npm registry every 12h)
 const versionChecker = new VersionChecker({
   onUpdate: () => {
     if (stateEngine) {
