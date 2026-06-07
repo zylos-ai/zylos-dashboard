@@ -247,6 +247,16 @@ test('self tile drills to local root and external tiles drill to /fleet/<name>/'
   assert.match(html, /href="\/dash\/fleet\/remote\/"/);
 });
 
+test('back-to-fleet control is hidden via [hidden] in single-agent mode (no CSS specificity leak)', () => {
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // The class sets display:inline-flex, so a [hidden] guard is required or the
+  // UA hidden rule is overridden and the button leaks into single-agent mode.
+  assert.match(css, /\.back-to-fleet\[hidden\]\s*\{\s*display:\s*none/);
+  // And single mode must actually set the hidden attribute.
+  assert.match(app, /if \(!state\.multiAgent\)[\s\S]*?backBtn\.hidden = true/);
+});
+
 test('pulse is no longer a peer tab in the tab bar', () => {
   const html = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   assert.doesNotMatch(html, /data-tab="pulse"/);

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent identity + registry — each install resolves a name/id (config `agent.name` → `ZYLOS_AGENT_NAME` → hostname → dir name → `zylos`) used for color and registry membership (#156)
 - Fleet hub backend — `fleet-poller`, `agent-color`, fleet registry, and a token-isolated drill-down proxy (`fleet-proxy`) that never leaks an agent's token to the browser (#156)
 
+### Fixed
+- Hide the "← Fleet" back control in single-agent mode — `.back-to-fleet` set `display: inline-flex`, which overrode the UA `[hidden]` rule, so the control stayed visible even when JS set `hidden = true`. Added a `.back-to-fleet[hidden] { display: none }` guard (same CSS-specificity trap as the earlier `.latency-section` fix)
+
 ## [0.2.0] - 2026-06-03
 
 ### Added

@@ -233,6 +233,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   cursor: pointer;
   transition: all 150ms ease;
 }
+/* The class sets display:inline-flex, which overrides the UA [hidden] rule.
+   Without this guard the back control stays visible in single-agent mode even
+   when JS sets backBtn.hidden = true (same specificity trap as .latency-section). */
+.back-to-fleet[hidden] { display: none; }
 .back-to-fleet:hover { background: var(--bg-elevated); border-color: var(--border-focus); color: var(--text); }
 .back-to-fleet:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .pulse-panel-head {
