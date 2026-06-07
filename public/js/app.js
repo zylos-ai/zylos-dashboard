@@ -1910,7 +1910,7 @@ async function openActionsModal() {
     for (const m of meta.models || []) {
       const opt = document.createElement('option');
       opt.value = m.id;
-      opt.textContent = m.id;
+      opt.textContent = m.display_name || m.id;
       if (m.id === meta.current_model) opt.selected = true;
       modelSel.appendChild(opt);
     }

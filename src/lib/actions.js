@@ -296,7 +296,7 @@ async function switchModel(reqId, body, config, zylosDir) {
 }
 
 function effortsForModel(model) {
-  if (model === 'claude-opus-4-7' || model === 'claude-opus-4-7[1m]') {
+  if (/^(opus|claude-opus-4-[89]|claude-opus-4-[1-9]\d)/.test(model)) {
     return ['low', 'medium', 'high', 'xhigh'];
   }
   return ['low', 'medium', 'high'];
@@ -471,22 +471,31 @@ export function getActionsMeta(config, runtimeInfo) {
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
   const codexModels = runtime === 'codex' ? readCodexModels() : [];
 
+  const claudeModels = [
+    { id: 'opus', display_name: 'Opus (latest)' },
+    { id: 'opus[1m]', display_name: 'Opus [1M] (latest)' },
+    { id: 'sonnet', display_name: 'Sonnet (latest)' },
+    { id: 'sonnet[1m]', display_name: 'Sonnet [1M] (latest)' },
+    { id: 'haiku', display_name: 'Haiku (latest)' },
+    { id: 'claude-opus-4-8' },
+    { id: 'claude-opus-4-8[1m]' },
+    { id: 'claude-opus-4-7' },
+    { id: 'claude-opus-4-7[1m]' },
+    { id: 'claude-opus-4-6' },
+    { id: 'claude-opus-4-6[1m]' },
+    { id: 'claude-sonnet-4-6' },
+    { id: 'claude-haiku-4-5-20251001' },
+  ];
+
   const models = runtime === 'claude'
-    ? [
-        { id: 'claude-opus-4-7' },
-        { id: 'claude-opus-4-7[1m]' },
-        { id: 'claude-opus-4-6' },
-        { id: 'claude-opus-4-6[1m]' },
-        { id: 'claude-sonnet-4-6' }
-      ]
+    ? claudeModels
     : codexModels.map(m => ({ id: m.id }));
 
   const efforts_by_model = runtime === 'claude'
-    ? {
-        'claude-opus-4-7': effortsForModel('claude-opus-4-7'),
-        'claude-opus-4-7[1m]': effortsForModel('claude-opus-4-7[1m]'),
-        '*': ['low', 'medium', 'high']
-      }
+    ? Object.fromEntries([
+        ...claudeModels.map(m => [m.id, effortsForModel(m.id)]),
+        ['*', ['low', 'medium', 'high']]
+      ])
     : Object.fromEntries(codexModels.map(m => [m.id, m.efforts.length ? m.efforts : ['low', 'medium', 'high', 'xhigh']]));
 
   const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
