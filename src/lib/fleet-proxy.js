@@ -55,6 +55,7 @@ function isSseResponse(resp) {
 function createSecretGuard(token) {
   const tokenLiteral = String(token || '');
   return {
+    minTailChars: Math.max(STREAM_GUARD_TAIL_CHARS, Math.max(0, tokenLiteral.length - 1)),
     contains(value) {
       const text = String(value || '');
       return (tokenLiteral && text.includes(tokenLiteral)) || containsSecret(text);
@@ -92,12 +93,13 @@ function guardedSseStream(guard, upstreamStream, onLeak) {
         callback();
         return;
       }
-      if (combined.length <= STREAM_GUARD_TAIL_CHARS) {
+      const tailChars = guard.minTailChars || STREAM_GUARD_TAIL_CHARS;
+      if (combined.length <= tailChars) {
         tail = combined;
         callback();
         return;
       }
-      const safeLength = combined.length - STREAM_GUARD_TAIL_CHARS;
+      const safeLength = combined.length - tailChars;
       this.push(combined.slice(0, safeLength));
       tail = combined.slice(safeLength);
       callback();

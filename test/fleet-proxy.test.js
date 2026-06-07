@@ -288,6 +288,38 @@ test('fleet proxy blocks split session token in SSE chunks', async () => {
   }
 });
 
+test('fleet proxy blocks long opaque session token split beyond default SSE tail', async () => {
+  const token = `opaque-${'x'.repeat(220)}-secret`;
+  const remote = await listen((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`event: debug\ndata: {"token":"${token.slice(0, 170)}`);
+    setTimeout(() => {
+      res.end(`${token.slice(170)}"}\n\n`);
+    }, 5);
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => token }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/stream`);
+    assert.equal(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, /secret_leak_blocked/);
+    assert.equal(body.includes(token), false);
+    assert.equal(body.includes(token.slice(0, 170)), false);
+    assert.equal(body.includes(token.slice(170)), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
 test('fleet proxy blocks reflected session token in SSE response headers', async () => {
   const remote = await listen((req, res) => {
     res.writeHead(200, {
