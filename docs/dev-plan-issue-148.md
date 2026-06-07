@@ -2,7 +2,7 @@
 
 ## Summary
 
-Reduce dashboard.db write volume by aggregating multi-row-per-cycle collectors into single summary rows, implement per-metric-category retention tiers, and add periodic VACUUM for disk reclamation. Currently 4.3 GB / 22M rows from 159 days of operation.
+Reduce dashboard.db write volume by aggregating multi-row-per-cycle collectors into single summary rows, implement per-metric-category retention tiers, and add guarded VACUUM with manual compaction for large DBs. Currently 4.3 GB / 22M rows from 159 days of operation.
 
 ## Scope
 
@@ -12,7 +12,7 @@ Reduce dashboard.db write volume by aggregating multi-row-per-cycle collectors i
 - Statusline collector → single `statusline_summary` row (Claude runtime)
 - Conversation/Codex rollout collectors → single `usage_event` row per turn
 - Tiered retention per metric category (7d–90d depending on type)
-- Periodic VACUUM in maintenance job
+- Guarded VACUUM (auto when DB < 500 MB) + manual compaction procedure for large DBs
 - Dashboard panels updated to read aggregated metrics
 - Codex rollout `usage_event` with stable upsert keys (per Jinglever's comment)
 
