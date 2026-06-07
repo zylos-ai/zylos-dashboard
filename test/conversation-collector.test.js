@@ -61,7 +61,7 @@ function makeMockStore() {
                   const uuid = uuidMatch[1];
                   const exists = metrics.find(m =>
                     m.source === 'jsonl_usage' &&
-                    m.metric_name === 'api_request_tokens' &&
+                    m.metric_name === 'usage_event' &&
                     m.dimensions?.uuid === uuid
                   );
                   return exists ? { '1': 1 } : undefined;
@@ -75,6 +75,10 @@ function makeMockStore() {
       }
     }
   };
+}
+
+function usageMetrics(store) {
+  return store.metrics.filter(m => m.metric_name === 'usage_event');
 }
 
 function makeCollector(store, tmpDir, sessionId = 'test-session-123') {
@@ -106,7 +110,7 @@ test('extracts usage metrics from assistant messages', () => {
   fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-1') + '\n');
   collector.collect();
 
-  const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store);
   assert.equal(tokenMetrics.length, 1);
   assert.equal(tokenMetrics[0].metric_value, 100 + 5000 + 2000); // totalInput
   assert.equal(tokenMetrics[0].dimensions.input, 100);
@@ -116,15 +120,11 @@ test('extracts usage metrics from assistant messages', () => {
   assert.equal(tokenMetrics[0].dimensions.model, 'claude-opus-4-6');
   assert.equal(tokenMetrics[0].dimensions.uuid, 'uuid-1');
 
-  const costMetrics = store.metrics.filter(m => m.metric_name === 'api_request_cost');
-  assert.equal(costMetrics.length, 1);
   // (100 * 5 + 50 * 25 + 5000 * 0.50 + 2000 * 10) / 1_000_000
   const expectedCost = (500 + 1250 + 2500 + 20000) / 1_000_000;
-  assert.ok(Math.abs(costMetrics[0].metric_value - expectedCost) < 0.000001);
+  assert.ok(Math.abs(tokenMetrics[0].dimensions.cost - expectedCost) < 0.000001);
 
-  const cacheMetrics = store.metrics.filter(m => m.metric_name === 'cache_hit_rate');
-  assert.equal(cacheMetrics.length, 1);
-  assert.ok(Math.abs(cacheMetrics[0].metric_value - 5000 / 7100) < 0.0001);
+  assert.ok(Math.abs(tokenMetrics[0].dimensions.cache_hit_rate - 5000 / 7100) < 0.0001);
 
   fs.rmSync(tmpDir, { recursive: true });
 });
@@ -141,7 +141,7 @@ test('extracts usage even when no text content (tool_use only)', () => {
   fs.writeFileSync(jsonlPath, line + '\n');
   collector.collect();
 
-  const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store);
   assert.equal(tokenMetrics.length, 1);
   assert.equal(tokenMetrics[0].metric_value, 200 + 1000 + 500);
 
@@ -182,7 +182,7 @@ test('does not double-count on re-read of same data', () => {
   collector.collect();
   collector.collect(); // second call should not duplicate
 
-  const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store);
   assert.equal(tokenMetrics.length, 1);
 
   fs.rmSync(tmpDir, { recursive: true });
@@ -196,7 +196,7 @@ test('offset persistence prevents duplication on restart', () => {
   fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-4') + '\n');
   collector.collect();
 
-  assert.equal(store.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 1);
+  assert.equal(usageMetrics(store).length, 1);
 
   // Simulate restart: create new collector with same store (which has persisted offset)
   const persistedOffset = store.health['conversation_reader:byte_offset'];
@@ -223,7 +223,7 @@ test('offset persistence prevents duplication on restart', () => {
   collector2.collect();
 
   // No new metrics since offset was restored past existing data
-  assert.equal(store2.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 0);
+  assert.equal(usageMetrics(store2).length, 0);
 
   fs.rmSync(tmpDir, { recursive: true });
 });
@@ -236,7 +236,7 @@ test('uuid dedup prevents double-counting on crash recovery replay', () => {
   fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-replay') + '\n');
   collector.collect();
 
-  assert.equal(store.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 1);
+  assert.equal(usageMetrics(store).length, 1);
 
   // Simulate crash recovery: offset NOT persisted (simulating crash before persist)
   // Create new collector at offset 0 (as if no offset was saved)
@@ -256,7 +256,7 @@ test('uuid dedup prevents double-counting on crash recovery replay', () => {
                 const uuid = uuidMatch[1];
                 const exists = store2.metrics.find(m =>
                   m.source === 'jsonl_usage' &&
-                  m.metric_name === 'api_request_tokens' &&
+                  m.metric_name === 'usage_event' &&
                   m.dimensions?.uuid === uuid
                 );
                 return exists ? { '1': 1 } : undefined;
@@ -273,7 +273,7 @@ test('uuid dedup prevents double-counting on crash recovery replay', () => {
   collector2.collect();
 
   // uuid-replay should NOT be double-counted because dedup check finds it
-  const tokenMetrics = store2.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store2);
   assert.equal(tokenMetrics.length, 1); // still just 1, not 2
 
   fs.rmSync(tmpDir, { recursive: true });
@@ -288,11 +288,10 @@ test('unknown model writes token metrics but skips cost', () => {
   fs.writeFileSync(jsonlPath, line + '\n');
   collector.collect();
 
-  const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store);
   assert.equal(tokenMetrics.length, 1);
 
-  const costMetrics = store.metrics.filter(m => m.metric_name === 'api_request_cost');
-  assert.equal(costMetrics.length, 0);
+  assert.equal(tokenMetrics[0].dimensions.cost, undefined);
 
   fs.rmSync(tmpDir, { recursive: true });
 });
@@ -313,7 +312,7 @@ test('handles malformed JSON lines gracefully', () => {
   fs.writeFileSync(jsonlPath, content);
   collector.collect();
 
-  const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store);
   assert.equal(tokenMetrics.length, 2); // uuid-6 and uuid-8 only
 
   fs.rmSync(tmpDir, { recursive: true });
@@ -329,7 +328,7 @@ test('partial trailing line is not consumed', () => {
   fs.writeFileSync(jsonlPath, content);
   collector.collect();
 
-  const tokenMetrics = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics = usageMetrics(store);
   assert.equal(tokenMetrics.length, 1); // only uuid-9
 
   // Now complete the line
@@ -337,7 +336,7 @@ test('partial trailing line is not consumed', () => {
   fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-9') + '\n' + completeLine + '\n');
   collector.collect();
 
-  const tokenMetrics2 = store.metrics.filter(m => m.metric_name === 'api_request_tokens');
+  const tokenMetrics2 = usageMetrics(store);
   assert.equal(tokenMetrics2.length, 2); // uuid-9 + uuid-10
 
   fs.rmSync(tmpDir, { recursive: true });
@@ -395,7 +394,7 @@ test('session file switch resets offset', () => {
   fs.writeFileSync(pathA, makeJsonlLine('uuid-a1', { sessionId: 'session-a' }) + '\n');
   collector.collect();
 
-  assert.equal(store.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 1);
+  assert.equal(usageMetrics(store).length, 1);
 
   // Switch to session B
   currentSession = 'session-b';
@@ -403,11 +402,11 @@ test('session file switch resets offset', () => {
   fs.writeFileSync(pathB, makeJsonlLine('uuid-b1', { sessionId: 'session-b' }) + '\n');
   collector.collect();
 
-  assert.equal(store.metrics.filter(m => m.metric_name === 'api_request_tokens').length, 2);
+  assert.equal(usageMetrics(store).length, 2);
 
   // Session A data doesn't leak into session B
   const sessionBMetrics = store.metrics.filter(m => m.session_id === 'session-b');
-  assert.equal(sessionBMetrics.length, 3); // tokens + cache_hit_rate + cost
+  assert.equal(sessionBMetrics.length, 1);
 
   fs.rmSync(tmpDir, { recursive: true });
 });
@@ -428,9 +427,9 @@ test('cache rate formula: cache_read / (input + cache_read + cache_creation)', (
   fs.writeFileSync(jsonlPath, line + '\n');
   collector.collect();
 
-  const cacheMetric = store.metrics.find(m => m.metric_name === 'cache_hit_rate');
+  const cacheMetric = usageMetrics(store)[0];
   // cache_read / (input + cache_read + cache_creation) = 8000 / (1000 + 8000 + 1000) = 0.8
-  assert.ok(Math.abs(cacheMetric.metric_value - 0.8) < 0.0001);
+  assert.ok(Math.abs(cacheMetric.dimensions.cache_hit_rate - 0.8) < 0.0001);
 
   fs.rmSync(tmpDir, { recursive: true });
 });

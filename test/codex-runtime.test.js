@@ -17,6 +17,10 @@ function fixture(name) {
   return JSON.parse(fs.readFileSync(path.resolve('test/fixtures/codex', name), 'utf8'));
 }
 
+function usageEvents(store) {
+  return store.queryMetrics({ name: 'usage_event' });
+}
+
 test('Sanitizer preserves safe Codex locator metadata and strips raw payload fields', () => {
   const raw = fixture('pre-tool-use.json');
   const sanitizer = new Sanitizer('/tmp/zylos');
@@ -98,24 +102,14 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   collector._onRuntimeInfo = (info) => runtimeUpdates.push(info);
 
   const written = collector.collect();
-  assert.equal(written, 10);
+  assert.equal(written, 5);
   assert.equal(runtimeUpdates.length, 1);
   assert.equal(runtimeUpdates[0].model_id, 'gpt-5.3-codex');
   assert.equal(runtimeUpdates[0].session_id, 'codex-session-1');
   assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
 
-  const context = store.queryMetrics({ name: 'context_pct' });
-  assert.equal(context.length, 1);
-  assert.equal(context[0].metric_value, 6);
-  assert.equal(context[0].source, 'rollout');
-
-  const rate = store.queryMetrics({ name: 'rate_limit' });
-  assert.equal(rate[0].metric_value, 37.5);
-
-  const weekly = store.queryMetrics({ name: 'rate_limit_7d' });
-  assert.equal(weekly[0].metric_value, 12.25);
-
-  const tokens = store.queryMetrics({ name: 'api_request_tokens' });
+  const tokens = usageEvents(store);
+  assert.equal(tokens.length, 1);
   assert.equal(tokens[0].runtime, 'codex');
   assert.equal(tokens[0].metric_value, 12000);
   assert.equal(tokens[0].dimensions.model, 'gpt-5.3-codex');
@@ -124,6 +118,9 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(tokens[0].dimensions.total_input, 12000);
   assert.equal(tokens[0].dimensions.uncached_input, 9000);
   assert.equal(tokens[0].dimensions.runtime_semantics, 'openai_input_includes_cached');
+  assert.equal(tokens[0].dimensions.context_pct, 6);
+  assert.equal(tokens[0].dimensions.rate_limit, 37.5);
+  assert.equal(tokens[0].dimensions.rate_limit_7d, 12.25);
   const tokenOffset = Buffer.byteLength(`${fixtureText.split('\n')[0]}\n`, 'utf8');
   assert.equal(tokens[0].dimensions.rollout_offset, tokenOffset);
   assert.equal(tokens[0].dimensions.rollout_line, 2);
@@ -144,13 +141,9 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(tokenSeries[0].cache_read_sum, 3000);
   assert.equal(tokenSeries[0].cache_rate, 0.25);
 
-  const cache = store.queryMetrics({ name: 'cache_hit_rate' });
-  assert.equal(cache[0].metric_value, 0.25);
-
-  const cost = store.queryMetrics({ name: 'api_request_cost' });
-  assert.equal(cost.length, 1);
-  assert.equal(cost[0].confidence, 'estimated');
-  assert.ok(Math.abs(cost[0].metric_value - 0.0259) < 0.000001);
+  assert.equal(tokens[0].dimensions.cache_hit_rate, 0.25);
+  assert.equal(tokens[0].dimensions.cost_confidence, 'estimated');
+  assert.ok(Math.abs(tokens[0].dimensions.cost - 0.0259) < 0.000001);
 
   const ttft = store.queryMetrics({ name: 'ttft' });
   assert.equal(ttft[0].metric_value, 987);
@@ -198,16 +191,11 @@ test('CodexRolloutCollector deduplicates metrics when rollout cursor is replayed
   const liveMetrics = [];
   collector._onMetric = (metric) => liveMetrics.push(metric);
 
-  assert.equal(collector.collect(), 10);
+  assert.equal(collector.collect(), 5);
   assert.deepEqual(
     liveMetrics.map(m => m.metric_name),
     [
-      'context_pct',
-      'rate_limit',
-      'rate_limit_7d',
-      'api_request_tokens',
-      'cache_hit_rate',
-      'api_request_cost',
+      'usage_event',
       'turn_duration',
       'ttft'
     ]
@@ -219,13 +207,8 @@ test('CodexRolloutCollector deduplicates metrics when rollout cursor is replayed
   });
 
   assert.equal(collector.collect(), 0);
-  assert.equal(liveMetrics.length, 8);
-  assert.equal(store.queryMetrics({ name: 'context_pct' }).length, 1);
-  assert.equal(store.queryMetrics({ name: 'rate_limit' }).length, 1);
-  assert.equal(store.queryMetrics({ name: 'rate_limit_7d' }).length, 1);
-  assert.equal(store.queryMetrics({ name: 'api_request_tokens' }).length, 1);
-  assert.equal(store.queryMetrics({ name: 'cache_hit_rate' }).length, 1);
-  assert.equal(store.queryMetrics({ name: 'api_request_cost' }).length, 1);
+  assert.equal(liveMetrics.length, 3);
+  assert.equal(usageEvents(store).length, 1);
   assert.equal(store.queryMetrics({ name: 'ttft' }).length, 1);
   assert.equal(store.queryMetrics({ name: 'turn_duration' }).length, 1);
   assert.equal(store.queryEvents({ types: ['turn_complete'] }).length, 1);
@@ -369,7 +352,7 @@ test('CodexRolloutCollector uses rollout position identity when response item ca
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('CodexRolloutCollector backfills rate limits when cursor already passed initial rollout event', () => {
+test('CodexRolloutCollector does not backfill legacy rate-limit rows when cursor already passed initial rollout event', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
   fs.copyFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), rolloutPath);
@@ -388,14 +371,12 @@ test('CodexRolloutCollector backfills rate limits when cursor already passed ini
   });
 
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
-  assert.equal(collector.collect(), 2);
+  assert.equal(collector.collect(), 0);
 
   const rate = store.queryMetrics({ name: 'rate_limit' });
-  assert.equal(rate.length, 1);
-  assert.equal(rate[0].metric_value, 37.5);
+  assert.equal(rate.length, 0);
   const weekly = store.queryMetrics({ name: 'rate_limit_7d' });
-  assert.equal(weekly.length, 1);
-  assert.equal(weekly[0].metric_value, 12.25);
+  assert.equal(weekly.length, 0);
 
   assert.equal(collector.collect(), 0);
 
@@ -485,8 +466,9 @@ test('CodexRolloutCollector skips cost when model price is missing', () => {
   const collector = new CodexRolloutCollector(store, { modelPrices: {} });
   collector.collect();
 
-  assert.equal(store.queryMetrics({ name: 'api_request_tokens' }).length, 1);
-  assert.equal(store.queryMetrics({ name: 'api_request_cost' }).length, 0);
+  const [usage] = usageEvents(store);
+  assert.equal(usage.metric_value, 12000);
+  assert.equal(usage.dimensions.cost, undefined);
   const health = store.getSourceHealth().find(h => h.name === 'codex_cost');
   assert.equal(health.status, 'unavailable');
   assert.equal(health.extra.reason, 'missing_model_price');
@@ -515,10 +497,9 @@ test('CodexRolloutCollector computes cost from default Codex runtime prices', ()
   });
   collector.collect();
 
-  const cost = store.queryMetrics({ name: 'api_request_cost' });
-  assert.equal(cost.length, 1);
-  assert.equal(cost[0].dimensions.model, 'gpt-5.5');
-  assert.ok(Math.abs(cost[0].metric_value - 0.0705) < 0.000001);
+  const [usage] = usageEvents(store);
+  assert.equal(usage.dimensions.model, 'gpt-5.5');
+  assert.ok(Math.abs(usage.dimensions.cost - 0.0705) < 0.000001);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -1073,11 +1054,10 @@ test('CodexRolloutCollector computes cost from Codex priority prices when fast t
   });
   collector.collect();
 
-  const cost = store.queryMetrics({ name: 'api_request_cost' });
-  assert.equal(cost.length, 1);
-  assert.equal(cost[0].dimensions.model, 'gpt-5.3-codex');
-  assert.equal(cost[0].dimensions.service_tier, 'priority');
-  assert.ok(Math.abs(cost[0].metric_value - 0.05495) < 0.000001);
+  const [usage] = usageEvents(store);
+  assert.equal(usage.dimensions.model, 'gpt-5.3-codex');
+  assert.equal(usage.dimensions.service_tier, 'priority');
+  assert.ok(Math.abs(usage.dimensions.cost - 0.05495) < 0.000001);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
