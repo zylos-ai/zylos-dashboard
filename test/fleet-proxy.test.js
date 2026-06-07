@@ -96,6 +96,62 @@ test('fleet proxy blocks reflected session token in proxied response body', asyn
   }
 });
 
+test('fleet proxy blocks reflected session token in proxied response headers', async () => {
+  const remote = await listen((req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'x-echo-auth': req.headers.authorization
+    });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'opaque-session-token' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/header-echo`);
+    assert.equal(resp.status, 502);
+    assert.equal(resp.headers.get('x-echo-auth'), null);
+    const body = await resp.text();
+    assert.match(body, /secret_leak_blocked/);
+    assert.equal(body.includes('opaque-session-token'), false);
+    assert.equal(body.includes('Bearer'), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy blocks reflected session token in HEAD response headers', async () => {
+  const remote = await listen((req, res) => {
+    res.writeHead(204, { 'x-echo-auth': req.headers.authorization });
+    res.end();
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'opaque-head-token' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/header-echo`, { method: 'HEAD' });
+    assert.equal(resp.status, 502);
+    assert.equal(resp.headers.get('x-echo-auth'), null);
+    assert.equal(await resp.text(), '');
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
 test('fleet proxy refreshes token once when upstream returns 401', async () => {
   const seenAuth = [];
   const remote = await listen((req, res) => {
@@ -225,6 +281,37 @@ test('fleet proxy blocks split session token in SSE chunks', async () => {
     const body = await resp.text();
     assert.match(body, /secret_leak_blocked/);
     assert.equal(body.includes('zylos_st_'), false);
+    assert.equal(body.includes('Bearer'), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy blocks reflected session token in SSE response headers', async () => {
+  const remote = await listen((req, res) => {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'x-echo-auth': req.headers.authorization
+    });
+    res.end('event: state_change\ndata: {"ok":true}\n\n');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'opaque-sse-token' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/stream`);
+    assert.equal(resp.status, 502);
+    assert.equal(resp.headers.get('x-echo-auth'), null);
+    const body = await resp.text();
+    assert.match(body, /secret_leak_blocked/);
+    assert.equal(body.includes('opaque-sse-token'), false);
     assert.equal(body.includes('Bearer'), false);
   } finally {
     await hub.close();

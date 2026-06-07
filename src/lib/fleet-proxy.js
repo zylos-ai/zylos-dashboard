@@ -52,7 +52,26 @@ function isSseResponse(resp) {
   return /\btext\/event-stream\b/i.test(resp.headers.get('content-type') || '');
 }
 
-function guardedSseStream(onLeak) {
+function createSecretGuard(token) {
+  const tokenLiteral = String(token || '');
+  return {
+    contains(value) {
+      const text = String(value || '');
+      return (tokenLiteral && text.includes(tokenLiteral)) || containsSecret(text);
+    }
+  };
+}
+
+function headersContainSecret(headers, guard) {
+  for (const [name, value] of Object.entries(headers || {})) {
+    if (guard.contains(name)) return true;
+    const values = Array.isArray(value) ? value : [value];
+    if (values.some(v => guard.contains(v))) return true;
+  }
+  return false;
+}
+
+function guardedSseStream(guard, upstreamStream, onLeak) {
   let tail = '';
   let leaked = false;
   return new Transform({
@@ -63,10 +82,13 @@ function guardedSseStream(onLeak) {
       }
       const text = chunk.toString('utf8');
       const combined = tail + text;
-      if (containsSecret(combined)) {
+      if (guard.contains(combined)) {
         leaked = true;
+        try { upstreamStream?.unpipe?.(this); } catch { /* upstream already closed */ }
+        try { upstreamStream?.destroy?.(); } catch { /* upstream already closed */ }
         onLeak();
         this.push('event: proxy_error\ndata: {"error":"secret_leak_blocked"}\n\n');
+        this.push(null);
         callback();
         return;
       }
@@ -163,35 +185,60 @@ export class FleetProxy {
       return;
     }
 
+    const guard = createSecretGuard(token);
     if (req.method === 'HEAD') {
       const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
       responseHeaders['cache-control'] = 'no-store';
+      if (headersContainSecret(responseHeaders, guard)) {
+        process.stderr.write(`[fleet-proxy] blocked secret-bearing response headers from ${agent.name} ${suffix}\n`);
+        sendJson(res, 502, { error: 'secret_leak_blocked' });
+        return;
+      }
       res.writeHead(remoteResp.status, responseHeaders);
       res.end();
       return;
     }
     if (!remoteResp.body) {
+      const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
+      responseHeaders['cache-control'] = 'no-store';
+      if (headersContainSecret(responseHeaders, guard)) {
+        process.stderr.write(`[fleet-proxy] blocked secret-bearing response headers from ${agent.name} ${suffix}\n`);
+        sendJson(res, 502, { error: 'secret_leak_blocked' });
+        return;
+      }
+      res.writeHead(remoteResp.status, responseHeaders);
       res.end();
       return;
     }
     if (isSseResponse(remoteResp)) {
       const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
       responseHeaders['cache-control'] = 'no-store';
+      if (headersContainSecret(responseHeaders, guard)) {
+        process.stderr.write(`[fleet-proxy] blocked secret-bearing SSE headers from ${agent.name} ${suffix}\n`);
+        sendJson(res, 502, { error: 'secret_leak_blocked' });
+        return;
+      }
       res.writeHead(remoteResp.status, responseHeaders);
-      const guarded = guardedSseStream(() => {
+      const upstream = Readable.fromWeb(remoteResp.body);
+      const guarded = guardedSseStream(guard, upstream, () => {
         process.stderr.write(`[fleet-proxy] blocked secret-bearing SSE response from ${agent.name}\n`);
       });
-      Readable.fromWeb(remoteResp.body).pipe(guarded).pipe(res);
+      upstream.pipe(guarded).pipe(res);
     } else {
       const buffer = Buffer.from(await remoteResp.arrayBuffer());
       const text = buffer.toString('utf8');
-      if (containsSecret(text)) {
+      if (guard.contains(text)) {
         process.stderr.write(`[fleet-proxy] blocked secret-bearing response from ${agent.name} ${suffix}\n`);
         sendJson(res, 502, { error: 'secret_leak_blocked' });
         return;
       }
       const responseHeaders = stripHopByHop(Object.fromEntries(remoteResp.headers.entries()));
       responseHeaders['cache-control'] = 'no-store';
+      if (headersContainSecret(responseHeaders, guard)) {
+        process.stderr.write(`[fleet-proxy] blocked secret-bearing response headers from ${agent.name} ${suffix}\n`);
+        sendJson(res, 502, { error: 'secret_leak_blocked' });
+        return;
+      }
       res.writeHead(remoteResp.status, responseHeaders);
       res.end(buffer);
     }
