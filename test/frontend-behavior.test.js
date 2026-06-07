@@ -182,6 +182,29 @@ test('multi-agent vs single mode landing view is gated on fleet size', () => {
   assert.match(app, /applyFleetMode\(fleet\)/);
 });
 
+test('fleet ↔ agent view transition is wired with a graceful fallback', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  // Both top-level views live in a shared grid stack and carry the app-view class.
+  assert.match(index, /id="view-stack"/);
+  assert.match(index, /id="fleet-view"[^>]*class="[^"]*app-view|class="[^"]*app-view[^"]*"[^>]*id="fleet-view"/);
+  assert.match(index, /id="agent-detail"[^>]*class="[^"]*app-view|class="[^"]*app-view[^"]*"[^>]*id="agent-detail"/);
+  // The animated transition helper exists and is used by both directions.
+  assert.match(app, /function transitionView\(target/);
+  assert.match(app, /transitionView\('fleet'/);
+  assert.match(app, /transitionView\('agent'/);
+  // Graceful fallback: reduced motion / missing stack / already-active → instant swap.
+  assert.match(app, /prefersReducedMotion\(\)/);
+  // First-load deliberately dwells on the single-agent page, then zooms to the wall.
+  assert.match(app, /setTimeout\(\(\) => showFleetView\(\{ animate: true \}\), \d+\)/);
+  // CSS defines the stack and the zoom enter/leave states.
+  assert.match(css, /\.view-stack\s*\{\s*display:\s*grid/);
+  assert.match(css, /\.app-view\.v-enter/);
+  assert.match(css, /\.app-view\.v-leave-to-fleet/);
+  assert.match(css, /\.app-view\.v-leave-to-agent/);
+});
+
 test('self tile drills to local root and external tiles drill to /fleet/<name>/', () => {
   const selfFleet = {
     updated_at: '2026-06-07T15:20:00.000Z',

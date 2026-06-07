@@ -7,11 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=12">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=13">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=19"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=20"></script>
 </head>
 <body>
 <header class="app-header">
@@ -25,8 +25,9 @@
   </div>
 </header>
 
+<div class="view-stack" id="view-stack">
 <!-- Fleet (Pulse Wall) — top-level landing view in multi-agent mode -->
-<section class="fleet-view" id="fleet-view" hidden>
+<section class="fleet-view app-view" id="fleet-view" hidden>
   <div class="pulse-panel-head">
     <div>
       <h1 data-i18n="pulse.title">Pulse Wall</h1>
@@ -38,7 +39,7 @@
 </section>
 
 <!-- Single-agent dashboard / agent-detail view -->
-<div class="agent-detail" id="agent-detail">
+<div class="agent-detail app-view" id="agent-detail">
 <button class="back-to-fleet" id="back-to-fleet" type="button" hidden data-i18n="pulse.back_to_fleet">← Fleet</button>
 
 <nav class="tab-bar" aria-label="Dashboard sections">
@@ -348,6 +349,7 @@
     </div>
   </section>
 </main>
+</div>
 </div>
 </body>
 </html>

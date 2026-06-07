@@ -184,6 +184,36 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .tab-panel[hidden] { display: none; }
 
+/* ─── Top-level view stack (fleet wall ↔ agent detail) ─── */
+/* Both top-level views share one grid cell so they can cross-fade/zoom
+   over each other during a transition without layout shift. When idle, the
+   inactive view is [hidden] (display:none) so only the active view sizes the
+   container and receives input. */
+.view-stack { display: grid; }
+.view-stack > .app-view { grid-area: 1 / 1; min-width: 0; }
+.app-view {
+  opacity: 1;
+  transform: none;
+  transition: opacity 280ms ease, transform 280ms ease;
+}
+.app-view[hidden] { display: none; }
+/* Keep both views rendered (and stacked) while a transition is in flight,
+   even though the leaving view will get the hidden attribute at the end. */
+.view-stack.is-animating > .app-view.is-leaving,
+.view-stack.is-animating > .app-view.is-entering { display: block; }
+/* The outgoing view shouldn't capture clicks while it fades away. */
+.view-stack.is-animating > .app-view.is-leaving { pointer-events: none; }
+/* Entering view starts slightly small + transparent, then settles to base. */
+.app-view.v-enter { opacity: 0; transform: scale(0.985); }
+/* Leaving view fades out; direction sets the zoom sense:
+   to-fleet → the single agent recedes (scales down, "zoom out to fleet");
+   to-agent → the wall is pushed through (scales up, "zoom into agent"). */
+.app-view.v-leave-to-fleet { opacity: 0; transform: scale(0.965); }
+.app-view.v-leave-to-agent { opacity: 0; transform: scale(1.025); }
+@media (prefers-reduced-motion: reduce) {
+  .app-view { transition: none; }
+}
+
 /* ─── Fleet view / Pulse Wall ─── */
 .fleet-view {
   padding: var(--space-md) var(--space-lg) var(--space-xl);

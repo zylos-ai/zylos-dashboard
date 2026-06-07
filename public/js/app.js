@@ -1123,23 +1123,85 @@ function activeTabName() {
 // In multi-agent mode the Pulse Wall is the top-level landing view and the
 // single-agent dashboard is the "agent detail" view, reached by clicking the
 // self tile. In single mode only the agent dashboard exists.
-function showFleetView() {
-  if (!state.multiAgent) return;
-  state.fleetViewActive = true;
+const VIEW_ANIM_CLASSES = ['is-entering', 'is-leaving', 'v-enter', 'v-leave-to-fleet', 'v-leave-to-agent'];
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// Animate between the two top-level views (fleet wall ↔ agent detail). The two
+// views share a grid cell (#view-stack), so a cross-fade + subtle zoom reads as
+// "zoom out to the fleet" / "zoom into one agent". Falls back to an instant swap
+// when animation is unavailable or unwanted (reduced motion, no stack, already
+// showing the target).
+function transitionView(target, { animate = true } = {}) {
+  const stack = $('#view-stack');
   const fleetView = $('#fleet-view');
   const agentDetail = $('#agent-detail');
-  if (fleetView) fleetView.hidden = false;
-  if (agentDetail) agentDetail.hidden = true;
+  if (!fleetView || !agentDetail) return;
+  const inEl = target === 'fleet' ? fleetView : agentDetail;
+  const outEl = target === 'fleet' ? agentDetail : fleetView;
+
+  const cleanup = () => {
+    [inEl, outEl].forEach((el) => el.classList.remove(...VIEW_ANIM_CLASSES));
+    if (stack) stack.classList.remove('is-animating');
+  };
+
+  const alreadyActive = !inEl.hidden && outEl.hidden;
+  if (!animate || !stack || alreadyActive || prefersReducedMotion()) {
+    inEl.hidden = false;
+    outEl.hidden = true;
+    cleanup();
+    return;
+  }
+
+  const leaveClass = target === 'fleet' ? 'v-leave-to-fleet' : 'v-leave-to-agent';
+  // Render both views during the transition.
+  stack.classList.add('is-animating');
+  inEl.classList.add('is-entering', 'v-enter');
+  inEl.hidden = false;
+  outEl.classList.add('is-leaving');
+  outEl.hidden = false;
+  // Force reflow so the v-enter start state is applied before we animate away.
+  void inEl.offsetWidth;
+
+  const token = {};
+  inEl._viewAnimToken = token;
+
+  requestAnimationFrame(() => {
+    if (inEl._viewAnimToken !== token) return;
+    inEl.classList.remove('v-enter');
+    outEl.classList.add(leaveClass);
+  });
+
+  let done = false;
+  const finish = () => {
+    if (done || inEl._viewAnimToken !== token) return;
+    done = true;
+    inEl.removeEventListener('transitionend', onEnd);
+    outEl.hidden = true;
+    cleanup();
+  };
+  const onEnd = (e) => {
+    if (e.target !== inEl) return;
+    if (e.propertyName !== 'opacity' && e.propertyName !== 'transform') return;
+    finish();
+  };
+  inEl.addEventListener('transitionend', onEnd);
+  setTimeout(finish, 460); // fallback if transitionend doesn't fire
+}
+
+function showFleetView(opts = {}) {
+  if (!state.multiAgent) return;
+  state.fleetViewActive = true;
   refreshFleet().catch(() => {});
+  transitionView('fleet', opts);
   syncFleetPolling();
 }
 
-function showAgentDetail() {
+function showAgentDetail(opts = {}) {
   state.fleetViewActive = false;
-  const fleetView = $('#fleet-view');
-  const agentDetail = $('#agent-detail');
-  if (fleetView) fleetView.hidden = true;
-  if (agentDetail) agentDetail.hidden = false;
+  transitionView('agent', opts);
   syncFleetPolling();
 }
 
@@ -1304,9 +1366,20 @@ function applyFleetMode(fleet) {
     syncFleetPolling();
     return;
   }
-  // Multi-agent mode: Pulse Wall is the landing view; back control available.
+  // Multi-agent mode: the Pulse Wall is the landing view. The first paint shows
+  // the single-agent dashboard (it is the safe default if JS/fleet fails), so
+  // rather than swap instantly we briefly let it settle, then zoom out to the
+  // wall — turning the unavoidable first frame into a deliberate transition.
   if (backBtn) backBtn.hidden = false;
-  showFleetView();
+  state.fleetViewActive = false;
+  if (fleetView) fleetView.hidden = true;
+  if (agentDetail) agentDetail.hidden = false;
+  syncFleetPolling();
+  if (prefersReducedMotion()) {
+    showFleetView({ animate: false });
+  } else {
+    setTimeout(() => showFleetView({ animate: true }), 380);
+  }
 }
 
 function initFleetMode() {
