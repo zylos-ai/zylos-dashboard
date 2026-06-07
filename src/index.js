@@ -31,6 +31,8 @@ import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { runMetricMaintenance } from './lib/metric-maintenance.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
+import { FleetPoller } from './lib/fleet-poller.js';
+import { FleetProxy } from './lib/fleet-proxy.js';
 import { C4Reader } from './lib/c4-reader.js';
 import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
@@ -238,6 +240,7 @@ const c4Reader = new C4Reader(config.zylosDir);
 
 // 9. Ingest handler (with state engine reference)
 const ingestHandler = new IngestHandler(store, sanitizer, stateEngine, config);
+const fleetPoller = new FleetPoller(config);
 
 async function startupSequence() {
   // Initial collector runs
@@ -389,6 +392,17 @@ function handleApi(req, res, pathname, url) {
     const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
     stateData.new_session_threshold = parseInt(zylosCfg[thresholdKey], 10) || (runtime === 'codex' ? 75 : 70);
     sendJson(res, 200, stateData);
+    return true;
+  }
+
+  if (pathname === '/api/fleet') {
+    const fleetData = fleetPoller.getFleet();
+    const payload = JSON.stringify(fleetData);
+    if (payload.includes('read_api_key') || payload.includes('read_session_token') || payload.includes('zylos_ak_') || payload.includes('zylos_st_')) {
+      sendJson(res, 500, { error: 'fleet_secret_leak_guard' });
+      return true;
+    }
+    sendJson(res, 200, fleetData);
     return true;
   }
 
@@ -815,6 +829,7 @@ async function handleStatuslineIngest(req, res) {
 
 export function createServer() {
   const rootDir = publicDir();
+  const fleetProxy = new FleetProxy({ config, rootDir, poller: fleetPoller });
 
   function renderIndex(req, res) {
     const browserBase = browserBaseFromRequest(req);
@@ -861,6 +876,11 @@ export function createServer() {
     }
 
     if (await auth.handle(req, res, url)) {
+      return;
+    }
+
+    if (pathname.startsWith('/fleet/')) {
+      await fleetProxy.handle(req, res, url);
       return;
     }
 
@@ -937,6 +957,7 @@ if (isMain && process.argv.includes('--smoke')) {
   store.close();
 } else if (isMain) {
   await startupSequence();
+  fleetPoller.start();
 
   const server = createServer();
   server.on('error', (err) => {

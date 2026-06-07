@@ -377,7 +377,7 @@ export class AuthGate {
     }
 
     const apiAuth = this.getApiAuth(req);
-    if (apiAuth && pathname.startsWith('/api/')) {
+    if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/'))) {
       const needsAdmin = pathname.startsWith('/api/actions') ||
         (pathname === '/api/settings' && req.method === 'PUT');
       if (needsAdmin && apiAuth.scope !== 'admin') {

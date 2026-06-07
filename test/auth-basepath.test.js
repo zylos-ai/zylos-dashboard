@@ -235,6 +235,39 @@ test('/api/state exposes stable agent identity without fleet secrets', async () 
   }
 });
 
+test('/api/fleet exposes safe records without registry secrets', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', {
+    auth: { enabled: false },
+    fleet: {
+      agents: [
+        {
+          name: 'Remote',
+          base_url: 'https://remote.example.test/dashboard',
+          read_api_key: 'zylos_ak_secret'
+        }
+      ]
+    }
+  });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const resp = await fetch(`${origin}/api/fleet`);
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    assert.equal(body.count, 1);
+    assert.equal(body.agents[0].name, 'Remote');
+    assert.equal(body.agents[0].health_reason, 'not_polled');
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes('zylos_ak_secret'), false);
+    assert.equal(serialized.includes('read_api_key'), false);
+    assert.equal(serialized.includes('read_session_token'), false);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 test('ingest endpoints reject proxied requests', async () => {
   const { origin, server } = await makeServer();
   try {

@@ -1,0 +1,146 @@
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import test from 'node:test';
+import { publicDir } from '../src/lib/config.js';
+import { FleetProxy } from '../src/lib/fleet-proxy.js';
+
+async function listen(handler) {
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    server,
+    close: () => new Promise(resolve => server.close(resolve))
+  };
+}
+
+test('fleet proxy serves hub static frontend under agent prefix without secrets', async () => {
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: 'http://remote.invalid', read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/`);
+    assert.equal(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, /\/fleet\/Remote\/_assets/);
+    assert.equal(body.includes('zylos_ak_secret'), false);
+    assert.equal(body.includes('zylos_st_secret'), false);
+  } finally {
+    await hub.close();
+  }
+});
+
+test('fleet proxy injects session token for API and keeps token out of client response', async () => {
+  let seenAuth = null;
+  const remote = await listen((req, res) => {
+    seenAuth = req.headers.authorization;
+    res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'bad=secret' });
+    res.end(JSON.stringify({ ok: true, path: req.url }));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/state?x=1`);
+    assert.equal(resp.status, 200);
+    assert.equal(resp.headers.get('set-cookie'), null);
+    assert.equal(seenAuth, 'Bearer zylos_st_secret');
+    const body = await resp.text();
+    assert.match(body, /"ok":true/);
+    assert.equal(body.includes('zylos_st_secret'), false);
+    assert.equal(body.includes('zylos_ak_secret'), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy refreshes token once when upstream returns 401', async () => {
+  const seenAuth = [];
+  const remote = await listen((req, res) => {
+    seenAuth.push(req.headers.authorization);
+    if (seenAuth.length === 1) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'expired' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  const tokenRequests = [];
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: {
+      getSessionToken: async (_name, options = {}) => {
+        tokenRequests.push(options.force ? 'force' : 'cached');
+        return options.force ? 'zylos_st_refreshed' : 'zylos_st_cached';
+      }
+    }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/state`);
+    assert.equal(resp.status, 200);
+    assert.deepEqual(tokenRequests, ['cached', 'force']);
+    assert.deepEqual(seenAuth, ['Bearer zylos_st_cached', 'Bearer zylos_st_refreshed']);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy forwards SSE and blocks action POSTs read-only', async () => {
+  let sseAuth = null;
+  let actionHit = false;
+  const remote = await listen((req, res) => {
+    if (req.url === '/api/stream') {
+      sseAuth = req.headers.authorization;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end('event: state_change\ndata: {"ok":true}\n\n');
+      return;
+    }
+    if (req.url.startsWith('/api/actions/')) actionHit = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const sse = await fetch(`${hub.origin}/fleet/Remote/api/stream`);
+    assert.equal(sse.status, 200);
+    assert.match(sse.headers.get('content-type'), /text\/event-stream/);
+    assert.equal(await sse.text(), 'event: state_change\ndata: {"ok":true}\n\n');
+    assert.equal(sseAuth, 'Bearer zylos_st_secret');
+
+    const action = await fetch(`${hub.origin}/fleet/Remote/api/actions/upgrade-cc`, { method: 'POST' });
+    assert.equal(action.status, 403);
+    assert.equal(actionHit, false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
