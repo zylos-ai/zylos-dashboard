@@ -24,23 +24,57 @@ function fetchLatestTag(repo) {
   });
 }
 
+export function fetchNpmLatest(pkg) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(`https://registry.npmjs.org/${encodeURIComponent(pkg)}/latest`, {
+      headers: { 'User-Agent': 'zylos-dashboard', Accept: 'application/json' },
+      timeout: 15000,
+    }, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode === 404) return resolve(null);
+        if (res.statusCode !== 200) return reject(new Error(`npm registry ${res.statusCode}`));
+        try {
+          const version = JSON.parse(data).version;
+          resolve(typeof version === 'string' && version ? version : null);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
 export class VersionChecker {
-  constructor({ onUpdate } = {}) {
-    this._latest = { zylos: null, cc: null };
+  constructor({
+    onUpdate,
+    fetchZylosLatest = () => fetchLatestTag('zylos-ai/zylos-core'),
+    fetchCcLatest = () => fetchLatestTag('anthropics/claude-code'),
+    fetchCodexLatest = fetchNpmLatest,
+  } = {}) {
+    this._latest = { zylos: null, cc: null, codex: null };
     this._onUpdate = onUpdate || null;
+    this._fetchZylosLatest = fetchZylosLatest;
+    this._fetchCcLatest = fetchCcLatest;
+    this._fetchCodexLatest = fetchCodexLatest;
     this._timer = null;
   }
 
   async check() {
     const results = await Promise.allSettled([
-      fetchLatestTag('zylos-ai/zylos-core'),
-      fetchLatestTag('anthropics/claude-code'),
+      this._fetchZylosLatest(),
+      this._fetchCcLatest(),
+      this._fetchCodexLatest('@openai/codex'),
     ]);
     if (results[0].status === 'fulfilled' && results[0].value) {
       this._latest.zylos = results[0].value;
     }
     if (results[1].status === 'fulfilled' && results[1].value) {
       this._latest.cc = results[1].value;
+    }
+    if (results[2].status === 'fulfilled' && results[2].value) {
+      this._latest.codex = results[2].value;
     }
     if (this._onUpdate) this._onUpdate(this._latest);
   }

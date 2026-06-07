@@ -12,10 +12,20 @@ test('prompt source transient display is capped at 5 seconds', () => {
 
 test('runtime info upgrade badges use semver-aware comparison', () => {
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
-  assert.match(index, /isNewerVersion\(latest\.cc, ccEffective\)/);
-  assert.match(index, /isNewerVersion\(latest\.zylos, zylosVersion\)/);
+  const runtimeInfo = fs.readFileSync(path.resolve('src/lib/runtime-info.js'), 'utf8');
+  assert.match(runtimeInfo, /isNewerVersion\(latest\.cc, ccEffectiveVersion\)/);
+  assert.match(runtimeInfo, /isNewerVersion\(latest\.zylos, zylosVersion\)/);
+  assert.match(runtimeInfo, /isNewerVersion\(latest\.codex, codexInstalledVersion\)/);
+  assert.match(index, /applyVersionUpdateFields\(info, latest,/);
   assert.doesNotMatch(index, /latest\.cc !== ccEffective/);
   assert.doesNotMatch(index, /latest\.zylos !== zylosVersion/);
+});
+
+test('Codex runtime renders CLI update badge in info bar and actions modal', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  assert.match(app, /if \(ri\.codex_update\) cv \+=/);
+  assert.match(app, /const cliUpdate = meta\.runtime_cli === 'codex' \? ri\?\.codex_update : ri\?\.cc_update;/);
+  assert.match(app, /ccVer\.classList\.toggle\('action-ver-dot', !!cliUpdate\)/);
 });
 
 test('upgrade-zylos writes a restart marker and uses double-fork spawning', () => {

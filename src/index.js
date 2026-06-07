@@ -35,6 +35,7 @@ import { C4Reader } from './lib/c4-reader.js';
 import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
 import { isNewerVersion } from './lib/version-utils.js';
+import { applyVersionUpdateFields } from './lib/runtime-info.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
@@ -176,16 +177,13 @@ function buildRuntimeInfo() {
   if (ccInstalledVersion && ccRunning && isNewerVersion(ccInstalledVersion, ccRunning)) {
     info.cc_restart = ccInstalledVersion;
   }
-  // upgrade button: installed != GitHub latest → show upgrade dot
+  // upgrade button: installed != latest → show upgrade dot
   const ccEffective = ccInstalledVersion || ccRunning;
-  if (latest.cc && ccEffective && isNewerVersion(latest.cc, ccEffective)) {
-    info.cc_update = latest.cc;
-  }
-  // same pattern for zylos
-  if (latest.zylos && zylosVersion && isNewerVersion(latest.zylos, zylosVersion)) {
-    info.zylos_update = latest.zylos;
-  }
-  return info;
+  return applyVersionUpdateFields(info, latest, {
+    zylosVersion,
+    ccEffectiveVersion: ccEffective,
+    codexInstalledVersion,
+  });
 }
 
 // 7. State engine
