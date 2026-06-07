@@ -382,6 +382,7 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/state') {
     const stateData = stateEngine.getState();
+    stateData.agent = config.agent;
     stateData.runtime_info = buildRuntimeInfo();
     const zylosCfg = loadZylosConfig(config.zylosDir);
     const runtime = zylosCfg.runtime || 'claude';

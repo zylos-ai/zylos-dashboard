@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { validateFleetRegistry } from './fleet-registry.js';
 
 export const DEFAULT_CLAUDE_MODEL_PRICES = {
   'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
@@ -64,6 +65,25 @@ export function getDataDir(zylosDir = getZylosDir()) {
   return path.join(zylosDir, 'components', 'dashboard');
 }
 
+function slugifyIdentity(value) {
+  const slug = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'zylos';
+}
+
+export function resolveAgentIdentity(loaded = {}, zylosDir = getZylosDir()) {
+  const configured = loaded.agent && typeof loaded.agent === 'object' && !Array.isArray(loaded.agent)
+    ? loaded.agent
+    : {};
+  const fallbackName = process.env.ZYLOS_AGENT_NAME || os.hostname() || path.basename(zylosDir) || 'zylos';
+  const name = String(configured.name || loaded.agentName || fallbackName).trim() || fallbackName;
+  const id = String(configured.id || loaded.agentId || slugifyIdentity(name)).trim() || slugifyIdentity(name);
+  return { name, id };
+}
+
 export function loadConfig() {
   const zylosDir = getZylosDir();
   const dataDir = getDataDir(zylosDir);
@@ -118,6 +138,7 @@ export function loadConfig() {
       }
     }
   };
+  const fleetRegistry = validateFleetRegistry(loaded.fleet?.agents);
 
   return {
     ...defaults,
@@ -135,6 +156,12 @@ export function loadConfig() {
     modelPrices: runtimeModelPrices.claude,
     runtimeFastModeMultipliers,
     fastModeMultiplier: runtimeFastModeMultipliers.claude,
+    agent: resolveAgentIdentity(loaded, zylosDir),
+    fleet: {
+      ...(loaded.fleet || {}),
+      agents: fleetRegistry.agents,
+      validation_errors: fleetRegistry.errors
+    },
     configPath,
     configError: loaded.configError || null
   };

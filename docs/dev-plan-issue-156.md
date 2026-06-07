@@ -34,7 +34,7 @@ Build a cross-instance fleet view ("Pulse Wall") on top of the existing read-sco
 
 ### Phase 0 — Prerequisites (foundational, no UI)
 - [ ] Add a stable instance identity field to `/api/state` (e.g. `agent.name` / `agent.id`), sourced from config; default sensibly if unset. NB: existing `agent_id` is per-subagent — do **not** overload it.
-- [ ] Fleet registry config schema: list of `{ name, base_url, read_api_key }`. Decide storage (config file vs `store.js` table) and document; keep `read_api_key` out of any client-served path.
+- [ ] Fleet registry config schema: `fleet.agents` list in the dashboard server config file (`~/zylos/components/dashboard/config.json`), with each entry `{ name, base_url, read_api_key }`. `read_api_key` is a hub-only secret in server-side config; keep it out of any client-served path.
 - [ ] **Static registry validation only (Phase 0 makes NO remote requests):** validate each entry's schema — name non-empty/unique, base_url well-formed, `read_api_key` present. The runtime capability/reachability probe (actually calling `/api/auth/token`, deciding `unreachable`/`version_unsupported`) and `health_reason` assignment live in the Phase 1 poller — Phase 0 must not stand up a half-formed poller.
 - [ ] Unit tests: identity field present/typed in `/api/state`; static registry parse/validation (missing fields, dup names, empty list, malformed URL).
 
