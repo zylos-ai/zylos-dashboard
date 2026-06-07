@@ -31,8 +31,9 @@ import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { runMetricMaintenance } from './lib/metric-maintenance.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
-import { FleetPoller } from './lib/fleet-poller.js';
+import { FleetPoller, buildSelfRecord } from './lib/fleet-poller.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
+import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
 import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
@@ -397,6 +398,17 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/fleet') {
     const fleetData = fleetPoller.getFleet();
+    // Inject the local agent ("self") as the first record, built from the
+    // in-process state/metrics — never an HTTP call to self. It has no secrets.
+    const selfRecord = buildSelfRecord({
+      name: config.agent?.name,
+      color: agentColor(config.agent?.name),
+      state: stateEngine.getState(),
+      contextPct: metricResolver.resolve('context_pct').value,
+      cost: metricResolver.resolve('session_cost').value ?? metricResolver.resolve('daily_cost').value
+    });
+    fleetData.agents = [selfRecord, ...fleetData.agents];
+    fleetData.count = fleetData.agents.length;
     const payload = JSON.stringify(fleetData);
     if (payload.includes('read_api_key') || payload.includes('read_session_token') || payload.includes('zylos_ak_') || payload.includes('zylos_st_')) {
       sendJson(res, 500, { error: 'fleet_secret_leak_guard' });
@@ -927,7 +939,7 @@ export function createServer() {
       return;
     }
 
-    if (pathname === '/' || pathname === '/index.html' || pathname === '/pulse' || pathname === '/trends') {
+    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends') {
       renderIndex(req, res);
       return;
     }

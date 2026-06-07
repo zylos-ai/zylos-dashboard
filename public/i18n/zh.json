@@ -1,7 +1,6 @@
 {
   "app.title": "Zylos Dashboard",
   "tab.overview": "总览",
-  "tab.pulse": "Pulse Wall",
   "tab.trends": "趋势",
   "block.runtime": "实时运行状态",
   "block.capacity": "容量与成本",
@@ -223,6 +222,8 @@
   "pulse.empty": "未配置 fleet agent",
   "pulse.minutes_ago": "{count} 分钟前",
   "pulse.hours_ago": "{count} 小时前",
+  "pulse.you": "本机",
+  "pulse.back_to_fleet": "← 集群",
   "reset.now": "现在",
   "reset.days": "{d} 天 {h} 小时后",
   "reset.hours": "{h} 小时 {m} 分后",

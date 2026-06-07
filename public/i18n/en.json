@@ -1,7 +1,6 @@
 {
   "app.title": "Zylos Dashboard",
   "tab.overview": "Overview",
-  "tab.pulse": "Pulse Wall",
   "tab.trends": "Trends",
   "block.runtime": "Live Runtime State",
   "block.capacity": "Capacity & Cost",
@@ -223,6 +222,8 @@
   "pulse.empty": "No fleet agents configured",
   "pulse.minutes_ago": "{count}m ago",
   "pulse.hours_ago": "{count}h ago",
+  "pulse.you": "you",
+  "pulse.back_to_fleet": "← Fleet",
   "reset.now": "now",
   "reset.days": "in {d}d {h}h",
   "reset.hours": "in {h}h {m}m",

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agentColor } from '../src/lib/agent-color.js';
-import { FleetPoller } from '../src/lib/fleet-poller.js';
+import { FleetPoller, buildSelfRecord } from '../src/lib/fleet-poller.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -58,6 +58,7 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
   assert.equal(JSON.stringify(fleet).includes('zylos_ak_secret'), false);
   assert.equal(JSON.stringify(fleet).includes('zylos_st_secret'), false);
   assert.equal(calls[0].authorization, 'Bearer zylos_ak_secret');
+  assert.equal(fleet.agents[0].self, false, 'external records must not be flagged self');
 });
 
 test('fleet poller refreshes token after expiry and on state 401', async () => {
@@ -148,4 +149,62 @@ test('fleet poller marks stale successful records offline', async () => {
   now = 1500;
   assert.equal(poller.getFleet().agents[0].health_reason, 'offline');
   assert.equal(poller.getFleet().agents[0].state, 'OFFLINE');
+});
+
+test('buildSelfRecord produces a secret-free self record from local state', () => {
+  const name = 'zylos01';
+  const record = buildSelfRecord({
+    name,
+    color: agentColor(name),
+    state: {
+      state: 'BUSY',
+      running_tools: [{ tool_name: 'Bash', tool_detail: 'npm test' }]
+    },
+    contextPct: 42,
+    cost: 1.23,
+    nowMs: 0
+  });
+
+  assert.equal(record.self, true);
+  assert.equal(record.name, name);
+  assert.equal(record.color, agentColor(name).color);
+  assert.equal(record.hue, agentColor(name).hue);
+  assert.equal(record.state, 'BUSY');
+  assert.equal(record.activity, 'npm test');
+  assert.equal(record.context_pct, 42);
+  assert.equal(record.cost, 1.23);
+  assert.equal(record.base_url, null);
+  assert.equal(record.pulse_rate, 1);
+  assert.equal(record.health_reason, 'ok');
+  assert.equal(record.last_seen, new Date(0).toISOString());
+  assert.equal(JSON.stringify(record).includes('zylos_ak_'), false);
+  assert.equal(JSON.stringify(record).includes('zylos_st_'), false);
+});
+
+test('buildSelfRecord maps idle and offline/unknown states', () => {
+  const idle = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'IDLE' }, nowMs: 0 });
+  assert.equal(idle.health_reason, 'idle');
+  assert.equal(idle.pulse_rate, 1);
+
+  const offline = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'OFFLINE' }, nowMs: 0 });
+  assert.equal(offline.health_reason, 'offline');
+  assert.equal(offline.pulse_rate, 0);
+
+  const unknown = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'UNKNOWN' }, nowMs: 0 });
+  assert.equal(unknown.health_reason, 'offline');
+  assert.equal(unknown.pulse_rate, 0);
+});
+
+test('self record injected into fleet is first, flagged, and order-independent', () => {
+  // Simulate the /api/fleet handler composition: self prepended to poller output.
+  const self = buildSelfRecord({ name: 'local', color: agentColor('local'), state: { state: 'IDLE' }, nowMs: 0 });
+  const external = [
+    { name: 'remote1', self: false },
+    { name: 'remote2', self: false }
+  ];
+  const agents = [self, ...external];
+  assert.equal(agents[0].self, true);
+  assert.equal(agents[0].name, 'local');
+  assert.equal(agents.filter((a) => a.self === true).length, 1);
+  assert.ok(agents.slice(1).every((a) => a.self === false));
 });

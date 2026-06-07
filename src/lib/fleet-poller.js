@@ -59,8 +59,45 @@ function sanitizeRecord(record) {
     pulse_rate: record.pulse_rate,
     health_reason: record.health_reason,
     updated_at: record.updated_at,
-    base_url: record.base_url
+    base_url: record.base_url,
+    self: record.self === true
   };
+}
+
+/**
+ * Build the "self" fleet record for the local dashboard's own agent.
+ *
+ * This mirrors the external-agent record shape produced by `_setSuccess`, but
+ * sources its live data from the local in-process state/metrics instead of an
+ * HTTP poll. It carries no secrets (the local agent has none) and is flagged
+ * with `self: true` so the frontend can drill into the local dashboard.
+ *
+ * @param {object} opts
+ * @param {string} opts.name      - Local agent name (config.agent.name).
+ * @param {object} opts.color     - Result of agentColor(name): { color, hue }.
+ * @param {object} [opts.state]   - Local state engine getState() result.
+ * @param {number|null} [opts.contextPct] - Resolved context_pct metric value.
+ * @param {number|null} [opts.cost]        - Resolved session/daily cost value.
+ * @param {number} [opts.nowMs]
+ */
+export function buildSelfRecord({ name, color, state, contextPct = null, cost = null, nowMs = Date.now() }) {
+  const liveState = state?.state || 'UNKNOWN';
+  const offline = liveState === 'OFFLINE' || liveState === 'UNKNOWN';
+  return sanitizeRecord({
+    name,
+    base_url: null,
+    color: color?.color,
+    hue: color?.hue,
+    state: liveState,
+    activity: deriveActivity(state),
+    context_pct: contextPct,
+    cost,
+    last_seen: nowIso(nowMs),
+    pulse_rate: offline ? 0 : 1,
+    health_reason: liveState === 'IDLE' ? 'idle' : (offline ? 'offline' : 'ok'),
+    updated_at: nowIso(nowMs),
+    self: true
+  });
 }
 
 export class FleetPoller {

@@ -32,7 +32,9 @@ const state = {
   fleetTimer: null,
   eventSource: null,
   charts: {},
-  lastCpuPct: null
+  lastCpuPct: null,
+  multiAgent: false,
+  fleetViewActive: false
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -156,7 +158,8 @@ function pulseWallLabels() {
     secondsAgo: t('time.seconds'),
     minutesAgo: t('pulse.minutes_ago'),
     hoursAgo: t('pulse.hours_ago'),
-    empty: t('pulse.empty')
+    empty: t('pulse.empty'),
+    you: t('pulse.you')
   };
 }
 
@@ -1116,6 +1119,30 @@ function activeTabName() {
   return document.querySelector('.tab.active')?.dataset.tab || 'overview';
 }
 
+// ─── Fleet view switch (multi-agent mode) ───
+// In multi-agent mode the Pulse Wall is the top-level landing view and the
+// single-agent dashboard is the "agent detail" view, reached by clicking the
+// self tile. In single mode only the agent dashboard exists.
+function showFleetView() {
+  if (!state.multiAgent) return;
+  state.fleetViewActive = true;
+  const fleetView = $('#fleet-view');
+  const agentDetail = $('#agent-detail');
+  if (fleetView) fleetView.hidden = false;
+  if (agentDetail) agentDetail.hidden = true;
+  refreshFleet().catch(() => {});
+  syncFleetPolling();
+}
+
+function showAgentDetail() {
+  state.fleetViewActive = false;
+  const fleetView = $('#fleet-view');
+  const agentDetail = $('#agent-detail');
+  if (fleetView) fleetView.hidden = true;
+  if (agentDetail) agentDetail.hidden = false;
+  syncFleetPolling();
+}
+
 function stopFleetPolling() {
   if (state.fleetTimer) {
     clearInterval(state.fleetTimer);
@@ -1124,7 +1151,7 @@ function stopFleetPolling() {
 }
 
 function shouldPollFleetFast() {
-  return activeTabName() === 'pulse' && document.visibilityState !== 'hidden';
+  return state.fleetViewActive && document.visibilityState !== 'hidden';
 }
 
 function startFleetPolling() {
@@ -1145,7 +1172,7 @@ function syncFleetPolling() {
 async function refreshAll() {
   const stateResult = await Promise.allSettled([refreshState()]);
   const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary()];
-  if (activeTabName() === 'pulse') fetches.push(refreshFleet());
+  if (state.fleetViewActive) fetches.push(refreshFleet());
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
@@ -1241,8 +1268,6 @@ function initTabs() {
       p.hidden = !active;
     });
     if (name === 'trends') refreshCharts();
-    if (name === 'pulse') refreshFleet().catch(() => {});
-    syncFleetPolling();
     if (push) {
       const path = name === 'overview' ? '/' : `/${name}`;
       window.history.pushState({ tab: name }, '', api(path));
@@ -1254,12 +1279,54 @@ function initTabs() {
     });
   });
   window.addEventListener('popstate', () => {
-    const tab = window.location.pathname.endsWith('/pulse') ? 'pulse' : (window.location.pathname.endsWith('/trends') ? 'trends' : 'overview');
+    const tab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
     activateTab(tab, false);
   });
   document.addEventListener('visibilitychange', syncFleetPolling);
-  const initialTab = window.location.pathname.endsWith('/pulse') ? 'pulse' : (window.location.pathname.endsWith('/trends') ? 'trends' : 'overview');
+  const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
   activateTab(initialTab, false);
+}
+
+// ─── Fleet mode init ───
+// Decide landing view based on fleet size. The self record is always present,
+// so length >= 2 means at least one external agent is configured.
+function applyFleetMode(fleet) {
+  state.multiAgent = (fleet?.agents?.length || 0) >= 2;
+  const backBtn = $('#back-to-fleet');
+  const fleetView = $('#fleet-view');
+  const agentDetail = $('#agent-detail');
+  if (!state.multiAgent) {
+    // Single mode: only the agent dashboard exists, no fleet view, no back control.
+    state.fleetViewActive = false;
+    if (backBtn) backBtn.hidden = true;
+    if (fleetView) fleetView.hidden = true;
+    if (agentDetail) agentDetail.hidden = false;
+    syncFleetPolling();
+    return;
+  }
+  // Multi-agent mode: Pulse Wall is the landing view; back control available.
+  if (backBtn) backBtn.hidden = false;
+  showFleetView();
+}
+
+function initFleetMode() {
+  // Intercept self-tile clicks: switch to the agent dashboard instead of a
+  // full navigation that would just reload the wall. External tiles navigate
+  // normally to /fleet/<name>/.
+  const root = $('#pulse-wall-root');
+  if (root) {
+    root.addEventListener('click', (e) => {
+      const tile = e.target.closest('.pulse-tile');
+      if (tile && tile.dataset.self === 'true') {
+        e.preventDefault();
+        showAgentDetail();
+      }
+    });
+  }
+  const backBtn = $('#back-to-fleet');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => showFleetView());
+  }
 }
 
 function initLocaleToggle() {
@@ -2251,6 +2318,7 @@ window.addEventListener('beforeunload', () => {
 initTheme();
 await initI18n();
 initTabs();
+initFleetMode();
 initLocaleToggle();
 initLogout();
 initTips();
@@ -2259,5 +2327,13 @@ renderAll();
 initCharts();
 initTrendControls();
 connectSse();
+// Fetch the fleet early to choose the landing view (Pulse Wall vs single agent).
+try {
+  const fleet = await refreshFleet();
+  applyFleetMode(fleet);
+} catch {
+  // Fleet unavailable — fall back to single-agent dashboard.
+  applyFleetMode(null);
+}
 await refreshAll();
 startTimers();

@@ -158,12 +158,66 @@ test('Pulse Wall preserves name color mapping when fleet response order changes'
   assert.deepEqual(shuffled.tiles.map((tile) => tile.name), original.tiles.map((tile) => tile.name));
 });
 
-test('Pulse Wall fast polling is scoped to the visible pulse tab and catches interval errors', () => {
+test('Pulse Wall fast polling is scoped to the active fleet view and catches interval errors', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   assert.match(app, /function stopFleetPolling\(\)/);
   assert.match(app, /function shouldPollFleetFast\(\)/);
-  assert.match(app, /activeTabName\(\) === 'pulse' && document\.visibilityState !== 'hidden'/);
+  assert.match(app, /state\.fleetViewActive && document\.visibilityState !== 'hidden'/);
   assert.match(app, /document\.addEventListener\('visibilitychange', syncFleetPolling\)/);
   assert.match(app, /refreshFleet\(\)\.catch\(\(\) => \{\}\)/);
   assert.doesNotMatch(app, /state\.fleetTimer = setInterval\(refreshFleet, 3_000\)/);
+  // Fast polling must no longer key on a "pulse" tab being active.
+  assert.doesNotMatch(app, /activeTabName\(\) === 'pulse'/);
+});
+
+test('multi-agent vs single mode landing view is gated on fleet size', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // multiAgent is true when the fleet (self + at least one external) has >= 2 agents.
+  assert.match(app, /state\.multiAgent = \(fleet\?\.agents\?\.length \|\| 0\) >= 2;/);
+  // Multi-agent mode lands on the Pulse Wall; single mode shows the agent dashboard.
+  assert.match(app, /if \(!state\.multiAgent\)/);
+  assert.match(app, /showFleetView\(\)/);
+  assert.match(app, /showAgentDetail\(\)/);
+  // Early fetch drives the landing-view decision.
+  assert.match(app, /applyFleetMode\(fleet\)/);
+});
+
+test('self tile drills to local root and external tiles drill to /fleet/<name>/', () => {
+  const selfFleet = {
+    updated_at: '2026-06-07T15:20:00.000Z',
+    agents: [
+      { name: 'local', color: agentColor('local').color, hue: agentColor('local').hue, state: 'IDLE', context_pct: 0.2, cost: 0.01, last_seen: '2026-06-07T15:20:00.000Z', pulse_rate: 1, health_reason: 'idle', self: true },
+      { name: 'remote', color: agentColor('remote').color, hue: agentColor('remote').hue, state: 'BUSY', activity: 'work', context_pct: 0.5, cost: 0.02, last_seen: '2026-06-07T15:20:00.000Z', pulse_rate: 1, health_reason: 'ok', self: false }
+    ]
+  };
+  const view = buildPulseWallView(selfFleet, {
+    nowMs: Date.parse('2026-06-07T15:20:00.000Z'),
+    basePath: '/dash'
+  });
+  const byName = Object.fromEntries(view.tiles.map((tile) => [tile.name, tile]));
+  assert.equal(byName.local.isSelf, true);
+  assert.equal(byName.local.href, '/dash/');
+  assert.equal(byName.remote.isSelf, false);
+  assert.equal(byName.remote.href, '/dash/fleet/remote/');
+
+  const html = renderPulseWallHtml(selfFleet, {
+    nowMs: Date.parse('2026-06-07T15:20:00.000Z'),
+    basePath: '/dash'
+  });
+  assert.match(html, /class="pulse-tile pulse-tile-idle is-self"/);
+  assert.match(html, /data-self="true"/);
+  assert.match(html, /href="\/dash\/"/);
+  assert.match(html, /href="\/dash\/fleet\/remote\/"/);
+});
+
+test('pulse is no longer a peer tab in the tab bar', () => {
+  const html = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
+  assert.doesNotMatch(html, /data-tab="pulse"/);
+  assert.doesNotMatch(html, /id="tab-pulse"/);
+  assert.match(html, /data-tab="overview"/);
+  assert.match(html, /data-tab="trends"/);
+  // The Pulse Wall is now a top-level fleet view with a back-to-fleet control.
+  assert.match(html, /id="fleet-view"/);
+  assert.match(html, /id="back-to-fleet"/);
+  assert.match(html, /id="pulse-wall-root"/);
 });

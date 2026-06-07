@@ -255,9 +255,12 @@ test('/api/fleet exposes safe records without registry secrets', async () => {
     const resp = await fetch(`${origin}/api/fleet`);
     assert.equal(resp.status, 200);
     const body = await resp.json();
-    assert.equal(body.count, 1);
-    assert.equal(body.agents[0].name, 'Remote');
-    assert.equal(body.agents[0].health_reason, 'not_polled');
+    // Self record is always injected first, followed by external agents.
+    assert.equal(body.count, 2);
+    assert.equal(body.agents[0].self, true);
+    assert.equal(body.agents[1].self, false);
+    assert.equal(body.agents[1].name, 'Remote');
+    assert.equal(body.agents[1].health_reason, 'not_polled');
     const serialized = JSON.stringify(body);
     assert.equal(serialized.includes('zylos_ak_secret'), false);
     assert.equal(serialized.includes('read_api_key'), false);

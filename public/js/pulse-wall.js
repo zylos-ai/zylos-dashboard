@@ -139,7 +139,8 @@ export function defaultPulseWallLabels() {
     secondsAgo: '{count}s ago',
     minutesAgo: '{count}m ago',
     hoursAgo: '{count}h ago',
-    empty: 'No fleet agents configured'
+    empty: 'No fleet agents configured',
+    you: 'you'
   };
 }
 
@@ -157,10 +158,12 @@ export function buildPulseWallView(fleet, options = {}) {
       const pulseRate = offline ? 0 : Math.max(0.6, Math.min(2.4, Number(agent.pulse_rate) || 1));
       const tool = toolParts(agent, labels);
       const color = colorForAgent(agent);
+      const isSelf = agent.self === true;
       return {
         name: String(agent.name || ''),
         mood,
         offline,
+        isSelf,
         color,
         hue: Number.isFinite(Number(agent.hue)) ? Number(agent.hue) : 0,
         stateLabel: stateLabel(agent, labels),
@@ -173,7 +176,7 @@ export function buildPulseWallView(fleet, options = {}) {
         reason: agent.health_reason || '',
         pulseRate,
         sparkline: sparklinePoints(agent),
-        href: `${basePath}/fleet/${encodeURIComponent(String(agent.name || ''))}/`,
+        href: isSelf ? `${basePath}/` : `${basePath}/fleet/${encodeURIComponent(String(agent.name || ''))}/`,
         mascotSrc: mascotSrc(mood, options.mascotRoot)
       };
     });
@@ -199,10 +202,11 @@ export function buildPulseWallView(fleet, options = {}) {
 function renderTile(tile, labels) {
   const ringPct = tile.contextPct == null ? 0 : tile.contextPct;
   const reason = tile.reason ? `<span class="pulse-tile-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
-  return `<a class="pulse-tile pulse-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}" style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--pulse-rate:${tile.pulseRate}s;--context-pct:${ringPct};">
+  const selfBadge = tile.isSelf ? `<span class="pulse-self-badge">${escapeHtml(labels.you)}</span>` : '';
+  return `<a class="pulse-tile pulse-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--pulse-rate:${tile.pulseRate}s;--context-pct:${ringPct};">
     <div class="pulse-tile-top">
       <span class="pulse-dot" aria-hidden="true"></span>
-      <span class="pulse-name">${escapeHtml(tile.name)}</span>
+      <span class="pulse-name">${escapeHtml(tile.name)}${selfBadge}</span>
       <span class="pulse-state">${escapeHtml(tile.stateLabel)}</span>
     </div>
     <div class="pulse-mascot-wrap">
