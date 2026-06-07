@@ -1,4 +1,4 @@
-const MASCOT_BY_MOOD = {
+export const MASCOT_BY_MOOD = {
   busy: 'busy.png',
   thinking: 'thinking.png',
   idle: 'idle.png',
@@ -54,7 +54,7 @@ function ageLabel(timestamp, nowMs, labels) {
   return labels.hoursAgo.replace('{count}', String(Math.floor(age / 3600)));
 }
 
-function stateMood(agent) {
+export function stateMood(agent) {
   const state = String(agent?.state || 'UNKNOWN').toUpperCase();
   const reason = String(agent?.health_reason || '').toLowerCase();
   const activity = String(agent?.activity || '').toLowerCase();

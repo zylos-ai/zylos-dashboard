@@ -226,7 +226,11 @@ test('/api/state exposes stable agent identity without fleet secrets', async () 
     const resp = await fetch(`${origin}/api/state`);
     assert.equal(resp.status, 200);
     const body = await resp.json();
-    assert.deepEqual(body.agent, { name: 'Jinglever', id: 'jinglever-main' });
+    assert.equal(body.agent.name, 'Jinglever');
+    assert.equal(body.agent.id, 'jinglever-main');
+    // Identity now also carries the deterministic mascot tint color/hue.
+    assert.equal(typeof body.agent.color, 'string');
+    assert.equal(typeof body.agent.hue, 'number');
     assert.equal(JSON.stringify(body).includes('zylos_ak_secret'), false);
     assert.equal(JSON.stringify(body).includes('read_api_key'), false);
   } finally {

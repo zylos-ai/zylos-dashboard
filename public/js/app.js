@@ -1,6 +1,6 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
-import { renderPulseWall } from './pulse-wall.js';
+import { renderPulseWall, stateMood, MASCOT_BY_MOOD } from './pulse-wall.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -278,49 +278,6 @@ function renderInfoBar() {
 const FEED_MAX = 5;
 const prevToolIds = new Set();
 
-function mascotSvg(agentState) {
-  const s = normState(agentState);
-  const body = '#0d9488';
-  const screen = '#e0f2fe';
-  let eyes, mouth, extra = '';
-  if (s === 'BUSY') {
-    eyes = `<rect x="4" y="5" width="1" height="1" fill="#101827"/><rect x="5" y="6" width="1" height="1" fill="#101827"/><rect x="4" y="7" width="1" height="1" fill="#101827"/><rect x="11" y="5" width="1" height="1" fill="#101827"/><rect x="10" y="6" width="1" height="1" fill="#101827"/><rect x="11" y="7" width="1" height="1" fill="#101827"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
-  } else if (s === 'IDLE') {
-    eyes = `<rect x="5" y="6" width="2" height="1" fill="#101827"/><rect x="9" y="6" width="2" height="1" fill="#101827"/>`;
-    mouth = `<rect x="5" y="9" width="1" height="1" fill="#101827"/><rect x="6" y="10" width="4" height="1" fill="#101827"/><rect x="10" y="9" width="1" height="1" fill="#101827"/>`;
-  } else if (s === 'OFFLINE') {
-    eyes = `<rect x="5" y="6" width="2" height="1" fill="#64748b"/><rect x="9" y="6" width="2" height="1" fill="#64748b"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#64748b"/>`;
-    extra = `<rect x="5" y="4" width="6" height="1" fill="#64748b" opacity="0.5"/>`;
-  } else if (s === 'WAITING_HUMAN') {
-    eyes = `<rect x="5" y="5" width="2" height="2" fill="#2563eb"/><rect x="9" y="5" width="2" height="2" fill="#2563eb"/>`;
-    mouth = `<rect x="7" y="9" width="2" height="2" fill="#101827"/>`;
-  } else if (s === 'POSSIBLY_STUCK') {
-    eyes = `<rect x="5" y="5" width="2" height="2" fill="#ea580c"/><rect x="9" y="5" width="2" height="2" fill="#ea580c"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
-    extra = `<rect x="12" y="2" width="1" height="1" fill="#ea580c"/><rect x="13" y="1" width="1" height="1" fill="#ea580c"/>`;
-  } else if (s === 'STUCK') {
-    eyes = `<rect x="5" y="5" width="1" height="1" fill="#dc2626"/><rect x="7" y="6" width="1" height="1" fill="#dc2626"/><rect x="6" y="5" width="1" height="1" fill="#dc2626"/><rect x="6" y="6" width="1" height="1" fill="#dc2626"/><rect x="9" y="5" width="1" height="1" fill="#dc2626"/><rect x="11" y="6" width="1" height="1" fill="#dc2626"/><rect x="10" y="5" width="1" height="1" fill="#dc2626"/><rect x="10" y="6" width="1" height="1" fill="#dc2626"/>`;
-    mouth = `<rect x="7" y="9" width="2" height="2" fill="#dc2626"/>`;
-  } else {
-    eyes = `<rect x="6" y="5" width="1" height="2" fill="#6b7280"/><rect x="9" y="5" width="1" height="2" fill="#6b7280"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#6b7280"/>`;
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
-    <rect x="3" y="1" width="10" height="2" fill="${body}" rx="0"/>
-    <rect x="2" y="3" width="12" height="10" fill="${body}"/>
-    <rect x="3" y="3" width="10" height="9" fill="${screen}"/>
-    ${eyes}${mouth}${extra}
-    <rect x="2" y="13" width="4" height="2" fill="${body}"/>
-    <rect x="10" y="13" width="4" height="2" fill="${body}"/>
-    <rect x="0" y="5" width="2" height="3" fill="${body}"/>
-    <rect x="14" y="5" width="2" height="3" fill="${body}"/>
-    <rect x="6" y="0" width="1" height="1" fill="${body}"/>
-    <rect x="9" y="0" width="1" height="1" fill="${body}"/>
-  </svg>`;
-}
-
 function mascotClass(agentState) {
   const s = normState(agentState);
   if (s === 'BUSY') return 'mascot-busy';
@@ -341,7 +298,14 @@ function renderState() {
   if (mascotArea) {
     mascotArea.className = `mascot-area ${mascotClass(p?.state)}`;
     const sprite = $('#mascot-sprite');
-    if (sprite) sprite.innerHTML = mascotSvg(p?.state);
+    if (sprite) {
+      // Same octopus mascot set + mood logic as the Pulse Wall, tinted with this
+      // agent's own hue, so the agent looks identical in its tile and its detail.
+      const mood = stateMood({ state: p?.state, activity: p?.activity });
+      const file = MASCOT_BY_MOOD[mood] || MASCOT_BY_MOOD.idle;
+      const hue = Number(p?.agent?.hue) || 0;
+      sprite.innerHTML = `<img class="mascot-img" src="${ASSET_ROOT}/img/mascot/${file}" alt="" style="filter:hue-rotate(${hue}deg)">`;
+    }
   }
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 

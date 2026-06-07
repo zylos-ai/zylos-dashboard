@@ -386,7 +386,9 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/state') {
     const stateData = stateEngine.getState();
-    stateData.agent = config.agent;
+    // Include the agent's deterministic identity color/hue so the single-agent
+    // mascot can be tinted to match this agent's Pulse Wall tile.
+    stateData.agent = { ...config.agent, ...agentColor(config.agent?.name) };
     stateData.runtime_info = buildRuntimeInfo();
     const zylosCfg = loadZylosConfig(config.zylosDir);
     const runtime = zylosCfg.runtime || 'claude';

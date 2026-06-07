@@ -745,6 +745,16 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   image-rendering: pixelated;
 }
 
+/* New octopus mascot PNG (matches the Pulse Wall). Override the pixel-art
+   rendering used by the legacy SVG sprite so the artwork stays smooth. */
+.mascot-sprite img.mascot-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: auto;
+  display: block;
+}
+
 .mascot-busy .mascot-sprite { animation: mascot-bob 0.8s ease-in-out infinite; }
 .mascot-idle .mascot-sprite { animation: mascot-breathe 3s ease-in-out infinite; }
 .mascot-offline .mascot-sprite { opacity: 0.5; filter: grayscale(0.6); }

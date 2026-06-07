@@ -12,6 +12,20 @@ test('prompt source transient display is capped at 5 seconds', () => {
   assert.doesNotMatch(app, /promptAge < 30/);
 });
 
+test('single-agent mascot uses the new octopus PNGs (shared with the Pulse Wall) tinted by agent hue', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
+  // Reuses the Pulse Wall mood logic + mascot file map (single source of truth).
+  assert.match(app, /import \{ renderPulseWall, stateMood, MASCOT_BY_MOOD \} from '\.\/pulse-wall\.js'/);
+  // Renders an <img> from the shared mascot set, not the legacy inline SVG.
+  assert.match(app, /img class="mascot-img" src="\$\{ASSET_ROOT\}\/img\/mascot\//);
+  assert.match(app, /hue-rotate\(\$\{hue\}deg\)/);
+  // Legacy pixel-art SVG mascot generator is gone.
+  assert.doesNotMatch(app, /function mascotSvg\(/);
+  // /api/state exposes the agent's identity color/hue for the tint.
+  assert.match(index, /stateData\.agent = \{ \.\.\.config\.agent, \.\.\.agentColor\(config\.agent\?\.name\) \}/);
+});
+
 test('runtime info upgrade badges use semver-aware comparison', () => {
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
   const runtimeInfo = fs.readFileSync(path.resolve('src/lib/runtime-info.js'), 'utf8');
