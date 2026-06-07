@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-08
+
+### Added
+- Multi-Agent Pulse Wall — single wall showing every agent's live state on one tile each: live mascot (busy/thinking/idle/stuck/offline), per-agent color derived from a name hash, context ring, now-playing, cost + sparkline, and last-seen; offline tiles go grey and clicking a tile drills into that agent's full dashboard through the hub (#156)
+- Agent identity + registry — each install resolves a name/id (config `agent.name` → `ZYLOS_AGENT_NAME` → hostname → dir name → `zylos`) used for color and registry membership (#156)
+- Fleet hub backend — `fleet-poller`, `agent-color`, fleet registry, and a token-isolated drill-down proxy (`fleet-proxy`) that never leaks an agent's token to the browser (#156)
+
 ## [0.2.0] - 2026-06-03
 
 ### Added
