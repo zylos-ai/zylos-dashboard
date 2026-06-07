@@ -63,6 +63,8 @@ Dashboard 的组件结构、部署配置、安全保护和验证计划。
     └── error.log
 ```
 
+数据库保留策略和大文件手动压缩流程见 `docs/modules/db-maintenance.md`。
+
 ### SKILL.md frontmatter 要求
 
 ```yaml
