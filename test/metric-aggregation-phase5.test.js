@@ -133,8 +133,8 @@ test('usage_event unique index deduplicates null-session replay keys atomically'
   assert.equal(store.queryMetrics({ name: 'usage_event' }).length, 1);
 }));
 
-test('metric maintenance uses source-aware OTEL retention and skips large guarded VACUUM', () => withStore((store) => {
-  const oldTimestamp = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+test('metric maintenance preserves otel data and skips large guarded VACUUM', () => withStore((store) => {
+  const oldTimestamp = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
   store.insertMetric({
     timestamp: oldTimestamp,
     runtime: 'claude',
@@ -163,7 +163,7 @@ test('metric maintenance uses source-aware OTEL retention and skips large guarde
   assert.equal(result.vacuum.reason, 'db_too_large');
   const remaining = store.queryMetrics({ name: 'cache_hit_rate' });
   assert.equal(remaining.length, 1);
-  assert.equal(remaining[0].source, 'statusline');
+  assert.equal(remaining[0].source, 'otel_token_usage');
 }));
 
 test('MetricResolver reads summaries first and preserves legacy fallback forms', () => withStore((store) => {

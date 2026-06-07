@@ -218,8 +218,6 @@ export class Store {
         )
         WHERE metric_name = 'usage_event'
           AND json_extract(dimensions, '$.event_id') IS NOT NULL;
-
-        DELETE FROM metric_points WHERE source LIKE 'otel%';
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(10);
     }

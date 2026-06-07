@@ -11,7 +11,7 @@ The dashboard runs hourly retention cleanup:
 - `statusline_summary`: 30 days
 - `system_summary`: 14 days
 - `pm2_summary` and legacy `pm2_%`: 7 days
-- `source LIKE 'otel%'`: 30 days
+- `otel_*` sources: preserved (sample data for future use)
 - other legacy metrics: 90 days
 
 Automatic `VACUUM` is guarded. It runs only when the database file is smaller than 500 MB. Larger databases are skipped and require manual compaction during a maintenance window.

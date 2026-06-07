@@ -6,7 +6,6 @@ export function runMetricMaintenance(store, { now = new Date(), lastVacuumDate =
   store.deleteMetricsByNameAndSource('system_summary', '%', 14);
   store.deleteMetricsByNameAndSource('pm2_summary', '%', 7);
   store.deleteMetricsByNameAndSource('pm2_%', '%', 7);
-  store.deleteMetricsByNameAndSource('%', 'otel%', 30);
   store.deleteOtherLegacyMetricsOlderThan(90);
   store.deleteEventsOlderThan(30);
   store.deleteSnapshotsOlderThan(7);
