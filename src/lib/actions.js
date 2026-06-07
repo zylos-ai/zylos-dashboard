@@ -299,6 +299,9 @@ function effortsForModel(model) {
   if (/^(opus|claude-opus-4-[89]|claude-opus-4-[1-9]\d)/.test(model)) {
     return ['low', 'medium', 'high', 'xhigh'];
   }
+  if (/^(haiku|claude-haiku-)/.test(model)) {
+    return [];
+  }
   return ['low', 'medium', 'high'];
 }
 

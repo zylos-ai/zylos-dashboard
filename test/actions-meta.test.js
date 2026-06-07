@@ -100,6 +100,44 @@ test('getActionsMeta keeps Claude model and effort controls for Claude runtime',
   assert.equal(meta.new_session_threshold, 36);
 });
 
+test('Claude model list includes defaults with display names and specific versions', () => {
+  const meta = getActionsMeta(
+    { runtime: 'claude', zylosDir: '/tmp/zylos-dashboard-missing' },
+    {}
+  );
+
+  const ids = meta.models.map(m => m.id);
+  assert.ok(ids.includes('opus'), 'default opus alias');
+  assert.ok(ids.includes('opus[1m]'), 'default opus 1M alias');
+  assert.ok(ids.includes('sonnet'), 'default sonnet alias');
+  assert.ok(ids.includes('haiku'), 'default haiku alias');
+  assert.ok(ids.includes('claude-opus-4-8'), 'specific opus 4.8');
+  assert.ok(ids.includes('claude-opus-4-8[1m]'), 'specific opus 4.8 1M');
+  assert.ok(ids.includes('claude-haiku-4-5-20251001'), 'specific haiku');
+
+  const opusDefault = meta.models.find(m => m.id === 'opus');
+  assert.ok(opusDefault.display_name, 'opus has display_name');
+  assert.ok(!meta.models.find(m => m.id === 'claude-opus-4-8').display_name, 'specific version has no display_name');
+});
+
+test('Claude effort mappings: xhigh for Opus 4.8+/aliases, none for Haiku', () => {
+  const meta = getActionsMeta(
+    { runtime: 'claude', zylosDir: '/tmp/zylos-dashboard-missing' },
+    {}
+  );
+
+  const e = meta.efforts_by_model;
+  assert.deepStrictEqual(e['opus'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['opus[1m]'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['claude-opus-4-8'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['claude-opus-4-8[1m]'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['claude-opus-4-6'], ['low', 'medium', 'high']);
+  assert.deepStrictEqual(e['claude-sonnet-4-6'], ['low', 'medium', 'high']);
+  assert.deepStrictEqual(e['haiku'], []);
+  assert.deepStrictEqual(e['claude-haiku-4-5-20251001'], []);
+  assert.deepStrictEqual(e['*'], ['low', 'medium', 'high']);
+});
+
 test('handleAction stores Codex model and effort in config.toml', async () => {
   await withCodexHome(async (codexHome) => {
     const zylosDir = makeZylosDir();
