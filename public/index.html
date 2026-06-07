@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=17"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=18"></script>
 </head>
 <body>
 <header class="app-header">
@@ -27,6 +27,7 @@
 
 <nav class="tab-bar" aria-label="Dashboard sections">
   <button class="tab active" type="button" data-tab="overview" data-i18n="tab.overview">Overview</button>
+  <button class="tab" type="button" data-tab="pulse" data-i18n="tab.pulse">Pulse Wall</button>
   <button class="tab" type="button" data-tab="trends" data-i18n="tab.trends">Trends</button>
 </nav>
 
@@ -278,6 +279,17 @@
       </section>
 
     </div>
+  </section>
+
+  <section class="tab-panel" id="tab-pulse" hidden>
+    <div class="pulse-panel-head">
+      <div>
+        <h1 data-i18n="pulse.title">Pulse Wall</h1>
+        <p data-i18n="pulse.subtitle">Fleet heartbeat</p>
+      </div>
+      <time class="freshness" id="fleet-updated">--</time>
+    </div>
+    <div id="pulse-wall-root"></div>
   </section>
 
   <section class="tab-panel" id="tab-trends" hidden>

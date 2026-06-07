@@ -927,7 +927,7 @@ export function createServer() {
       return;
     }
 
-    if (pathname === '/' || pathname === '/index.html') {
+    if (pathname === '/' || pathname === '/index.html' || pathname === '/pulse' || pathname === '/trends') {
       renderIndex(req, res);
       return;
     }

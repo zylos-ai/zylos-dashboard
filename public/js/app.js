@@ -1,5 +1,6 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
+import { renderPulseWall } from './pulse-wall.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -18,6 +19,7 @@ const state = {
   system: null,
   summary: null,
   communication: null,
+  fleet: null,
   timeline: null,
   sourceUpdatedAt: null,
   metricsUpdatedAt: null,
@@ -27,6 +29,7 @@ const state = {
   timelineUpdatedAt: null,
   timer: null,
   pollTimer: null,
+  fleetTimer: null,
   eventSource: null,
   charts: {},
   lastCpuPct: null
@@ -131,6 +134,30 @@ function fmtResetTime(unixSeconds) {
 
 function esc(v) {
   return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function pulseWallLabels() {
+  return {
+    title: t('pulse.title'),
+    subtitle: t('pulse.subtitle'),
+    totalCost: t('pulse.total_cost'),
+    busy: t('pulse.busy'),
+    thinking: t('pulse.thinking'),
+    idle: t('pulse.idle'),
+    stuck: t('pulse.stuck'),
+    offline: t('pulse.offline'),
+    unreachable: t('pulse.unreachable'),
+    versionUnsupported: t('pulse.version_unsupported'),
+    authFailed: t('pulse.auth_failed'),
+    noActivity: t('pulse.no_activity'),
+    lastSeen: t('pulse.last_seen'),
+    context: t('label.context'),
+    justNow: t('time.just_now'),
+    secondsAgo: t('time.seconds'),
+    minutesAgo: t('pulse.minutes_ago'),
+    hoursAgo: t('pulse.hours_ago'),
+    empty: t('pulse.empty')
+  };
 }
 
 // ─── State helpers ───
@@ -960,6 +987,18 @@ function renderComm() {
   $('#comm-updated').textContent = fmtAge(state.commUpdatedAt);
 }
 
+function renderFleet() {
+  const container = $('#pulse-wall-root');
+  if (!container) return;
+  renderPulseWall(container, state.fleet, {
+    basePath: BASE_PATH,
+    mascotRoot: `${ASSET_ROOT}/img/mascot`,
+    labels: pulseWallLabels()
+  });
+  const updated = $('#fleet-updated');
+  if (updated) updated.textContent = fmtAge(state.fleet?.updated_at);
+}
+
 function renderConnection(mode) {
   const pill = $('#connection-status');
   pill.dataset.state = mode;
@@ -977,6 +1016,7 @@ function renderAll() {
   renderHealth();
   renderTimeline();
   renderComm();
+  renderFleet();
 }
 
 // ─── Data fetching ───
@@ -1060,9 +1100,14 @@ async function refreshComm() {
   renderComm();
 }
 
+async function refreshFleet() {
+  state.fleet = await fetchJson('/api/fleet');
+  renderFleet();
+}
+
 async function refreshAll() {
   const stateResult = await Promise.allSettled([refreshState()]);
-  const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary()];
+  const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary(), refreshFleet()];
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
@@ -1150,17 +1195,31 @@ function scheduleSseReconnect() {
 
 // ─── Tabs ───
 function initTabs() {
+  const activateTab = (name, push = false) => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.tab-panel').forEach((p) => {
+      const active = p.id === `tab-${name}`;
+      p.classList.toggle('active', active);
+      p.hidden = !active;
+    });
+    if (name === 'trends') refreshCharts();
+    if (name === 'pulse') refreshFleet();
+    if (push) {
+      const path = name === 'overview' ? '/' : `/${name}`;
+      window.history.pushState({ tab: name }, '', api(path));
+    }
+  };
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === btn));
-      document.querySelectorAll('.tab-panel').forEach((p) => {
-        const active = p.id === `tab-${btn.dataset.tab}`;
-        p.classList.toggle('active', active);
-        p.hidden = !active;
-      });
-      if (btn.dataset.tab === 'trends') refreshCharts();
+      activateTab(btn.dataset.tab, true);
     });
   });
+  window.addEventListener('popstate', () => {
+    const tab = window.location.pathname.endsWith('/pulse') ? 'pulse' : (window.location.pathname.endsWith('/trends') ? 'trends' : 'overview');
+    activateTab(tab, false);
+  });
+  const initialTab = window.location.pathname.endsWith('/pulse') ? 'pulse' : (window.location.pathname.endsWith('/trends') ? 'trends' : 'overview');
+  activateTab(initialTab, false);
 }
 
 function initLocaleToggle() {
@@ -2137,11 +2196,13 @@ function initInfoBarButtons() {
 function startTimers() {
   state.timer = setInterval(() => { renderState(); renderMetrics(); renderHealth(); }, 1000);
   state.pollTimer = setInterval(refreshAll, 30_000);
+  state.fleetTimer = setInterval(refreshFleet, 3_000);
 }
 
 window.addEventListener('beforeunload', () => {
   clearInterval(state.timer);
   clearInterval(state.pollTimer);
+  clearInterval(state.fleetTimer);
   clearTimeout(state.sseReconnectTimer);
   state.eventSource?.close();
 });
