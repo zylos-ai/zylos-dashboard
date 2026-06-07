@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { agentColor } from '../src/lib/agent-color.js';
 import { FleetPoller } from '../src/lib/fleet-poller.js';
 
 function jsonResponse(body, status = 200) {
@@ -47,6 +48,8 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
   const fleet = poller.getFleet();
   assert.equal(fleet.count, 1);
   assert.equal(fleet.agents[0].name, 'Remote');
+  assert.equal(fleet.agents[0].color, agentColor('Remote').color);
+  assert.equal(fleet.agents[0].hue, agentColor('Remote').hue);
   assert.equal(fleet.agents[0].state, 'BUSY');
   assert.equal(fleet.agents[0].activity, 'npm test');
   assert.equal(fleet.agents[0].context_pct, 42);
@@ -123,8 +126,11 @@ test('fleet poller maps token 404 and invalid key 401 without blocking other age
   await poller.pollOnce();
   const byName = Object.fromEntries(poller.getFleet().agents.map(a => [a.name, a]));
   assert.equal(byName.Old.health_reason, 'version_unsupported');
+  assert.equal(byName.Old.hue, agentColor('Old').hue);
   assert.equal(byName.Bad.health_reason, 'auth_failed');
+  assert.equal(byName.Bad.hue, agentColor('Bad').hue);
   assert.equal(byName.Good.health_reason, 'idle');
+  assert.equal(byName.Good.hue, agentColor('Good').hue);
 });
 
 test('fleet poller marks stale successful records offline', async () => {

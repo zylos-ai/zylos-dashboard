@@ -1101,13 +1101,51 @@ async function refreshComm() {
 }
 
 async function refreshFleet() {
-  state.fleet = await fetchJson('/api/fleet');
-  renderFleet();
+  try {
+    state.fleet = await fetchJson('/api/fleet');
+    renderFleet();
+    renderConnection(state.eventSource?.readyState === EventSource.OPEN ? 'live' : 'polling');
+    return state.fleet;
+  } catch (err) {
+    renderConnection('degraded');
+    throw err;
+  }
+}
+
+function activeTabName() {
+  return document.querySelector('.tab.active')?.dataset.tab || 'overview';
+}
+
+function stopFleetPolling() {
+  if (state.fleetTimer) {
+    clearInterval(state.fleetTimer);
+    state.fleetTimer = null;
+  }
+}
+
+function shouldPollFleetFast() {
+  return activeTabName() === 'pulse' && document.visibilityState !== 'hidden';
+}
+
+function startFleetPolling() {
+  if (!shouldPollFleetFast() || state.fleetTimer) return;
+  state.fleetTimer = setInterval(() => {
+    refreshFleet().catch(() => {});
+  }, 3_000);
+}
+
+function syncFleetPolling() {
+  if (shouldPollFleetFast()) {
+    startFleetPolling();
+  } else {
+    stopFleetPolling();
+  }
 }
 
 async function refreshAll() {
   const stateResult = await Promise.allSettled([refreshState()]);
-  const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary(), refreshFleet()];
+  const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary()];
+  if (activeTabName() === 'pulse') fetches.push(refreshFleet());
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
@@ -1203,7 +1241,8 @@ function initTabs() {
       p.hidden = !active;
     });
     if (name === 'trends') refreshCharts();
-    if (name === 'pulse') refreshFleet();
+    if (name === 'pulse') refreshFleet().catch(() => {});
+    syncFleetPolling();
     if (push) {
       const path = name === 'overview' ? '/' : `/${name}`;
       window.history.pushState({ tab: name }, '', api(path));
@@ -1218,6 +1257,7 @@ function initTabs() {
     const tab = window.location.pathname.endsWith('/pulse') ? 'pulse' : (window.location.pathname.endsWith('/trends') ? 'trends' : 'overview');
     activateTab(tab, false);
   });
+  document.addEventListener('visibilitychange', syncFleetPolling);
   const initialTab = window.location.pathname.endsWith('/pulse') ? 'pulse' : (window.location.pathname.endsWith('/trends') ? 'trends' : 'overview');
   activateTab(initialTab, false);
 }
@@ -2196,13 +2236,13 @@ function initInfoBarButtons() {
 function startTimers() {
   state.timer = setInterval(() => { renderState(); renderMetrics(); renderHealth(); }, 1000);
   state.pollTimer = setInterval(refreshAll, 30_000);
-  state.fleetTimer = setInterval(refreshFleet, 3_000);
+  syncFleetPolling();
 }
 
 window.addEventListener('beforeunload', () => {
   clearInterval(state.timer);
   clearInterval(state.pollTimer);
-  clearInterval(state.fleetTimer);
+  stopFleetPolling();
   clearTimeout(state.sseReconnectTimer);
   state.eventSource?.close();
 });

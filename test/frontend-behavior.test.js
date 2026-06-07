@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { buildPulseWallView, renderPulseWallHtml } from '../public/js/pulse-wall.js';
+import { agentColor } from '../src/lib/agent-color.js';
 
 test('prompt source transient display is capped at 5 seconds', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
@@ -55,7 +56,8 @@ function fleetFixture() {
     agents: [
       {
         name: 'zylos02',
-        color: '#2563eb',
+        color: agentColor('zylos02').color,
+        hue: agentColor('zylos02').hue,
         state: 'IDLE',
         activity: null,
         context_pct: 0.18,
@@ -67,7 +69,8 @@ function fleetFixture() {
       },
       {
         name: 'zylos01',
-        color: '#0d9488',
+        color: agentColor('zylos01').color,
+        hue: agentColor('zylos01').hue,
         state: 'BUSY',
         activity: 'exec_command npm test',
         context_pct: 72,
@@ -79,7 +82,8 @@ function fleetFixture() {
       },
       {
         name: 'zylos0t',
-        color: '#dc2626',
+        color: agentColor('zylos0t').color,
+        hue: agentColor('zylos0t').hue,
         state: 'POSSIBLY_STUCK',
         activity: 'no progress',
         context_pct: 0.91,
@@ -90,7 +94,8 @@ function fleetFixture() {
       },
       {
         name: 'eva',
-        color: '#7c3aed',
+        color: agentColor('eva').color,
+        hue: agentColor('eva').hue,
         state: 'OFFLINE',
         activity: 'last message',
         context_pct: null,
@@ -129,6 +134,7 @@ test('Pulse Wall fixture renders aggregate counts, tile states, reason, and dril
   assert.match(html, /last seen 15s ago/);
   assert.match(html, /href="\/dash\/fleet\/zylos01\/"/);
   assert.match(html, /src="\/dash\/_assets\/img\/mascot\/busy\.png"/);
+  assert.match(html, new RegExp(`data-agent="zylos01"[^>]+--agent-hue:${agentColor('zylos01').hue}deg;`));
   assert.match(html, /<svg class="pulse-sparkline"/);
 });
 
@@ -144,6 +150,20 @@ test('Pulse Wall preserves name color mapping when fleet response order changes'
 
   const originalColors = Object.fromEntries(original.tiles.map((tile) => [tile.name, tile.color]));
   const shuffledColors = Object.fromEntries(shuffled.tiles.map((tile) => [tile.name, tile.color]));
+  const originalHues = Object.fromEntries(original.tiles.map((tile) => [tile.name, tile.hue]));
+  const shuffledHues = Object.fromEntries(shuffled.tiles.map((tile) => [tile.name, tile.hue]));
   assert.deepEqual(shuffledColors, originalColors);
+  assert.deepEqual(shuffledHues, originalHues);
+  assert.ok(Object.values(originalHues).some((hue) => hue !== 0));
   assert.deepEqual(shuffled.tiles.map((tile) => tile.name), original.tiles.map((tile) => tile.name));
+});
+
+test('Pulse Wall fast polling is scoped to the visible pulse tab and catches interval errors', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  assert.match(app, /function stopFleetPolling\(\)/);
+  assert.match(app, /function shouldPollFleetFast\(\)/);
+  assert.match(app, /activeTabName\(\) === 'pulse' && document\.visibilityState !== 'hidden'/);
+  assert.match(app, /document\.addEventListener\('visibilitychange', syncFleetPolling\)/);
+  assert.match(app, /refreshFleet\(\)\.catch\(\(\) => \{\}\)/);
+  assert.doesNotMatch(app, /state\.fleetTimer = setInterval\(refreshFleet, 3_000\)/);
 });
