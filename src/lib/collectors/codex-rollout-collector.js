@@ -194,7 +194,6 @@ export class CodexRolloutCollector {
   }
 
   _ingestTokenCount(info, timestamp, mapping, context = {}) {
-    let written = 0;
     const lastUsage = info.last_token_usage || {};
     const totalUsage = info.total_token_usage || {};
     const usage = Object.keys(lastUsage).length > 0 ? lastUsage : totalUsage;
@@ -205,89 +204,43 @@ export class CodexRolloutCollector {
 
     const contextInput = numberOrNull(lastUsage.input_tokens);
     const contextWindow = numberOrNull(info.model_context_window);
-    if (contextInput != null && contextWindow && contextWindow > 0) {
-      written += this._insertMetricOnce({
-        timestamp,
-        runtime: 'codex',
-        session_id: mapping.session_id,
-        metric_name: 'context_pct',
-        metric_value: (contextInput / contextWindow) * 100,
-        dimensions: {
-          input_tokens: contextInput,
-          model_context_window: contextWindow,
-          model,
-          event_id: eventId,
-          rollout_offset: position.byteOffset ?? null,
-          rollout_line: position.lineIndex ?? null
-        },
-        source: 'rollout',
-        confidence: 'actual'
-      });
-    }
-
-    written += this._ingestRateLimit(context.rateLimits?.primary, 'rate_limit', timestamp, mapping, position);
-    written += this._ingestRateLimit(context.rateLimits?.secondary, 'rate_limit_7d', timestamp, mapping, position);
-
     const tokenDims = normalizeUsage(usage);
     const totalInput = tokenDims.input;
-    if (totalInput > 0 || tokenDims.output > 0 || tokenDims.reasoning > 0) {
-      tokenDims.total_input = totalInput;
-      tokenDims.uncached_input = Math.max(totalInput - tokenDims.cache_read - tokenDims.cache_creation, 0);
-      tokenDims.runtime_semantics = 'openai_input_includes_cached';
-      tokenDims.model = model;
-      tokenDims.service_tier = serviceTier;
-      tokenDims.event_id = eventId;
-      tokenDims.rollout_offset = position.byteOffset ?? null;
-      tokenDims.rollout_line = position.lineIndex ?? null;
-      written += this._insertMetricOnce({
-        timestamp,
-        runtime: 'codex',
-        session_id: mapping.session_id,
-        metric_name: 'api_request_tokens',
-        metric_value: totalInput,
-        dimensions: tokenDims,
-        source: 'jsonl_usage',
-        confidence: 'actual'
-      });
+    tokenDims.total_input = totalInput;
+    tokenDims.uncached_input = Math.max(totalInput - tokenDims.cache_read - tokenDims.cache_creation, 0);
+    tokenDims.runtime_semantics = 'openai_input_includes_cached';
+    tokenDims.model = model;
+    tokenDims.service_tier = serviceTier;
+    tokenDims.event_id = eventId;
+    tokenDims.rollout_offset = position.byteOffset ?? null;
+    tokenDims.rollout_line = position.lineIndex ?? null;
 
-      if (totalInput > 0) {
-        written += this._insertMetricOnce({
-          timestamp,
-          runtime: 'codex',
-          session_id: mapping.session_id,
-          metric_name: 'cache_hit_rate',
-          metric_value: tokenDims.cache_read / totalInput,
-          dimensions: {
-            event_id: eventId,
-            model,
-            service_tier: serviceTier,
-            rollout_offset: position.byteOffset ?? null,
-            rollout_line: position.lineIndex ?? null
-          },
-          source: 'jsonl_usage',
-          confidence: 'actual'
-        });
-      }
+    if (contextInput != null) tokenDims.context_input_tokens = contextInput;
+    if (contextWindow && contextWindow > 0) {
+      tokenDims.model_context_window = contextWindow;
+      if (contextInput != null) tokenDims.context_pct = (contextInput / contextWindow) * 100;
+    }
 
+    const primaryRate = rateLimitDimensions(context.rateLimits?.primary);
+    if (primaryRate) {
+      tokenDims.rate_limit = primaryRate.value;
+      tokenDims.rate_limit_window_minutes = primaryRate.window_minutes;
+      tokenDims.rate_limit_resets_at = primaryRate.resets_at;
+    }
+    const secondaryRate = rateLimitDimensions(context.rateLimits?.secondary);
+    if (secondaryRate) {
+      tokenDims.rate_limit_7d = secondaryRate.value;
+      tokenDims.rate_limit_7d_window_minutes = secondaryRate.window_minutes;
+      tokenDims.rate_limit_7d_resets_at = secondaryRate.resets_at;
+    }
+
+    if (totalInput > 0) {
+      tokenDims.cache_hit_rate = tokenDims.cache_read / totalInput;
       const price = this._resolveModelPrice(model, serviceTier);
       const cost = this._calculateCost(tokenDims, price);
       if (cost != null) {
-        written += this._insertMetricOnce({
-          timestamp,
-          runtime: 'codex',
-          session_id: mapping.session_id,
-          metric_name: 'api_request_cost',
-          metric_value: cost,
-          dimensions: {
-            event_id: eventId,
-            model,
-            service_tier: serviceTier,
-            rollout_offset: position.byteOffset ?? null,
-            rollout_line: position.lineIndex ?? null
-          },
-          source: 'jsonl_usage',
-          confidence: 'estimated'
-        });
+        tokenDims.cost = cost;
+        tokenDims.cost_confidence = 'estimated';
       } else {
         this.store.upsertSourceHealth('codex_cost', 'collector_liveness', 'unavailable', {
           reason: 'missing_model_price',
@@ -297,7 +250,20 @@ export class CodexRolloutCollector {
       }
     }
 
-    return written;
+    const hasUsage = totalInput > 0 || tokenDims.output > 0 || tokenDims.reasoning > 0;
+    const hasCapacity = tokenDims.context_pct != null || tokenDims.rate_limit != null || tokenDims.rate_limit_7d != null;
+    if (!hasUsage && !hasCapacity) return 0;
+
+    return this._insertUsageEventOnce({
+      timestamp,
+      runtime: 'codex',
+      session_id: mapping.session_id,
+      metric_name: 'usage_event',
+      metric_value: totalInput,
+      dimensions: tokenDims,
+      source: 'jsonl_usage',
+      confidence: 'actual'
+    });
   }
 
   _ingestRateLimit(limit, metricName, timestamp, mapping, position = {}) {
@@ -396,6 +362,15 @@ export class CodexRolloutCollector {
       return 0;
     }
     this.store.insertMetric(point);
+    if (this._onMetric) {
+      this._onMetric(point);
+    }
+    return 1;
+  }
+
+  _insertUsageEventOnce(point) {
+    const result = this.store.insertMetricOnce?.(point) || this.store.insertMetric?.(point);
+    if (!result?.inserted) return 0;
     if (this._onMetric) {
       this._onMetric(point);
     }
@@ -790,26 +765,24 @@ export class CodexRolloutCollector {
   }
 
   _backfillRateLimits(mapping, sessionMeta) {
-    if (!sessionMeta?.rateLimits) return 0;
-
-    const hasRateMetric = (name) => this.store.queryMetrics({ name })
-      .some(row => row.session_id === mapping.session_id && row.source === 'rollout');
-
-    let written = 0;
-    const timestamp = sessionMeta.rateLimitTimestamp || new Date().toISOString();
-    if (!hasRateMetric('rate_limit')) {
-      written += this._ingestRateLimit(sessionMeta.rateLimits.primary, 'rate_limit', timestamp, mapping);
-    }
-    if (!hasRateMetric('rate_limit_7d')) {
-      written += this._ingestRateLimit(sessionMeta.rateLimits.secondary, 'rate_limit_7d', timestamp, mapping);
-    }
-    return written;
+    return 0;
   }
 }
 
 function numberOrNull(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function rateLimitDimensions(limit) {
+  if (!limit || typeof limit !== 'object') return null;
+  const value = numberOrNull(limit.percent_used ?? limit.usage_pct ?? limit.used_percent);
+  if (value == null) return null;
+  return {
+    value,
+    window_minutes: limit.window_minutes ?? null,
+    resets_at: limit.resets_at ?? null
+  };
 }
 
 function stableEventId(seed) {

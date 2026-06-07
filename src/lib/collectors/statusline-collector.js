@@ -34,56 +34,49 @@ export class StatuslineCollector {
 
     const sessionId = data.session_id || null;
     let written = 0;
+    const dims = {};
 
     if (data.context_window?.used_percentage != null) {
-      this.store.insertMetric({
-        timestamp: now, runtime: 'claude', session_id: sessionId,
-        metric_name: 'context_pct', metric_value: data.context_window.used_percentage,
-        source: 'statusline', confidence: 'actual'
-      });
-      written++;
+      dims.context_pct = data.context_window.used_percentage;
     }
 
     if (data.cost?.total_cost_usd != null) {
-      this.store.insertMetric({
-        timestamp: now, runtime: 'claude', session_id: sessionId,
-        metric_name: 'session_cost', metric_value: data.cost.total_cost_usd,
-        source: 'statusline', confidence: 'actual'
-      });
-      written++;
+      dims.session_cost = data.cost.total_cost_usd;
     }
 
     if (data.rate_limits?.five_hour?.used_percentage != null) {
-      this.store.insertMetric({
-        timestamp: now, runtime: 'claude', session_id: sessionId,
-        metric_name: 'rate_limit', metric_value: data.rate_limits.five_hour.used_percentage,
-        dimensions: { period: '5h', '5h': data.rate_limits.five_hour.used_percentage, '7d': data.rate_limits?.seven_day?.used_percentage, resets_at: data.rate_limits.five_hour.resets_at || null },
-        source: 'statusline', confidence: 'actual'
-      });
-      written++;
+      dims.rate_limit = data.rate_limits.five_hour.used_percentage;
+      dims.rate_limit_resets_at = data.rate_limits.five_hour.resets_at || null;
     }
 
     if (data.rate_limits?.seven_day?.used_percentage != null) {
-      this.store.insertMetric({
-        timestamp: now, runtime: 'claude', session_id: sessionId,
-        metric_name: 'rate_limit_7d', metric_value: data.rate_limits.seven_day.used_percentage,
-        dimensions: { period: '7d', resets_at: data.rate_limits.seven_day.resets_at || null },
-        source: 'statusline', confidence: 'actual'
-      });
-      written++;
+      dims.rate_limit_7d = data.rate_limits.seven_day.used_percentage;
+      dims.rate_limit_7d_resets_at = data.rate_limits.seven_day.resets_at || null;
     }
 
     const cw = data.context_window?.current_usage;
     if (cw && cw.cache_read_input_tokens != null) {
       const totalIn = (cw.input_tokens || 0) + (cw.cache_creation_input_tokens || 0) + (cw.cache_read_input_tokens || 0);
       if (totalIn > 0) {
-        this.store.insertMetric({
-          timestamp: now, runtime: 'claude', session_id: sessionId,
-          metric_name: 'cache_hit_rate', metric_value: cw.cache_read_input_tokens / totalIn,
-          source: 'statusline_current_usage', confidence: 'actual'
-        });
-        written++;
+        dims.cache_hit_rate = cw.cache_read_input_tokens / totalIn;
+        dims.input = cw.input_tokens || 0;
+        dims.cache_read = cw.cache_read_input_tokens || 0;
+        dims.cache_creation = cw.cache_creation_input_tokens || 0;
       }
+    }
+
+    if (Object.keys(dims).length > 0) {
+      this.store.insertMetric({
+        timestamp: now,
+        runtime: 'claude',
+        session_id: sessionId,
+        metric_name: 'statusline_summary',
+        metric_value: 0,
+        dimensions: dims,
+        source: 'statusline',
+        confidence: 'actual'
+      });
+      written++;
     }
 
     this._runtimeInfo = {

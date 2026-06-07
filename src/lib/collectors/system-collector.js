@@ -52,14 +52,7 @@ export class SystemCollector {
         const totalDelta = curTimes.total - this._prevCpuTimes.total;
         data.cpu_pct = totalDelta > 0 ? (1 - idleDelta / totalDelta) * 100 : 0;
 
-        this.store.insertMetric({
-          timestamp: now, runtime,
-          metric_name: 'cpu_pct',
-          metric_value: data.cpu_pct,
-          dimensions: { cpus: cpuCount },
-          source: 'system',
-          confidence: 'actual'
-        });
+        data.cpu_count = cpuCount;
       }
 
       this._prevCpuTimes = curTimes;
@@ -72,20 +65,6 @@ export class SystemCollector {
       const freeMem = process.platform === 'darwin' ? macosFreeMem() : os.freemem();
       data.mem_used_bytes = data.mem_total_bytes - freeMem;
 
-      this.store.insertMetric({
-        timestamp: now, runtime,
-        metric_name: 'mem_used_bytes',
-        metric_value: data.mem_used_bytes,
-        source: 'system',
-        confidence: 'actual'
-      });
-      this.store.insertMetric({
-        timestamp: now, runtime,
-        metric_name: 'mem_total_bytes',
-        metric_value: data.mem_total_bytes,
-        source: 'system',
-        confidence: 'actual'
-      });
     } catch (err) {
       process.stderr.write(`[system-collector] Memory error: ${err.message}\n`);
     }
@@ -97,25 +76,32 @@ export class SystemCollector {
       data.disk_free_bytes = availBytes;
       data.disk_used_pct = totalBytes > 0 ? (1 - availBytes / totalBytes) * 100 : 0;
 
-      this.store.insertMetric({
-        timestamp: now, runtime,
-        metric_name: 'disk_used_pct',
-        metric_value: data.disk_used_pct,
-        dimensions: { path: this.config.zylosDir },
-        source: 'system',
-        confidence: 'actual'
-      });
-      this.store.insertMetric({
-        timestamp: now, runtime,
-        metric_name: 'disk_free_bytes',
-        metric_value: data.disk_free_bytes,
-        dimensions: { path: this.config.zylosDir },
-        source: 'system',
-        confidence: 'actual'
-      });
     } catch (err) {
       process.stderr.write(`[system-collector] Disk error: ${err.message}\n`);
     }
+
+    const dims = {
+      cpu_pct: data.cpu_pct ?? 0,
+      cpu_count: data.cpu_count ?? (os.cpus().length || 1),
+      mem_used_bytes: data.mem_used_bytes ?? null,
+      mem_total_bytes: data.mem_total_bytes ?? null,
+      mem_used_mb: data.mem_used_bytes != null ? +(data.mem_used_bytes / 1024 / 1024).toFixed(2) : null,
+      mem_total_mb: data.mem_total_bytes != null ? +(data.mem_total_bytes / 1024 / 1024).toFixed(2) : null,
+      mem_used_pct: data.mem_total_bytes > 0 ? +((data.mem_used_bytes / data.mem_total_bytes) * 100).toFixed(2) : null,
+      disk_used_pct: data.disk_used_pct ?? null,
+      disk_free_bytes: data.disk_free_bytes ?? null,
+      disk_free_gb: data.disk_free_bytes != null ? +(data.disk_free_bytes / 1024 / 1024 / 1024).toFixed(2) : null,
+      path: this.config.zylosDir
+    };
+    this.store.insertMetric({
+      timestamp: now,
+      runtime,
+      metric_name: 'system_summary',
+      metric_value: dims.cpu_pct,
+      dimensions: dims,
+      source: 'system',
+      confidence: 'actual'
+    });
 
     this._cache = { ...data, collectedAt };
 

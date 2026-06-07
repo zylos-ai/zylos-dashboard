@@ -65,7 +65,7 @@ export class ConversationCollector {
   _hasUsageForUuid(uuid) {
     try {
       const row = this.store.db.prepare(
-        "SELECT 1 FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'api_request_tokens' AND dimensions LIKE ? LIMIT 1"
+        "SELECT 1 FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'usage_event' AND dimensions LIKE ? LIMIT 1"
       ).get(`%"uuid":"${uuid}"%`);
       return !!row;
     } catch { return false; }
@@ -296,41 +296,23 @@ export class ConversationCollector {
     };
     if (projects.length > 0) dims.projects = projects;
 
+    const price = this._resolveModelPrice(model);
+    const cost = this._calculateCost(usage, price, speed);
+    if (cost != null) dims.cost = cost;
+    if (totalInput > 0) dims.cache_hit_rate = cacheRead / totalInput;
+
     let written = 0;
     this.store.insertMetric({
       timestamp, runtime: 'claude', session_id: sessionId,
-      metric_name: 'api_request_tokens', metric_value: totalInput,
+      metric_name: 'usage_event', metric_value: totalInput,
       dimensions: dims,
       source: 'jsonl_usage', confidence: 'actual'
     });
     written++;
 
-    if (totalInput > 0) {
-      this.store.insertMetric({
-        timestamp, runtime: 'claude', session_id: sessionId,
-        metric_name: 'cache_hit_rate', metric_value: cacheRead / totalInput,
-        dimensions: { uuid },
-        source: 'jsonl_usage', confidence: 'actual'
-      });
-      written++;
-    }
-
-    const price = this._resolveModelPrice(model);
-    const cost = this._calculateCost(usage, price, speed);
-    if (cost != null) {
-      this.store.insertMetric({
-        timestamp, runtime: 'claude', session_id: sessionId,
-        metric_name: 'api_request_cost', metric_value: cost,
-        dimensions: { model, speed, uuid },
-        source: 'jsonl_usage', confidence: 'actual'
-      });
-      written++;
-    }
-
     this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
       last_success: timestamp, model, tokens: totalInput + outputTokens
     });
-
     return written;
   }
 
