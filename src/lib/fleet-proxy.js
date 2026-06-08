@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
-import { browserPath } from './browser-base.js';
+import { browserPath, browserBaseFromRequest } from './browser-base.js';
 import { sendHtml, sendJson, sendText, serveStatic } from './http.js';
 
 const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
@@ -141,7 +141,13 @@ export class FleetProxy {
     }
 
     if (suffix === '/' || suffix === '/index.html') {
-      const prefix = `/fleet/${encodeURIComponent(agent.name)}`;
+      // Include the reverse-proxy base path (X-Forwarded-Prefix, e.g. /dashboard)
+      // so the browser requests assets/API under it. Caddy forwards everything
+      // under /dashboard/* and strips the prefix before this handler runs, so
+      // internal routing is unaffected; locally (no prefix) browserBase is '' and
+      // the paths fall back to /fleet/<name>. See issue #159.
+      const browserBase = browserBaseFromRequest(req);
+      const prefix = browserPath(browserBase, `fleet/${encodeURIComponent(agent.name)}`);
       const html = fs.readFileSync(path.join(this.rootDir, 'index.html'), 'utf8')
         .replaceAll('__BASE_PATH__', prefix)
         .replaceAll('__ASSET_ROOT__', browserPath(prefix, '_assets'));

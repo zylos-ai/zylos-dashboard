@@ -37,6 +37,33 @@ test('fleet proxy serves hub static frontend under agent prefix without secrets'
   }
 });
 
+test('fleet proxy prefixes rewritten paths with the reverse-proxy base path (#159)', async () => {
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: 'http://remote.invalid', read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    // Caddy forwards /dashboard/fleet/Remote/ as /fleet/Remote/ with this header.
+    const resp = await fetch(`${hub.origin}/fleet/Remote/`, {
+      headers: { 'x-forwarded-prefix': '/dashboard' }
+    });
+    assert.equal(resp.status, 200);
+    const body = await resp.text();
+    // Browser-facing asset/API paths must carry the /dashboard prefix so the
+    // browser requests stay under /dashboard/* (the only route Caddy proxies).
+    assert.match(body, /\/dashboard\/fleet\/Remote\/_assets/);
+    // And must NOT emit the bare /fleet/Remote/_assets path that 404s at root.
+    assert.equal(/["'(]\/fleet\/Remote\/_assets/.test(body), false);
+  } finally {
+    await hub.close();
+  }
+});
+
 test('fleet proxy injects session token for API and keeps token out of client response', async () => {
   let seenAuth = null;
   const remote = await listen((req, res) => {
