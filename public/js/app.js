@@ -1211,8 +1211,14 @@ function applySse(name, data) {
   if (!data || typeof data !== 'object') return;
   if (name === 'state_change') {
     const prevRi = state.dashboardState?.runtime_info;
+    // The SSE state payload carries only raw state — the agent identity color
+    // (hue) is added by /api/state, not by the broadcast. Preserve it across SSE
+    // updates so the single-agent mascot stays tinted to match its Pulse Wall
+    // tile instead of falling back to the untinted base art on every update.
+    const prevAgent = state.dashboardState?.agent;
     state.dashboardState = data;
     if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
+    if (!data.agent && prevAgent) state.dashboardState.agent = prevAgent;
     if (data.new_session_threshold) state.newSessionThreshold = data.new_session_threshold;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     applyRuntimeVisibility();

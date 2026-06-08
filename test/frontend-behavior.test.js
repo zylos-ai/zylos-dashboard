@@ -26,6 +26,16 @@ test('single-agent mascot uses the new octopus PNGs (shared with the Pulse Wall)
   assert.match(index, /stateData\.agent = \{ \.\.\.config\.agent, \.\.\.agentColor\(config\.agent\?\.name\) \}/);
 });
 
+test('SSE state updates preserve the agent identity color so the mascot stays tinted', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // The SSE state_change payload omits the agent color (added only by
+  // /api/state). The client must carry it over, the same way it already does
+  // for runtime_info, so the single-agent mascot doesn't flicker back to the
+  // untinted base art on every live update.
+  assert.match(app, /const prevAgent = state\.dashboardState\?\.agent;/);
+  assert.match(app, /if \(!data\.agent && prevAgent\) state\.dashboardState\.agent = prevAgent;/);
+});
+
 test('runtime info upgrade badges use semver-aware comparison', () => {
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
   const runtimeInfo = fs.readFileSync(path.resolve('src/lib/runtime-info.js'), 'utf8');
