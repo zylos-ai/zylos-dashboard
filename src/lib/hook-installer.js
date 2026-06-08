@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
-const CLAUDE_HOOKS_MIGRATED_TO_JSONL = ['UserPromptSubmit', 'Stop'];
+const CLAUDE_HOOK_EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
+const CLAUDE_HOOKS_MIGRATED_TO_JSONL = [];
 const CODEX_HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 const CODEX_HOOK_FEATURE = 'hooks';
 const CODEX_HOOK_EVENT_KEYS = {

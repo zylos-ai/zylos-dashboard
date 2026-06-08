@@ -137,14 +137,9 @@ export class ConversationCollector {
         const isToolResult = Array.isArray(userContent) &&
           userContent.every(c => c.type === 'tool_result');
         if (!isToolResult) {
-          written += this._emitEvent({
-            ingestId: `user-${uuid}`,
-            timestamp, sessionId,
-            eventType: 'user_prompt_submit',
-            category: 'turn',
-            summary: 'User prompt',
-            metadata: { uuid }
-          });
+          // turn-start (user_prompt_submit) is emitted by the Claude hook, not
+          // from JSONL — emitting here too would double-fire. Keep the timestamp
+          // tracking for assistant-message turn-duration computation.
           this._lastUserPromptAt = timestamp;
         }
         continue;
@@ -215,15 +210,8 @@ export class ConversationCollector {
       }
 
       if (!hasToolUse) {
-        written += this._emitEvent({
-          ingestId: `stop-${uuid}`,
-          timestamp, sessionId,
-          eventType: 'stop',
-          category: 'turn',
-          summary: 'Turn complete',
-          durationMs: turnDuration,
-          metadata: { uuid }
-        });
+        // turn-end (stop) is emitted by the Claude hook, not from JSONL —
+        // emitting here too would double-fire. Reset the turn marker.
         this._lastUserPromptAt = null;
       }
     }
@@ -240,35 +228,6 @@ export class ConversationCollector {
     }
 
     return written;
-  }
-
-  _emitEvent({ ingestId, timestamp, sessionId, eventType, category, summary, durationMs, metadata }) {
-    try {
-      const event = {
-        id: crypto.randomUUID(),
-        ingest_id: ingestId,
-        timestamp,
-        runtime: 'claude',
-        session_id: sessionId,
-        event_type: eventType,
-        category,
-        summary,
-        duration_ms: durationMs ?? null,
-        metadata: metadata ? JSON.stringify(metadata) : null,
-        source: 'conversation',
-        confidence: 'actual'
-      };
-      const result = this.store.insertEvent(event);
-      if (result?.inserted && this._onEvent) {
-        this._onEvent({ ...event, metadata });
-      }
-      return result?.inserted ? 1 : 0;
-    } catch (err) {
-      if (!err.message?.includes('UNIQUE constraint')) {
-        process.stderr.write(`[conversation-collector] ${err.message}\n`);
-      }
-      return 0;
-    }
   }
 
   _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = []) {

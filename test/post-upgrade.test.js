@@ -19,7 +19,7 @@ test('post-upgrade — refreshes installed Claude and Codex hooks', () => {
     encoding: 'utf8'
   });
 
-  assert.match(stdout, /claude hooks: 5 added/);
+  assert.match(stdout, /claude hooks: 7 added/);
   assert.match(stdout, /codex hooks: 6 added/);
   assert.match(stdout, /\[post-upgrade\] complete/);
 

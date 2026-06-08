@@ -98,17 +98,15 @@ test('post-install — installs both Claude and Codex hooks regardless of runtim
     HOME: homeDir
   });
 
-  assert.match(stdout, /claude hooks: 5 added/);
+  assert.match(stdout, /claude hooks: 7 added/);
   assert.match(stdout, /codex hooks: 6 added/);
   const claudePath = path.join(tmpDir, '.claude', 'settings.json');
   const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8'));
-  for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
+  for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
     assert.ok(claude.hooks[event], `missing Claude ${event}`);
     const hook = claude.hooks[event][0].hooks[0];
     assert.ok(hook.command.includes('hook-ingest.cjs'));
   }
-  assert.equal(claude.hooks.UserPromptSubmit, undefined, 'UserPromptSubmit migrated to JSONL');
-  assert.equal(claude.hooks.Stop, undefined, 'Stop migrated to JSONL');
   assert.ok(claude.statusLine.command.includes('statusline-ingest.cjs'));
 
   const hooksPath = path.join(tmpDir, '.codex', 'hooks.json');
