@@ -23,9 +23,6 @@ fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
 
 const installer = new HookInstaller(projectRoot, zylosDir);
 const result = installer.install();
-if (result.migrated?.removed > 0) {
-  console.log(`claude hooks: ${result.migrated.removed} migrated to JSONL`);
-}
 console.log(`claude hooks: ${result.claude.added} added (${result.claude.total} events)`);
 console.log(`codex hooks: ${result.codex.added} added (${result.codex.total} events)`);
 if (result.statusline.installed) {

@@ -559,7 +559,6 @@ test('HookInstaller — install() self-heals an already-stripped deployment (#14
 
     const result = installer.install();
     assert.equal(result.claude.added, 2, 'only the two missing turn hooks are added');
-    assert.equal(result.migrated.removed, 0, 'nothing is stripped on the fixed version');
 
     const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     assert.ok(after.hooks.UserPromptSubmit?.length, 'UserPromptSubmit restored');
