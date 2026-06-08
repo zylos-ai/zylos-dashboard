@@ -529,3 +529,47 @@ test('HookInstaller — install() provisions all supported runtimes', async (t) 
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(projectRoot, { recursive: true, force: true });
 });
+
+// Regression for #147: an agent upgraded from the version that migrated
+// UserPromptSubmit/Stop to JSONL has those two hooks already stripped from its
+// settings.json. install() on the fixed version must re-add exactly those two
+// (self-heal) without duplicating the surviving hooks.
+test('HookInstaller — install() self-heals an already-stripped deployment (#147)', async (t) => {
+  const tmpHome = makeTmpDir();
+  const projectRoot = makeTmpDir();
+  const installer = makeInstaller(projectRoot, tmpHome);
+
+  await t.test('re-adds UserPromptSubmit + Stop, leaves surviving hooks untouched', () => {
+    const ownHook = () => ({
+      hooks: [{ type: 'command', command: `node ${installer.hookScript}`, timeout: 5, async: true }]
+    });
+    // Settings as left by the migrated (buggy) version: 5 own hooks, the two
+    // turn hooks gone.
+    const stripped = {
+      hooks: {
+        PreToolUse: [{ ...ownHook(), matcher: '' }],
+        PostToolUse: [{ ...ownHook(), matcher: '' }],
+        PermissionRequest: [ownHook()],
+        SubagentStart: [ownHook()],
+        SubagentStop: [ownHook()]
+      }
+    };
+    fs.mkdirSync(path.dirname(installer._claudePath()), { recursive: true });
+    fs.writeFileSync(installer._claudePath(), JSON.stringify(stripped, null, 2) + '\n');
+
+    const result = installer.install();
+    assert.equal(result.claude.added, 2, 'only the two missing turn hooks are added');
+    assert.equal(result.migrated.removed, 0, 'nothing is stripped on the fixed version');
+
+    const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    assert.ok(after.hooks.UserPromptSubmit?.length, 'UserPromptSubmit restored');
+    assert.ok(after.hooks.Stop?.length, 'Stop restored');
+    // Surviving hooks are not duplicated.
+    for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
+      assert.equal(after.hooks[event].length, 1, `${event} not duplicated`);
+    }
+  });
+
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
