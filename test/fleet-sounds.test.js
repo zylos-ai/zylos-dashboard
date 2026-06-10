@@ -103,3 +103,90 @@ test('handles missing or malformed agent lists', () => {
   const { moods } = computeFleetTransitions(new Map(), [{ state: 'BUSY' }]);
   assert.equal(moods.size, 0);
 });
+
+// ─── Suspended AudioContext: unmute confirmation must survive resume() ───
+// Reproduces the review finding on #194: resume() is async, so a synchronous
+// state check after unmute dropped the confirmation blip.
+
+class FakeAudioContext {
+  constructor() {
+    this.state = 'suspended';
+    this.currentTime = 0;
+    this.destination = {};
+    this.resumeCalls = 0;
+    this.oscillatorStarts = 0;
+  }
+  resume() {
+    this.resumeCalls += 1;
+    this.state = 'running';
+    return Promise.resolve();
+  }
+  createOscillator() {
+    const ctx = this;
+    return {
+      type: '',
+      frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect(node) { return node; },
+      start() { ctx.oscillatorStarts += 1; },
+      stop() {}
+    };
+  }
+  createGain() {
+    return {
+      gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect(node) { return node; }
+    };
+  }
+}
+
+function fakeButton() {
+  const handlers = {};
+  return {
+    textContent: '',
+    title: '',
+    attrs: {},
+    addEventListener(name, fn) { handlers[name] = fn; },
+    setAttribute(name, value) { this.attrs[name] = value; },
+    click() { handlers.click?.(); }
+  };
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+test('unmute confirmation plays after a suspended context resumes', async (t) => {
+  const ctx = new FakeAudioContext();
+  globalThis.window = { AudioContext: function () { return ctx; } };
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+  t.after(() => { delete globalThis.window; delete globalThis.localStorage; });
+
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const button = fakeButton();
+  const sounds = createFleetSounds({ button });
+  assert.equal(sounds.isMuted(), true);
+
+  button.click(); // unmute — the context is still suspended at this point
+  assert.equal(sounds.isMuted(), false);
+  assert.ok(ctx.resumeCalls >= 1);
+
+  await flushMicrotasks();
+  assert.equal(ctx.oscillatorStarts, 1, 'confirmation blip plays once resume() settles');
+});
+
+test('first cue after unmute is not dropped by a suspended context', async (t) => {
+  const ctx = new FakeAudioContext();
+  globalThis.window = { AudioContext: function () { return ctx; } };
+  globalThis.localStorage = { getItem: () => 'false', setItem: () => {} }; // stored unmuted
+  t.after(() => { delete globalThis.window; delete globalThis.localStorage; });
+
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const sounds = createFleetSounds({});
+  assert.equal(sounds.isMuted(), false);
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] }); // seed
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] }); // start cue, ctx suspended
+  await flushMicrotasks();
+  assert.equal(ctx.oscillatorStarts, 1, 'start cue plays after resume() settles');
+});

@@ -50,8 +50,23 @@ export function createFleetSounds({ button, labels } = {}) {
       if (!Ctx) return null;
       audioCtx = new Ctx();
     }
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
     return audioCtx;
+  }
+
+  // Browsers create AudioContext suspended until a user gesture, and resume()
+  // is async — a synchronous state check here would drop the unmute
+  // confirmation and the first cue after it. Play immediately when running,
+  // otherwise after resume() settles; skip cues that sat queued past 2s
+  // (resume can hang until a qualifying gesture, and a "started" blip
+  // arriving minutes late is just noise).
+  function playWhenRunning(fn) {
+    const ctx = ensureContext();
+    if (!ctx) return;
+    if (ctx.state === 'running') { fn(ctx); return; }
+    const requestedAt = Date.now();
+    ctx.resume().then(() => {
+      if (ctx.state === 'running' && Date.now() - requestedAt < 2000) fn(ctx);
+    }).catch(() => {});
   }
 
   function tone(ctx, { from, to, at, duration, peak = 0.06 }) {
@@ -71,16 +86,16 @@ export function createFleetSounds({ button, labels } = {}) {
   // Start: short rising blip. Finish: two-note falling chime. Distinct shapes
   // so they're tellable apart without looking at the wall.
   function playStart() {
-    const ctx = ensureContext();
-    if (!ctx || ctx.state !== 'running') return;
-    tone(ctx, { from: 587, to: 880, at: ctx.currentTime, duration: 0.16 });
+    playWhenRunning((ctx) => {
+      tone(ctx, { from: 587, to: 880, at: ctx.currentTime, duration: 0.16 });
+    });
   }
 
   function playFinish() {
-    const ctx = ensureContext();
-    if (!ctx || ctx.state !== 'running') return;
-    tone(ctx, { from: 880, to: 660, at: ctx.currentTime, duration: 0.14 });
-    tone(ctx, { from: 660, to: 440, at: ctx.currentTime + 0.16, duration: 0.2 });
+    playWhenRunning((ctx) => {
+      tone(ctx, { from: 880, to: 660, at: ctx.currentTime, duration: 0.14 });
+      tone(ctx, { from: 660, to: 440, at: ctx.currentTime + 0.16, duration: 0.2 });
+    });
   }
 
   function renderButton() {
@@ -99,7 +114,7 @@ export function createFleetSounds({ button, labels } = {}) {
     if (!muted) {
       // The toggle click is the user gesture that unlocks audio; confirm
       // audibly so "did that work?" never needs a second agent to answer.
-      ensureContext();
+      // playWhenRunning handles the suspended->running resume internally.
       playStart();
     }
     renderButton();
