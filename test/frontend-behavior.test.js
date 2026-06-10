@@ -482,8 +482,9 @@ test('fleet tile renders context chip with usage and threshold, no tick line', (
 
 test('fleet wall pauses re-render on hover so native tooltips can appear', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
-  // All fleet payload applications go through the hover gate...
-  assert.match(app, /function setFleet\(payload\) \{\n  if \(state\.fleetHoverPaused\) \{/);
+  // All fleet payload applications go through the hover gate (after the sound
+  // tracker, which must see every payload even while rendering is frozen)...
+  assert.match(app, /function setFleet\(payload\) \{\n(.*\n)*?  fleetSounds\?\.handleFleet\(payload\);\n  if \(state\.fleetHoverPaused\) \{/);
   assert.doesNotMatch(app, /state\.fleet = data;\n\s*renderFleet\(\)/);
   // ...armed by pointer enter/leave on the grid root, flushing pending data on leave.
   assert.match(app, /addEventListener\('mouseenter', \(\) => \{ state\.fleetHoverPaused = true; \}\)/);

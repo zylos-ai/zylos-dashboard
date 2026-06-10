@@ -221,6 +221,8 @@
   "agent_fleet.model": "Model",
   "agent_fleet.empty": "No fleet agents configured",
   "agent_fleet.back_to_fleet": "← Fleet",
+  "agent_fleet.sound_on": "Sound cues on — click to mute",
+  "agent_fleet.sound_off": "Sound cues muted — click to enable",
   "reset.now": "now",
   "reset.days": "in {d}d {h}h",
   "reset.hours": "in {h}h {m}m",

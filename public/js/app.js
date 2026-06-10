@@ -1,6 +1,7 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
+import { createFleetSounds } from './fleet-sounds.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -968,12 +969,28 @@ function renderComm() {
 // rendering while the pointer is over the grid; apply the newest payload on
 // leave. Side benefit: tiles don't jump while being read.
 function setFleet(payload) {
+  // Sound cues track the data path, not the render path: they must fire even
+  // while hover-pause defers rendering. Re-applying a pending payload after
+  // mouseleave is a no-op here (the mood map is already up to date).
+  fleetSounds?.handleFleet(payload);
   if (state.fleetHoverPaused) {
     state.pendingFleet = payload;
     return;
   }
   state.fleet = payload;
   renderFleet();
+}
+
+let fleetSounds = null;
+
+function initFleetSounds() {
+  fleetSounds = createFleetSounds({
+    button: $('#fleet-sound-toggle'),
+    labels: () => ({
+      soundOn: t('agent_fleet.sound_on'),
+      soundOff: t('agent_fleet.sound_off')
+    })
+  });
 }
 
 function initFleetHoverPause() {
@@ -998,6 +1015,7 @@ function renderFleet() {
   });
   const updated = $('#fleet-updated');
   if (updated) updated.textContent = fmtAge(state.fleet?.updated_at);
+  fleetSounds?.refreshLabels();
 }
 
 function renderConnection(mode) {
@@ -2438,6 +2456,7 @@ initLogout();
 initTips();
 initInfoBarButtons();
 initFleetHoverPause();
+initFleetSounds();
 renderAll();
 initCharts();
 initTrendControls();

@@ -7,11 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=27">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=28">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=30"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=31"></script>
 </head>
 <body>
 <header class="app-header">
@@ -33,7 +33,10 @@
       <h1 data-i18n="agent_fleet.title">Agent Fleet</h1>
       <p data-i18n="agent_fleet.subtitle">Operational fleet status</p>
     </div>
-    <time class="freshness" id="fleet-updated">--</time>
+    <div class="agent-fleet-head-side">
+      <button class="fleet-sound-toggle" id="fleet-sound-toggle" type="button">🔕</button>
+      <time class="freshness" id="fleet-updated">--</time>
+    </div>
   </div>
   <div id="agent-fleet-root"></div>
 </section>

@@ -221,6 +221,8 @@
   "agent_fleet.model": "模型",
   "agent_fleet.empty": "未配置 fleet agent",
   "agent_fleet.back_to_fleet": "← 舰队",
+  "agent_fleet.sound_on": "提示音已开启 — 点击静音",
+  "agent_fleet.sound_off": "提示音已静音 — 点击开启",
   "reset.now": "现在",
   "reset.days": "{d} 天 {h} 小时后",
   "reset.hours": "{h} 小时 {m} 分后",

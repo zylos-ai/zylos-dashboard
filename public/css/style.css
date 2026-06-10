@@ -251,6 +251,22 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   margin: 2px 0 0;
   color: var(--text-muted);
 }
+.agent-fleet-head-side {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+.fleet-sound-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.fleet-sound-toggle:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
+.fleet-sound-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .agent-fleet {
   max-width: 1400px;
   margin: 0 auto;
