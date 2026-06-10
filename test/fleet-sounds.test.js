@@ -118,8 +118,10 @@ class FakeAudioContext {
   }
   resume() {
     this.resumeCalls += 1;
-    this.state = 'running';
-    return Promise.resolve();
+    // Flip state in a microtask, like a real browser: a synchronous state
+    // check right after resume() must still see 'suspended', which is
+    // exactly what the original bug relied on.
+    return Promise.resolve().then(() => { this.state = 'running'; });
   }
   createOscillator() {
     const ctx = this;
@@ -152,6 +154,7 @@ function fakeButton() {
 }
 
 async function flushMicrotasks() {
+  await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
 }
