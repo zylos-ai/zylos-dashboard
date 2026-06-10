@@ -313,7 +313,7 @@ test('self tile drills to local root and external tiles drill to /fleet/<name>/'
   const html = renderAgentFleetHtml(selfFleet, {
     basePath: '/dash'
   });
-  assert.match(html, /class="agent-tile agent-tile-idle is-self"/);
+  assert.match(html, /class="agent-tile agent-tile-idle is-self context-ok"/);
   assert.match(html, /data-self="true"/);
   assert.match(html, /href="\/dash\/"/);
   assert.match(html, /href="\/dash\/fleet\/remote\/"/);
@@ -432,4 +432,23 @@ test('fleet tile thinking feed never overrides stuck/offline moods', () => {
     }]
   });
   assert.equal(view.tiles[0].mood, 'stuck');
+});
+
+test('fleet tile context level mirrors the single-agent bar thresholds, not new_session_threshold', () => {
+  const tile = (pct) => renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', context_pct: pct, new_session_threshold: 30 }]
+  });
+  assert.match(tile(42), / context-ok"/);
+  assert.match(tile(50), / context-warning"/);
+  assert.match(tile(75), / context-warning"/);
+  assert.match(tile(76), / context-danger"/);
+  assert.match(tile(null), / context-ok"/);
+  // Threshold no longer drives the ring color (it stays a tick marker only):
+  // 42% over a threshold of 30 must NOT mark the tile.
+  assert.doesNotMatch(tile(42), /is-over-threshold/);
+
+  const view = buildAgentFleetView({
+    agents: [{ name: 'a', state: 'IDLE', context_pct: 0.6 }]
+  });
+  assert.equal(view.tiles[0].contextLevel, 'warning');
 });

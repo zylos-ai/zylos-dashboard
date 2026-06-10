@@ -148,7 +148,13 @@ function hasSubagent(state) {
 function deriveActivity(state) {
   if (state?.running_tools?.length > 0) return state.running_tools[0].tool_detail || state.running_tools[0].tool_name || 'Running tool';
   if (state?.active_subagents?.length > 0) return state.active_subagents[0].last_activity || state.active_subagents[0].description || 'Subagent active';
-  return state?.last_prompt?.summary || state?.last_message || state?.reason || null;
+  // The single-agent view shows the prompt line only transiently; its Current
+  // Activity body is the last assistant message. The producer clears
+  // last_message on each new prompt, so preferring it here reproduces those
+  // semantics: the prompt summary shows only while the turn is still open.
+  const msg = state?.last_message;
+  const msgText = typeof msg === 'string' ? msg : msg?.text;
+  return msgText || state?.last_prompt?.summary || state?.reason || null;
 }
 
 // Mirror of the single-agent Current Activity feed (renderToolFeed): running

@@ -646,3 +646,32 @@ test('stateToFleetRecord passes rate limit percentages through, defaulting to nu
   assert.equal(without.rate_limit_pct, null);
   assert.equal(without.rate_limit_7d_pct, null);
 });
+
+test('stateToFleetRecord idle activity prefers last assistant message over stale prompt', () => {
+  const record = stateToFleetRecord({ name: 'a' }, {
+    state: 'IDLE',
+    last_prompt: { source: 'hxa-connect (zylos01)', summary: 'Prompt from hxa-connect (zylos01)', timestamp: '2026-06-10T09:00:00.000Z' },
+    last_message: { text: 'Reviewed PR #186, conclusion CLEAN.', timestamp: '2026-06-10T09:01:00.000Z' }
+  }, { self: false, nowMs: 0 });
+  assert.equal(record.activity, 'Reviewed PR #186, conclusion CLEAN.');
+});
+
+test('stateToFleetRecord falls back to prompt summary while the turn is still open', () => {
+  // The producer clears last_message on user_prompt_submit, so an open turn
+  // has only the prompt summary — mirroring the single-agent transient line.
+  const record = stateToFleetRecord({ name: 'a' }, {
+    state: 'BUSY',
+    last_prompt: { summary: 'Prompt from lark', timestamp: '2026-06-10T09:00:00.000Z' },
+    last_message: null
+  }, { self: false, nowMs: 0 });
+  assert.equal(record.activity, 'Prompt from lark');
+});
+
+test('stateToFleetRecord accepts legacy string-form last_message', () => {
+  const record = stateToFleetRecord({ name: 'a' }, {
+    state: 'IDLE',
+    last_prompt: { summary: 'Prompt from lark' },
+    last_message: 'plain text reply'
+  }, { self: false, nowMs: 0 });
+  assert.equal(record.activity, 'plain text reply');
+});

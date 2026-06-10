@@ -360,9 +360,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   width: 116px;
   height: 116px;
   border-radius: 50%;
-  background:
-    conic-gradient(var(--context-color, var(--green, #059669)) calc(var(--context-pct) * 1%), color-mix(in srgb, var(--text-muted) 22%, transparent) 0),
-    radial-gradient(circle at center, var(--bg-elevated) 59%, transparent 60%);
+  background: conic-gradient(var(--context-color, var(--green, #059669)) calc(var(--context-pct) * 1%), color-mix(in srgb, var(--text-muted) 22%, transparent) 0);
+  /* Hollow annulus like the CPU/Memory/Disk mini rings, not a filled pie. */
+  -webkit-mask: radial-gradient(circle at center, transparent 58%, #000 59%);
+  mask: radial-gradient(circle at center, transparent 58%, #000 59%);
   filter: drop-shadow(0 0 18px color-mix(in srgb, var(--context-color, var(--green, #059669)) 24%, transparent));
 }
 .context-threshold {
@@ -377,8 +378,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   opacity: 0.72;
   z-index: 2;
 }
-.agent-tile.is-over-threshold {
+.agent-tile.context-warning {
   --context-color: #f59e0b;
+}
+.agent-tile.context-danger {
+  --context-color: #ef4444;
 }
 .agent-mascot {
   position: relative;

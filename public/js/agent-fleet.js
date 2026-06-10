@@ -95,6 +95,15 @@ function ringLevel(pct) {
   return 'ok';
 }
 
+// Mirrors the single-agent context bar (barColor in app.js):
+// <50 ok, 50–75 warning, >75 danger.
+function contextLevel(pct) {
+  if (pct == null) return 'ok';
+  if (pct > 75) return 'danger';
+  if (pct >= 50) return 'warning';
+  return 'ok';
+}
+
 function miniRing(name, value, labels) {
   const pct = pctValue(value);
   const ringPct = pct == null ? 0 : pct;
@@ -206,8 +215,8 @@ export function buildAgentFleetView(fleet, options = {}) {
       stateLabel: stateLabel(agent, labels, mood),
       activity,
       contextPct,
+      contextLevel: contextLevel(contextPct),
       threshold,
-      overThreshold: contextPct != null && threshold != null && contextPct >= threshold,
       model: labelText(agent.model),
       effort: labelText(agent.effort),
       activityFeed,
@@ -246,7 +255,7 @@ function renderTile(tile, labels) {
   const reason = showReason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
   const feedHtml = activityFeedRows(tile, labels);
-  return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}${tile.overThreshold ? ' is-over-threshold' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
+  return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''} context-${escapeHtml(tile.contextLevel)}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
       <span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span>
