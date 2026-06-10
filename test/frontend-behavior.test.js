@@ -388,3 +388,29 @@ test('fleet tile renders thinking feed entry from kind, not label', () => {
   assert.match(html, /fleet-feed-row is-thinking/);
   assert.match(html, /Thinking…/);
 });
+
+test('fleet tile shows thinking mascot when feed has a thinking entry, counted as working', () => {
+  const fleet = {
+    agents: [{
+      name: 'a', state: 'BUSY',
+      activity: 'Prompt from lark',
+      activity_feed: [{ kind: 'thinking', label: null, started_at: null }]
+    }]
+  };
+  const view = buildAgentFleetView(fleet);
+  assert.equal(view.tiles[0].mood, 'thinking');
+  const html = renderAgentFleetHtml(fleet);
+  assert.match(html, /data-state="thinking"/);
+  assert.match(html, /thinking\.png/);
+  assert.match(html, /1 Working/);
+});
+
+test('fleet tile thinking feed never overrides stuck/offline moods', () => {
+  const view = buildAgentFleetView({
+    agents: [{
+      name: 'a', state: 'POSSIBLY_STUCK',
+      activity_feed: [{ kind: 'thinking', label: null, started_at: null }]
+    }]
+  });
+  assert.equal(view.tiles[0].mood, 'stuck');
+});
