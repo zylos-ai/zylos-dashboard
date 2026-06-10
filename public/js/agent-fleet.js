@@ -58,8 +58,7 @@ function isOffline(agent) {
   return stateMood(agent) === 'offline' || Number(agent?.pulse_rate) === 0;
 }
 
-function stateLabel(agent, labels) {
-  const mood = stateMood(agent);
+function stateLabel(agent, labels, mood = stateMood(agent)) {
   const reason = String(agent?.health_reason || '').toLowerCase();
   if (reason === 'version_unsupported') return labels.versionUnsupported;
   if (reason === 'unreachable') return labels.unreachable;
@@ -204,7 +203,7 @@ export function buildAgentFleetView(fleet, options = {}) {
       isSelf,
       color,
       hue: Number.isFinite(Number(agent.hue)) ? Number(agent.hue) : 0,
-      stateLabel: stateLabel(agent, labels),
+      stateLabel: stateLabel(agent, labels, mood),
       activity,
       contextPct,
       threshold,

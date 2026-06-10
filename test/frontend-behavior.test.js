@@ -405,6 +405,25 @@ test('fleet tile shows thinking mascot when feed has a thinking entry, counted a
   assert.match(html, /1 Working/);
 });
 
+test('fleet tile visible state badge follows the feed-upgraded mood', () => {
+  const view = buildAgentFleetView({
+    agents: [{
+      name: 'a', state: 'BUSY',
+      activity: 'Prompt from lark',
+      activity_feed: [{ kind: 'thinking', label: null, started_at: null }]
+    }]
+  });
+  assert.equal(view.tiles[0].stateLabel, 'Thinking');
+  const html = renderAgentFleetHtml({
+    agents: [{
+      name: 'a', state: 'BUSY',
+      activity: 'Prompt from lark',
+      activity_feed: [{ kind: 'thinking', label: null, started_at: null }]
+    }]
+  });
+  assert.match(html, /<span class="agent-state mood-thinking">Thinking<\/span>/);
+});
+
 test('fleet tile thinking feed never overrides stuck/offline moods', () => {
   const view = buildAgentFleetView({
     agents: [{
