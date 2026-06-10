@@ -11,6 +11,7 @@ const COLLECTOR_FRESHNESS_MS = 30_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const AM_HEARTBEAT_INTERVAL_MS = 15_000;
 const AM_HEARTBEAT_STALE_MS = 60_000;
+const TOOL_TOMBSTONE_LIMIT = 64;
 
 export function deriveAgentState(signals) {
   const evidence = [];
@@ -179,6 +180,10 @@ export class StateEngine {
       activeSubagents: new Map(),
       lastAssistantMessage: null
     };
+
+    // tool_use_ids whose post_tool_use arrived before its pre_tool_use
+    // (hook HTTP posts of fast tool calls can race and land out of order)
+    this._toolTombstones = new Set();
   }
 
   onEvent(event) {
@@ -193,6 +198,12 @@ export class StateEngine {
 
     switch (event.event_type) {
       case 'pre_tool_use':
+        if (event.metadata?.tool_use_id && this._toolTombstones.has(event.metadata.tool_use_id)) {
+          this._toolTombstones.delete(event.metadata.tool_use_id);
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
         if (event.metadata?.tool_use_id) {
           const agentId = this._agentIdForEvent(event);
           this._state.runningTools.set(event.metadata.tool_use_id, {
@@ -218,7 +229,8 @@ export class StateEngine {
 
       case 'post_tool_use':
         if (event.metadata?.tool_use_id) {
-          this._state.runningTools.delete(event.metadata.tool_use_id);
+          const removed = this._state.runningTools.delete(event.metadata.tool_use_id);
+          if (!removed) this._addToolTombstone(event.metadata.tool_use_id);
         }
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
@@ -240,7 +252,7 @@ export class StateEngine {
         if (this._isNewMainSessionBoundary(event.session_id)) {
           this._resetRuntimeForegroundState();
         }
-        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.session_id) this._setMainSessionId(event.session_id);
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
         break;
@@ -255,7 +267,7 @@ export class StateEngine {
           break;
         }
         this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
-        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.session_id) this._setMainSessionId(event.session_id);
         this._state.lastProgressAt = now;
         this._state.lastAssistantMessage = null;
         this._state.lastPrompt = {
@@ -331,7 +343,7 @@ export class StateEngine {
         break;
 
       case 'subagent_start':
-        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.session_id) this._setMainSessionId(event.session_id);
         if (event.metadata?.agent_id) {
           let description = event.metadata.description || null;
           if (!description) {
@@ -360,7 +372,7 @@ export class StateEngine {
         break;
 
       case 'subagent_update':
-        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.session_id) this._setMainSessionId(event.session_id);
         if (event.metadata?.agent_id) {
           const existing = this._state.activeSubagents.get(event.metadata.agent_id) || {
             agent_type: event.metadata.agent_type || 'general-purpose',
@@ -707,6 +719,25 @@ export class StateEngine {
     }
 
     return foregroundSessionIds.size > 0 && !foregroundSessionIds.has(sessionId);
+  }
+
+  _addToolTombstone(toolUseId) {
+    this._toolTombstones.add(toolUseId);
+    while (this._toolTombstones.size > TOOL_TOMBSTONE_LIMIT) {
+      this._toolTombstones.delete(this._toolTombstones.values().next().value);
+    }
+  }
+
+  _setMainSessionId(sessionId) {
+    if (sessionId === this._state.mainSessionId) return;
+    this._state.mainSessionId = sessionId;
+    // A foreground tool owned by a superseded session cannot still be
+    // running — its session is gone and no post_tool_use will ever come.
+    for (const [id, tool] of this._state.runningTools) {
+      if (!tool.agent_id && tool.session_id && tool.session_id !== sessionId) {
+        this._state.runningTools.delete(id);
+      }
+    }
   }
 
   _resetRuntimeForegroundState() {

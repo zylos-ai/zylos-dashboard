@@ -1454,3 +1454,139 @@ test('UserPromptSubmit shows prompt source from reply via', () => {
       `prompt "${prompt.slice(0, 50)}..." → source ${result.metadata.prompt_source}`);
   }
 });
+
+// --- Issue #182: phantom running tool from out-of-order pre/post ingestion ---
+
+test('post_tool_use arriving before its pre_tool_use leaves no phantom running tool', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'post_tool_use',
+    timestamp: new Date(1000018).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-fast', tool_name: 'Read' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-fast', tool_name: 'Read' }
+  });
+
+  assert.equal(engine.getRunningTools().length, 0, 'out-of-order pair must not register a running tool');
+});
+
+test('tool tombstone only suppresses its own tool_use_id', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'post_tool_use',
+    timestamp: new Date(1000018).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-a', tool_name: 'Read' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000020).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-b', tool_name: 'Bash' }
+  });
+
+  assert.equal(engine.getRunningTools().length, 1, 'unrelated tool must still register');
+  assert.equal(engine.getRunningTools()[0].tool_name, 'Bash');
+});
+
+test('tombstone is consumed: same tool_use_id registers normally afterwards', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'post_tool_use',
+    timestamp: new Date(1000018).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-a', tool_name: 'Read' }
+  });
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000020).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-a', tool_name: 'Read' }
+  });
+  assert.equal(engine.getRunningTools().length, 0);
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000030).toISOString(),
+    session_id: 'sess-1',
+    metadata: { tool_use_id: 'tool-a', tool_name: 'Read' }
+  });
+  assert.equal(engine.getRunningTools().length, 1, 'tombstone must not outlive its match');
+});
+
+test('main session switch via user_prompt_submit sweeps orphaned foreground tools', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'sess-old',
+    metadata: {}
+  });
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'sess-old',
+    metadata: { tool_use_id: 'tool-orphan', tool_name: 'Read' }
+  });
+  assert.equal(engine.getRunningTools().length, 1);
+
+  // sess-old dies mid-tool (no stop event); a new main session takes over
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1011000).toISOString(),
+    session_id: 'sess-new',
+    metadata: {}
+  });
+
+  assert.equal(engine.getRunningTools().length, 0, 'foreground tools of superseded session must be swept');
+});
+
+test('main session switch keeps subagent tools and current-session tools', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'sess-old',
+    metadata: {}
+  });
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'sess-old',
+    metadata: { tool_use_id: 'tool-orphan', tool_name: 'Read' }
+  });
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'sub-sess',
+    metadata: { tool_use_id: 'tool-sub', tool_name: 'WebSearch', agent_id: 'agent-1' }
+  });
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1011000).toISOString(),
+    session_id: 'sess-new',
+    metadata: {}
+  });
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1011100).toISOString(),
+    session_id: 'sess-new',
+    metadata: { tool_use_id: 'tool-live', tool_name: 'Bash' }
+  });
+
+  const names = engine.getRunningTools().map(t => t.tool_name).sort();
+  assert.deepEqual(names, ['Bash', 'WebSearch'], 'subagent + current-session tools must survive the sweep');
+});
