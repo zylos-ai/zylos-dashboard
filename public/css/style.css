@@ -281,7 +281,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   --context-pct: 0;
   --threshold-pct: 70;
   display: grid;
-  grid-template-rows: auto auto 1fr auto auto auto auto;
+  /* Flexible track on the activity row (6th), not the mascot row: rows above
+     stay content-sized so model/cost/ring rows align horizontally across
+     tiles regardless of how many lines each tile's activity text wraps to. */
+  grid-template-rows: auto auto auto auto auto 1fr auto;
   gap: var(--space-sm);
   min-width: 0;
   min-height: 360px;
@@ -342,9 +345,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 650;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 .agent-mascot-wrap {
   position: relative;
