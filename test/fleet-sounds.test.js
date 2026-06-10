@@ -115,13 +115,27 @@ class FakeAudioContext {
     this.destination = {};
     this.resumeCalls = 0;
     this.oscillatorStarts = 0;
+    this.closed = false;
+    this.sinkIds = [];
   }
   resume() {
     this.resumeCalls += 1;
     // Flip state in a microtask, like a real browser: a synchronous state
     // check right after resume() must still see 'suspended', which is
-    // exactly what the original bug relied on.
-    return Promise.resolve().then(() => { this.state = 'running'; });
+    // exactly what the original bug relied on. A closed context stays
+    // closed — resume() never revives it.
+    return Promise.resolve().then(() => {
+      if (this.state !== 'closed') this.state = 'running';
+    });
+  }
+  close() {
+    this.closed = true;
+    this.state = 'closed';
+    return Promise.resolve();
+  }
+  setSinkId(id) {
+    this.sinkIds.push(id);
+    return Promise.resolve();
   }
   createOscillator() {
     const ctx = this;
@@ -192,4 +206,92 @@ test('first cue after unmute is not dropped by a suspended context', async (t) =
   sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] }); // start cue, ctx suspended
   await flushMicrotasks();
   assert.equal(ctx.oscillatorStarts, 1, 'start cue plays after resume() settles');
+});
+
+// ─── Output device routing + global unlock (#195) ───
+
+function fakeEventTarget() {
+  const handlers = {};
+  return {
+    handlers,
+    addEventListener(name, fn) { handlers[name] = fn; },
+    dispatch(name) { handlers[name]?.(); }
+  };
+}
+
+function withAudioFactory(t, { stored = 'false' } = {}) {
+  const contexts = [];
+  globalThis.window = {
+    AudioContext: function () {
+      const ctx = new FakeAudioContext();
+      contexts.push(ctx);
+      return ctx;
+    }
+  };
+  globalThis.localStorage = { getItem: () => stored, setItem: () => {} };
+  t.after(() => { delete globalThis.window; delete globalThis.localStorage; });
+  return contexts;
+}
+
+test('new contexts are pinned to the default sink when setSinkId exists', async (t) => {
+  const contexts = withAudioFactory(t);
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const sounds = createFleetSounds({ mediaDevices: null, doc: null });
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] });
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] });
+  assert.equal(contexts.length, 1);
+  assert.deepEqual(contexts[0].sinkIds, ['']);
+});
+
+test('devicechange closes the context and rebinds to the new default', async (t) => {
+  const contexts = withAudioFactory(t);
+  const devices = fakeEventTarget();
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const sounds = createFleetSounds({ mediaDevices: devices, doc: null });
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] });
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] }); // creates ctx 1
+  assert.equal(contexts.length, 1);
+
+  devices.dispatch('devicechange');
+  assert.equal(contexts[0].closed, true, 'stale context is closed');
+  assert.equal(contexts.length, 2, 'unmuted page rebinds eagerly');
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] }); // finish cue
+  await flushMicrotasks();
+  assert.equal(contexts[1].oscillatorStarts > 0, true, 'cue plays on the fresh context');
+  assert.equal(contexts[0].oscillatorStarts, 0, 'nothing plays on the closed context');
+});
+
+test('devicechange with no context yet is a no-op', async (t) => {
+  const contexts = withAudioFactory(t);
+  const devices = fakeEventTarget();
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  createFleetSounds({ mediaDevices: devices, doc: null });
+
+  devices.dispatch('devicechange');
+  assert.equal(contexts.length, 0);
+});
+
+test('any pointerdown resumes a suspended context when unmuted', async (t) => {
+  const contexts = withAudioFactory(t);
+  const doc = fakeEventTarget();
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  createFleetSounds({ mediaDevices: null, doc });
+
+  doc.dispatch('pointerdown');
+  assert.equal(contexts.length, 1, 'click creates the context');
+  assert.ok(contexts[0].resumeCalls >= 1, 'click resumes the suspended context');
+});
+
+test('pointerdown does not create or resume audio while muted', async (t) => {
+  const contexts = withAudioFactory(t, { stored: null });
+  const doc = fakeEventTarget();
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const sounds = createFleetSounds({ mediaDevices: null, doc });
+  assert.equal(sounds.isMuted(), true);
+
+  doc.dispatch('pointerdown');
+  assert.equal(contexts.length, 0);
 });

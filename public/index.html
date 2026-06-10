@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=31"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=32"></script>
 </head>
 <body>
 <header class="app-header">
@@ -19,6 +19,7 @@
     <p class="eyebrow" data-i18n="app.title">Zylos Dashboard</p>
   </div>
   <div class="header-actions">
+    <button class="fleet-sound-toggle" id="fleet-sound-toggle" type="button">🔕</button>
     <span class="connection-pill" id="connection-status" data-state="connecting" data-i18n="status.connecting">Connecting</span>
     <button class="lang-btn" id="locale-toggle" type="button" data-i18n="lang.switch">中文</button>
     <button class="lang-btn logout-btn" id="logout-btn" type="button" data-i18n="action.logout">Logout</button>
@@ -34,7 +35,6 @@
       <p data-i18n="agent_fleet.subtitle">Operational fleet status</p>
     </div>
     <div class="agent-fleet-head-side">
-      <button class="fleet-sound-toggle" id="fleet-sound-toggle" type="button">🔕</button>
       <time class="freshness" id="fleet-updated">--</time>
     </div>
   </div>

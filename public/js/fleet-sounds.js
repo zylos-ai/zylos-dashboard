@@ -39,19 +39,56 @@ function loadMuted() {
   }
 }
 
-export function createFleetSounds({ button, labels } = {}) {
+export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
   let muted = loadMuted();
   let prevMoods = new Map();
   let audioCtx = null;
+  const devices = mediaDevices !== undefined
+    ? mediaDevices
+    : (typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined);
+  const docRef = doc !== undefined ? doc : (typeof document !== 'undefined' ? document : undefined);
 
   function ensureContext() {
     if (!audioCtx) {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return null;
       audioCtx = new Ctx();
+      // Chrome binds a context's output to the device that was default at
+      // creation and won't follow later changes on its own. Pinning the sink
+      // to '' (the UA default) makes the routing explicit where supported
+      // (Chrome 110+); rebinding on device changes is handled below.
+      if (typeof audioCtx.setSinkId === 'function') {
+        audioCtx.setSinkId('').catch(() => {});
+      }
     }
     return audioCtx;
   }
+
+  // Re-setting an identical sinkId is a spec'd no-op, so the only reliable way
+  // to rebind after the system default output changes (devicechange fires for
+  // that — the UA's virtual default device entry updates) is to drop the
+  // context and build a fresh one, which binds to the new default at creation.
+  function handleDeviceChange() {
+    if (!audioCtx) return;
+    const old = audioCtx;
+    audioCtx = null;
+    old.close?.().catch?.(() => {});
+    if (!muted) ensureContext();
+  }
+
+  // Browsers keep a fresh AudioContext suspended until a user gesture. The
+  // bell click unlocks it, but on pages without the unmute interaction (a
+  // reload with the preference already on, a remote agent detail page) cues
+  // would stay queued and expire. Any click on the page is a qualifying
+  // gesture — use it to resume.
+  function handlePointerDown() {
+    if (muted) return;
+    const ctx = ensureContext();
+    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+  }
+
+  devices?.addEventListener?.('devicechange', handleDeviceChange);
+  docRef?.addEventListener?.('pointerdown', handlePointerDown);
 
   // Browsers create AudioContext suspended until a user gesture, and resume()
   // is async — a synchronous state check here would drop the unmute
