@@ -541,3 +541,18 @@ test('fleet summary cost totals render -- when no agent reports a tier', () => {
   });
   assert.equal(partial.costTotals.session, '$2.00');
 });
+
+test('fleet summary cost totals treat explicit null as unreported, but 0 as a real report', () => {
+  // Production payloads send explicit nulls (getCostTiers without data,
+  // offline default fleet records) — these must not sum as 0.
+  const nulls = buildAgentFleetView({
+    agents: [{ name: 'a', state: 'IDLE', session_cost: null, daily_cost: null, weekly_cost: null }]
+  });
+  assert.deepEqual(nulls.costTotals, { session: '--', daily: '--', weekly: '--' });
+
+  const zero = buildAgentFleetView({
+    agents: [{ name: 'a', state: 'IDLE', session_cost: 0, daily_cost: null, weekly_cost: null }]
+  });
+  assert.equal(zero.costTotals.session, '$0.0000');
+  assert.equal(zero.costTotals.daily, '--');
+});

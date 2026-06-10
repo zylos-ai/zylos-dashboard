@@ -261,7 +261,13 @@ export function buildAgentFleetView(fleet, options = {}) {
   const sumTier = (pick) => {
     let total = null;
     for (const agent of agents) {
-      const n = Number(pick(agent));
+      const value = pick(agent);
+      // Skip absent values before Number(): production payloads send explicit
+      // null for unreported tiers (getCostTiers, offline default records) and
+      // Number(null) is 0, which would fake a '$0.0000' report. A genuine
+      // numeric 0 still counts as reported.
+      if (value == null || value === '') continue;
+      const n = Number(value);
       if (Number.isFinite(n)) total = (total ?? 0) + n;
     }
     return total;
