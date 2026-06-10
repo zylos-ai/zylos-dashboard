@@ -304,7 +304,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   gap: 6px;
   color: var(--text);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 400;
 }
 .sum-seg .sum-dot {
   display: inline-block;
