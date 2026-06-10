@@ -130,6 +130,7 @@ if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}"
 const sse = new SseHub(15_000);
 let fleetStateTimer = null;
 let lastFleetStateBroadcastAt = 0;
+let fleetPollerReady = false; // fleetPoller is declared later (TDZ guard)
 
 function broadcastFleetState() {
   try {
@@ -138,6 +139,11 @@ function broadcastFleetState() {
   } catch (err) {
     process.stderr.write(`[fleet] fleet_state SSE broadcast skipped: ${err.message}\n`);
   }
+  // Without this, our own wall only received `fleet` events when a remote
+  // happened to send fleet_state (every 30s for an idle remote) or the 10s
+  // browser fallback fired, so the self tile lagged the single-agent view by
+  // 10-30s. Riding the same 1s-throttled path keeps it in sync.
+  if (fleetPollerReady) broadcastFleet(fleetPoller.getFleet());
 }
 
 function scheduleFleetStateBroadcast() {
@@ -378,6 +384,7 @@ function broadcastFleet(remoteFleet) {
 }
 
 const fleetPoller = new FleetPoller(config, { onPoll: broadcastFleet });
+fleetPollerReady = true;
 
 async function startupSequence() {
   // Initial collector runs
