@@ -16,7 +16,6 @@ function makeConfig(agents, fleet = {}) {
     fleet: {
       agents,
       timeout_ms: 50,
-      stale_ms: 1000,
       jitter_ms: 0,
       ...fleet
     }
@@ -155,14 +154,16 @@ test('fleet poller maps token 404 and invalid key 401 without blocking other age
   await poller.pollOnce();
   const byName = Object.fromEntries(poller.getFleet().agents.map(a => [a.name, a]));
   assert.equal(byName.Old.health_reason, 'version_unsupported');
+  assert.equal(byName.Old.state, 'UNKNOWN');
   assert.equal(byName.Old.hue, agentColor('Old').hue);
   assert.equal(byName.Bad.health_reason, 'auth_failed');
+  assert.equal(byName.Bad.state, 'OFFLINE');
   assert.equal(byName.Bad.hue, agentColor('Bad').hue);
   assert.equal(byName.Good.health_reason, 'idle');
   assert.equal(byName.Good.hue, agentColor('Good').hue);
 });
 
-test('fleet poller marks stale successful records offline', async () => {
+test('fleet poller keeps quiet records online — no event-rate staleness (#180)', async () => {
   let now = 0;
   const fetchImpl = async (url) => {
     if (url.endsWith('/api/auth/token')) return jsonResponse({ token: 'zylos_st_ok', expires_at: new Date(120000).toISOString() });
@@ -170,13 +171,92 @@ test('fleet poller marks stale successful records offline', async () => {
   };
   const poller = new FleetPoller(makeConfig([
     { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
-  ], { stale_ms: 1000 }), { fetch: fetchImpl, now: () => now });
+  ]), { fetch: fetchImpl, now: () => now });
 
   await poller.pollOnce();
   assert.equal(poller.getFleet().agents[0].health_reason, 'idle');
-  now = 1500;
-  assert.equal(poller.getFleet().agents[0].health_reason, 'offline');
+  // An idle agent legitimately pushes nothing for long stretches; elapsed
+  // time without events must not flip it offline while the channel is alive.
+  now = 10 * 60_000;
+  assert.equal(poller.getFleet().agents[0].health_reason, 'idle');
+  assert.equal(poller.getFleet().agents[0].state, 'IDLE');
+});
+
+test('fleet poller marks agent OFFLINE on poll failure, recovers on success (#180)', async () => {
+  let fail = false;
+  const fetchImpl = async (url) => {
+    if (fail) throw new Error('connection refused');
+    if (url.endsWith('/api/auth/token')) return jsonResponse({ token: 'zylos_st_ok', expires_at: new Date(120000).toISOString() });
+    return jsonResponse({ state: 'IDLE' });
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  await poller.pollOnce();
+  assert.equal(poller.getFleet().agents[0].state, 'IDLE');
+
+  fail = true;
+  await poller.pollOnce();
   assert.equal(poller.getFleet().agents[0].state, 'OFFLINE');
+  assert.equal(poller.getFleet().agents[0].health_reason, 'unreachable');
+  // Last-known metrics are preserved for display alongside the OFFLINE state.
+  fail = false;
+  await poller.pollOnce();
+  assert.equal(poller.getFleet().agents[0].state, 'IDLE');
+});
+
+test('fleet poller idle watchdog aborts half-open SSE and starts fallback polling (#180)', async () => {
+  const timers = [];
+  let sseController;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_stream', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE' });
+    if (url.endsWith('/api/stream')) {
+      // Half-open connection: stream opens, then goes silent forever.
+      return new Response(new ReadableStream({ start(c) { sseController = c; } }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { sse_idle_timeout_ms: 45_000 }), {
+    fetch: fetchImpl,
+    now: () => 0,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+
+  const agent = poller.agents[0];
+  poller.running = true;
+  const stream = poller._streamState(agent);
+  const controller = new AbortController();
+  stream.controller = controller; // _connectSse wires this; mirrored here for a direct _runSse call
+  const run = poller._runSse(agent, stream, controller.signal).catch(err => err);
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  const watchdog = timers.find(t => t.ms === 45_000 && !t.cleared);
+  assert.ok(watchdog, 'idle watchdog should be armed after connect');
+  assert.equal(stream.idleTimer, watchdog);
+
+  watchdog.fn();
+  assert.equal(controller.signal.aborted, true, 'watchdog should abort the half-open stream');
+  assert.ok(stream.pollTimer, 'watchdog should start fallback polling');
+  assert.ok(stream.reconnectTimer, 'watchdog should schedule a reconnect');
+  poller.running = false;
+  // A directly-constructed Response body does not observe fetch abort signals,
+  // so close the stream to let the read loop notice signal.aborted and exit.
+  sseController.close();
+  await run;
 });
 
 test('stateToFleetRecord produces a secret-free self record from local API state', () => {

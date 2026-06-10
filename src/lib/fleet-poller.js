@@ -2,7 +2,12 @@ import { agentColor } from './agent-color.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 3000;
 const DEFAULT_TIMEOUT_MS = 2500;
-const DEFAULT_STALE_MS = 10_000;
+// Liveness is connection-based (#180): an agent is OFFLINE only when its SSE
+// connection is down and polling fails — never because pushed events are
+// sparse (an idle agent legitimately emits nothing for long stretches).
+// The idle timeout guards against half-open connections: the server emits
+// keepalives every 15s, so 45s of byte silence means the connection is dead.
+const DEFAULT_SSE_IDLE_TIMEOUT_MS = 45_000;
 const DEFAULT_JITTER_MS = 500;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 const DEFAULT_RECONNECT_BASE_MS = 1000;
@@ -225,7 +230,7 @@ export class FleetPoller {
     this.agents = Array.isArray(fleet.agents) ? fleet.agents : [];
     this.pollIntervalMs = toNumber(fleet.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
     this.timeoutMs = toNumber(fleet.timeout_ms, DEFAULT_TIMEOUT_MS);
-    this.staleMs = toNumber(fleet.stale_ms, DEFAULT_STALE_MS);
+    this.sseIdleTimeoutMs = toNumber(fleet.sse_idle_timeout_ms, DEFAULT_SSE_IDLE_TIMEOUT_MS);
     this.jitterMs = toNumber(fleet.jitter_ms, DEFAULT_JITTER_MS);
     this.reconnectBaseMs = toNumber(fleet.sse_reconnect_base_ms, DEFAULT_RECONNECT_BASE_MS);
     this.reconnectMaxMs = toNumber(fleet.sse_reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
@@ -287,13 +292,13 @@ export class FleetPoller {
       if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
       if (stream.pollTimer) this.clearTimeout(stream.pollTimer);
       if (stream.reconnectTimer) this.clearTimeout(stream.reconnectTimer);
+      if (stream.idleTimer) this.clearTimeout(stream.idleTimer);
       stream.controller?.abort();
     }
     this.streams.clear();
   }
 
   getFleet() {
-    this._markStale();
     return {
       agents: Array.from(this.records.values()).map(sanitizeRecord),
       count: this.records.size,
@@ -313,7 +318,6 @@ export class FleetPoller {
 
   async pollOnce() {
     await Promise.all(this.agents.map(agent => this._pollAgent(agent)));
-    this._markStale();
     const fleet = this.getFleet();
     this.onPoll?.(fleet);
     return fleet;
@@ -336,6 +340,7 @@ export class FleetPoller {
         compatibilityTimer: null,
         pollTimer: null,
         reconnectTimer: null,
+        idleTimer: null,
         backoffMs: this.reconnectBaseMs,
         connecting: false,
         seenFleetState: false
@@ -417,7 +422,6 @@ export class FleetPoller {
 
   async _pollAgentAndNotify(agent) {
     await this._pollAgent(agent);
-    this._markStale();
     this.onPoll?.(this.getFleet());
   }
 
@@ -489,19 +493,25 @@ export class FleetPoller {
       if (this.running && current && !current.seenFleetState) this._startFallbackPolling(agent);
     }, this.pollIntervalMs);
     stream.compatibilityTimer.unref?.();
-    await this._readSseBody(agent, resp.body, signal);
+    try {
+      await this._readSseBody(agent, stream, resp.body, signal);
+    } finally {
+      this._clearIdleWatchdog(stream);
+    }
     if (this.running && !signal.aborted) throw new Error('sse_closed');
   }
 
-  async _readSseBody(agent, body, signal) {
+  async _readSseBody(agent, stream, body, signal) {
     const decoder = new TextDecoder();
     const parser = new SseEventParser((event) => this._handleSseEvent(agent, event));
+    this._armIdleWatchdog(agent, stream);
     if (body.getReader) {
       const reader = body.getReader();
       try {
         while (!signal.aborted) {
           const { value, done } = await reader.read();
           if (done) break;
+          this._armIdleWatchdog(agent, stream);
           parser.push(decoder.decode(value, { stream: true }));
         }
       } finally {
@@ -510,6 +520,7 @@ export class FleetPoller {
     } else {
       for await (const chunk of body) {
         if (signal.aborted) break;
+        this._armIdleWatchdog(agent, stream);
         parser.push(typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }));
       }
     }
@@ -541,7 +552,6 @@ export class FleetPoller {
     }
     this._setSuccess(agent, state);
     this._stopFallbackPolling(agent);
-    this._markStale();
     this.onPoll?.(this.getFleet());
   }
 
@@ -590,7 +600,7 @@ export class FleetPoller {
       base_url: agent.base_url,
       color: color.color,
       hue: color.hue,
-      state: reason === 'version_unsupported' ? 'UNKNOWN' : existing.state || 'UNKNOWN',
+      state: reason === 'version_unsupported' ? 'UNKNOWN' : 'OFFLINE',
       activity: existing.activity || null,
       context_pct: existing.context_pct ?? null,
       cost: existing.cost ?? null,
@@ -612,20 +622,27 @@ export class FleetPoller {
     }));
   }
 
-  _markStale() {
-    const now = this.now();
-    for (const [name, record] of this.records) {
-      if (!record.last_seen) continue;
-      if (record.health_reason === 'unreachable' || record.health_reason === 'version_unsupported' || record.health_reason === 'auth_failed') continue;
-      if (now - Date.parse(record.last_seen) > this.staleMs) {
-        this.records.set(name, sanitizeRecord({
-          ...record,
-          state: 'OFFLINE',
-          pulse_rate: 0,
-          health_reason: 'offline',
-          updated_at: nowIso(now)
-        }));
-      }
-    }
+  // Connection-level watchdog (#180). The server writes a keepalive comment
+  // every 15s even when no events fire, so prolonged byte silence means the
+  // connection is half-open (e.g. remote power loss, NAT table drop). Abort
+  // it and let fallback polling + reconnect determine the real state. This
+  // watches the *connection*, never the event rate — a quiet stream on a
+  // healthy connection keeps the last pushed state indefinitely.
+  _armIdleWatchdog(agent, stream) {
+    if (stream.idleTimer) this.clearTimeout(stream.idleTimer);
+    stream.idleTimer = this.setTimeout(() => {
+      stream.idleTimer = null;
+      if (!this.running) return;
+      stream.controller?.abort();
+      this._startFallbackPolling(agent);
+      this._scheduleReconnect(agent);
+    }, this.sseIdleTimeoutMs);
+    stream.idleTimer.unref?.();
+  }
+
+  _clearIdleWatchdog(stream) {
+    if (!stream.idleTimer) return;
+    this.clearTimeout(stream.idleTimer);
+    stream.idleTimer = null;
   }
 }
