@@ -124,9 +124,10 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     }).catch(() => {});
   }
 
-  // Howard found 0.06 too quiet on external speakers; 0.18 is ~3x the
-  // amplitude (≈ +9.5 dB), still well below clipping for a single sine.
-  function tone(ctx, { from, to, at, duration, peak = 0.18 }) {
+  // Volume tuned with Howard on external speakers: 0.06 -> 0.18 -> 0.54.
+  // A single sine still has headroom; only a rare simultaneous start+finish
+  // pair could brush the ceiling, and then only for the ~20ms attack overlap.
+  function tone(ctx, { from, to, at, duration, peak = 0.54 }) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
