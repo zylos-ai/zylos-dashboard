@@ -257,14 +257,21 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   gap: var(--space-sm);
 }
 .fleet-sound-toggle {
-  background: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-width: 36px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 2px 8px;
-  font-size: 0.9rem;
+  background: var(--bg-secondary);
+  color: var(--text-dim);
   cursor: pointer;
-  line-height: 1.4;
+  transition: all 150ms ease;
 }
+.fleet-sound-toggle svg { width: 14px; height: 14px; }
+.fleet-sound-toggle[aria-pressed="true"] { color: var(--accent); }
 .fleet-sound-toggle:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
 .fleet-sound-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .agent-fleet {
@@ -327,7 +334,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   color: var(--text);
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
 }
 .agent-grid {
   display: grid;
@@ -437,7 +444,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   background: var(--bg-elevated);
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--text);
   white-space: nowrap;
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.10);
@@ -452,7 +459,6 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .context-chip.is-over small {
   color: #d97706;
-  font-weight: 700;
 }
 .agent-tile.context-warning {
   --context-color: #f59e0b;
@@ -503,6 +509,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   color: var(--text);
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
+  font-weight: 400;
 }
 .fleet-system-rings {
   display: grid;
@@ -558,7 +565,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   color: var(--text);
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 400;
 }
 .fleet-rate-bar {
   flex: 1;

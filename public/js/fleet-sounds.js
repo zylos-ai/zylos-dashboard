@@ -3,6 +3,17 @@ import { stateMood } from './agent-fleet.js';
 const STORAGE_KEY = 'fleet-sounds-muted';
 const WORKING_MOODS = new Set(['busy', 'thinking']);
 
+// Line-style bell icons (Feather, MIT) — stroke follows the button's
+// currentColor so CSS owns the on/off tinting.
+const BELL_ON_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+const BELL_OFF_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/>' +
+  '<path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/>' +
+  '<line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
 export function isWorkingMood(mood) {
   return WORKING_MOODS.has(mood);
 }
@@ -157,7 +168,7 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     if (!button) return;
     const l = typeof labels === 'function' ? labels() : labels;
     const label = muted ? (l?.soundOff || 'Sounds muted') : (l?.soundOn || 'Sounds on');
-    button.textContent = muted ? '🔕' : '🔔';
+    button.innerHTML = muted ? BELL_OFF_ICON : BELL_ON_ICON;
     button.title = label;
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-pressed', String(!muted));
