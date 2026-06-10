@@ -659,8 +659,10 @@ function renderMetrics() {
   r7Bar.style.width = `${barPct(r7)}%`;
   r7Bar.className = `progress-fill ${barColor(r7)}`;
 
-  const r5Reset = rate?.dimensions?.resets_at ?? rate?.resets_at;
-  const r7Reset = rate7d?.dimensions?.resets_at ?? rate7d?.resets_at;
+  // statusline_summary dims (post-#149 aggregation) use window-prefixed keys;
+  // bare resets_at covers pre-aggregation rows still in the DB.
+  const r5Reset = rate?.dimensions?.rate_limit_resets_at ?? rate?.dimensions?.resets_at ?? rate?.resets_at;
+  const r7Reset = rate7d?.dimensions?.rate_limit_7d_resets_at ?? rate7d?.dimensions?.resets_at ?? rate7d?.resets_at;
   $('#metric-rate-5h-reset').textContent = r5Reset ? t('metric.resets', { time: fmtResetTime(r5Reset) }) : '';
   $('#metric-rate-7d-reset').textContent = r7Reset ? t('metric.resets', { time: fmtResetTime(r7Reset) }) : '';
 
