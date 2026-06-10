@@ -54,6 +54,14 @@ export function stateMood(agent) {
   return 'idle';
 }
 
+// Single-agent detail page equivalent of the fleet feed's thinking signal
+// (#186): busy with no visible running tool means the model is thinking.
+export function liveStateMood(payload) {
+  const mood = stateMood(payload);
+  const tools = Array.isArray(payload?.running_tools) ? payload.running_tools : [];
+  return mood === 'busy' && tools.length === 0 ? 'thinking' : mood;
+}
+
 function isOffline(agent) {
   return stateMood(agent) === 'offline' || Number(agent?.pulse_rate) === 0;
 }
@@ -172,7 +180,7 @@ export function defaultAgentFleetLabels() {
     authFailed: 'Auth failed',
     noActivity: 'Standing by',
     context: 'Context',
-    threshold: 'threshold',
+    contextChipTitle: 'Context usage / auto new-session threshold',
     model: 'Model',
     sessionCost: 'Session',
     dailyCost: 'Today',
@@ -217,6 +225,7 @@ export function buildAgentFleetView(fleet, options = {}) {
       contextPct,
       contextLevel: contextLevel(contextPct),
       threshold,
+      overThreshold: contextPct != null && threshold != null && contextPct >= threshold,
       model: labelText(agent.model),
       effort: labelText(agent.effort),
       activityFeed,
@@ -250,12 +259,13 @@ export function buildAgentFleetView(fleet, options = {}) {
 
 function renderTile(tile, labels) {
   const ringPct = tile.contextPct == null ? 0 : tile.contextPct;
-  const threshold = tile.threshold == null ? 70 : tile.threshold;
+  const ctxLabel = tile.contextPct == null ? '--' : `${ringPct.toFixed(0)}%`;
+  const thresholdLabel = tile.threshold == null ? '--' : `${tile.threshold.toFixed(0)}%`;
   const showReason = REASON_BADGE_REASONS.has(String(tile.reason || '').toLowerCase());
   const reason = showReason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
   const feedHtml = activityFeedRows(tile, labels);
-  return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''} context-${escapeHtml(tile.contextLevel)}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
+  return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''} context-${escapeHtml(tile.contextLevel)}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
       <span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span>
@@ -265,9 +275,9 @@ function renderTile(tile, labels) {
       <strong>${escapeHtml(tile.model)} / ${escapeHtml(tile.effort)}</strong>
     </div>
     <div class="agent-mascot-wrap">
-      <span class="context-ring" aria-label="${escapeHtml(labels.context)} ${ringPct.toFixed(0)}%" style="--context-pct:${ringPct};--threshold-pct:${threshold};"></span>
-      <span class="context-threshold" title="${escapeHtml(labels.threshold)} ${threshold.toFixed(0)}%"></span>
+      <span class="context-ring" aria-label="${escapeHtml(labels.context)} ${ringPct.toFixed(0)}%" style="--context-pct:${ringPct};"></span>
       <img class="agent-mascot" src="${escapeHtml(tile.mascotSrc)}" alt="" loading="lazy">
+      <span class="context-chip${tile.overThreshold ? ' is-over' : ''}" title="${escapeHtml(labels.contextChipTitle)}">${ctxLabel} <small>/ ${thresholdLabel}</small></span>
     </div>
     <div class="fleet-cost-rows">
       <span><small>${escapeHtml(labels.sessionCost)}</small><strong>${escapeHtml(tile.sessionCostLabel)}</strong></span>

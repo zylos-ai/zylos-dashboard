@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { buildAgentFleetView, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
+import { buildAgentFleetView, liveStateMood, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
 import { agentColor } from '../src/lib/agent-color.js';
 
 test('prompt source transient display is capped at 5 seconds', () => {
@@ -16,7 +16,7 @@ test('single-agent mascot uses the octopus PNGs shared with Agent Fleet and tint
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
   // Reuses the Agent Fleet mood logic + mascot file map (single source of truth).
-  assert.match(app, /import \{ renderAgentFleet, stateMood, MASCOT_BY_MOOD \} from '\.\/agent-fleet\.js'/);
+  assert.match(app, /import \{ renderAgentFleet, liveStateMood, MASCOT_BY_MOOD \} from '\.\/agent-fleet\.js'/);
   // Renders an <img> from the shared mascot set, not the legacy inline SVG.
   assert.match(app, /img class="mascot-img" src="\$\{ASSET_ROOT\}\/img\/mascot\//);
   assert.match(app, /hue-rotate\(\$\{hue\}deg\)/);
@@ -451,4 +451,31 @@ test('fleet tile context level mirrors the single-agent bar thresholds, not new_
     agents: [{ name: 'a', state: 'IDLE', context_pct: 0.6 }]
   });
   assert.equal(view.tiles[0].contextLevel, 'warning');
+});
+
+test('liveStateMood upgrades busy-with-no-tools to thinking (detail page parity with #186)', () => {
+  assert.equal(liveStateMood({ state: 'BUSY', activity: 'Prompt from lark', running_tools: [] }), 'thinking');
+  assert.equal(liveStateMood({ state: 'BUSY', running_tools: [{ tool_name: 'Bash' }] }), 'busy');
+  assert.equal(liveStateMood({ state: 'IDLE', running_tools: [] }), 'idle');
+  assert.equal(liveStateMood({ state: 'POSSIBLY_STUCK', running_tools: [] }), 'stuck');
+  assert.equal(liveStateMood(null), 'idle');
+});
+
+test('fleet tile renders context chip with usage and threshold, no tick line', () => {
+  const html = renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', context_pct: 42, new_session_threshold: 70 }]
+  });
+  assert.match(html, /<span class="context-chip"[^>]*>42% <small>\/ 70%<\/small><\/span>/);
+  assert.doesNotMatch(html, /context-threshold/);
+
+  const over = renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', context_pct: 79, new_session_threshold: 70 }]
+  });
+  assert.match(over, /context-chip is-over/);
+
+  const empty = renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', context_pct: null, new_session_threshold: null }]
+  });
+  assert.match(empty, /-- <small>\/ --<\/small>/);
+  assert.doesNotMatch(empty, /is-over/);
 });

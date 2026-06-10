@@ -1,6 +1,6 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
-import { renderAgentFleet, stateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
+import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -152,7 +152,7 @@ function agentFleetLabels() {
     authFailed: t('agent_fleet.auth_failed'),
     noActivity: t('agent_fleet.no_activity'),
     context: t('label.context'),
-    threshold: t('agent_fleet.threshold'),
+    contextChipTitle: t('agent_fleet.context_chip_title'),
     model: t('agent_fleet.model'),
     sessionCost: t('cost.session'),
     dailyCost: t('cost.today'),
@@ -177,7 +177,8 @@ function latestTool(tools = []) {
   return [...tools].sort((a, b) => new Date(b.started_at) - new Date(a.started_at))[0] || null;
 }
 
-function stateTitle(p) {
+function stateTitle(p, mood) {
+  if (mood === 'thinking') return t('agent_fleet.thinking');
   const s = normState(p?.state);
   const reason = p?.reason || t('value.unknown');
   if (s === 'BUSY') return t('state.busy_simple');
@@ -296,17 +297,17 @@ function mascotClass(agentState) {
 
 function renderState() {
   const p = state.dashboardState;
+  // Same octopus mascot set + mood logic as Agent Fleet (busy with no visible
+  // tool = thinking), so the agent looks identical in its tile and its detail.
+  const mood = liveStateMood(p);
   const dot = $('#state-dot');
   if (dot) dot.className = `state-dot ${stateClass(p?.state)}`;
-  $('#state-title').textContent = p ? stateTitle(p) : t('state.unknown_simple');
+  $('#state-title').textContent = p ? stateTitle(p, mood) : t('state.unknown_simple');
   const mascotArea = $('#mascot-area');
   if (mascotArea) {
     mascotArea.className = `mascot-area ${mascotClass(p?.state)}`;
     const sprite = $('#mascot-sprite');
     if (sprite) {
-      // Same octopus mascot set + mood logic as Agent Fleet, tinted with this
-      // agent's own hue, so the agent looks identical in its tile and its detail.
-      const mood = stateMood({ state: p?.state, activity: p?.activity });
       const file = MASCOT_BY_MOOD[mood] || MASCOT_BY_MOOD.idle;
       const hue = Number(p?.agent?.hue) || 0;
       sprite.innerHTML = `<img class="mascot-img" src="${ASSET_ROOT}/img/mascot/${file}" alt="" style="filter:hue-rotate(${hue}deg)">`;

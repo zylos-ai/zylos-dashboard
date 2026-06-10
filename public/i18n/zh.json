@@ -217,7 +217,7 @@
   "agent_fleet.version_unsupported": "版本不支持",
   "agent_fleet.auth_failed": "认证失败",
   "agent_fleet.no_activity": "待命中",
-  "agent_fleet.threshold": "阈值",
+  "agent_fleet.context_chip_title": "Context 用量 / 自动新会话阈值",
   "agent_fleet.model": "模型",
   "agent_fleet.empty": "未配置 fleet agent",
   "agent_fleet.back_to_fleet": "← 舰队",
