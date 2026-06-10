@@ -7,6 +7,14 @@ const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
 setAssetRoot(ASSET_ROOT);
 
+// When served via the fleet proxy (/fleet/<name>/) this page shows a REMOTE
+// agent's detail. The remote's own /api/fleet must not drive the view (its
+// fleet config is unrelated to the wall the viewer came from), and the back
+// control returns to the parent dashboard root instead of an in-app view.
+const REMOTE_AGENT_MATCH = BASE_PATH.match(/\/fleet\/([^/]+)$/);
+const REMOTE_AGENT = REMOTE_AGENT_MATCH ? decodeURIComponent(REMOTE_AGENT_MATCH[1]) : null;
+const PARENT_DASHBOARD_PATH = REMOTE_AGENT ? `${BASE_PATH.slice(0, REMOTE_AGENT_MATCH.index)}/` : null;
+
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
@@ -1387,14 +1395,18 @@ function initTabs() {
 // Decide landing view based on fleet size. The self record is always present,
 // so length >= 2 means at least one external agent is configured.
 function applyFleetMode(fleet) {
-  state.multiAgent = (fleet?.agents?.length || 0) >= 2;
+  // Remote context: always the agent-detail view (the remote's own fleet
+  // size is irrelevant here), with the back control returning to the wall
+  // the viewer drilled down from.
+  state.multiAgent = !REMOTE_AGENT && (fleet?.agents?.length || 0) >= 2;
   const backBtn = $('#back-to-fleet');
   const fleetView = $('#fleet-view');
   const agentDetail = $('#agent-detail');
   if (!state.multiAgent) {
-    // Single mode: only the agent dashboard exists, no fleet view, no back control.
+    // Single mode: only the agent dashboard exists, no fleet view. The back
+    // control survives only in remote context, where it leaves the page.
     state.fleetViewActive = false;
-    if (backBtn) backBtn.hidden = true;
+    if (backBtn) backBtn.hidden = !REMOTE_AGENT;
     if (fleetView) fleetView.hidden = true;
     if (agentDetail) agentDetail.hidden = false;
     syncFleetSubscription();
@@ -1432,7 +1444,13 @@ function initFleetMode() {
   }
   const backBtn = $('#back-to-fleet');
   if (backBtn) {
-    backBtn.addEventListener('click', () => showFleetView());
+    backBtn.addEventListener('click', () => {
+      if (REMOTE_AGENT) {
+        window.location.href = PARENT_DASHBOARD_PATH;
+        return;
+      }
+      showFleetView();
+    });
   }
 }
 

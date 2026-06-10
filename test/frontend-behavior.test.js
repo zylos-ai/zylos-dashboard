@@ -260,8 +260,12 @@ test('Agent Fleet uses SSE fleet events with one-shot fetch fallback', () => {
 
 test('multi-agent vs single mode landing view is gated on fleet size', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
-  // multiAgent is true when the fleet (self + at least one external) has >= 2 agents.
-  assert.match(app, /state\.multiAgent = \(fleet\?\.agents\?\.length \|\| 0\) >= 2;/);
+  // multiAgent is true when the fleet (self + at least one external) has >= 2
+  // agents — but never in remote-proxy context, where the remote's own fleet
+  // config must not hijack the landing view.
+  assert.match(app, /state\.multiAgent = !REMOTE_AGENT && \(fleet\?\.agents\?\.length \|\| 0\) >= 2;/);
+  // Remote context is derived from the proxy-injected base path.
+  assert.match(app, /BASE_PATH\.match\(/);
   // Multi-agent mode lands on Agent Fleet; single mode shows the agent dashboard.
   assert.match(app, /if \(!state\.multiAgent\)/);
   assert.match(app, /showFleetView\(\)/);
@@ -325,8 +329,11 @@ test('back-to-fleet control is hidden via [hidden] in single-agent mode (no CSS 
   // The class sets display:inline-flex, so a [hidden] guard is required or the
   // UA hidden rule is overridden and the button leaks into single-agent mode.
   assert.match(css, /\.back-to-fleet\[hidden\]\s*\{\s*display:\s*none/);
-  // And single mode must actually set the hidden attribute.
-  assert.match(app, /if \(!state\.multiAgent\)[\s\S]*?backBtn\.hidden = true/);
+  // And single mode must actually set the hidden attribute — except in remote
+  // context, where the back control survives to return to the parent wall.
+  assert.match(app, /if \(!state\.multiAgent\)[\s\S]*?backBtn\.hidden = !REMOTE_AGENT/);
+  // The remote-context back control leaves the page for the parent dashboard.
+  assert.match(app, /if \(REMOTE_AGENT\)[\s\S]*?window\.location\.href = PARENT_DASHBOARD_PATH/);
 });
 
 test('Agent Fleet is the top-level fleet view and pulse is gone from UI', () => {
