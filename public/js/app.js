@@ -30,6 +30,8 @@ const state = {
   timer: null,
   pollTimer: null,
   fleetFallbackTimer: null,
+  fleetHoverPaused: false,
+  pendingFleet: null,
   eventSource: null,
   charts: {},
   lastCpuPct: null,
@@ -960,6 +962,32 @@ function renderComm() {
   $('#comm-updated').textContent = fmtAge(state.commUpdatedAt);
 }
 
+// Native title tooltips (e.g. the context chip) need the element under the
+// cursor to survive ~1s, but the wall re-renders about once per second while
+// any agent is busy (#188) and renderFleet() rebuilds the grid's DOM. Freeze
+// rendering while the pointer is over the grid; apply the newest payload on
+// leave. Side benefit: tiles don't jump while being read.
+function setFleet(payload) {
+  if (state.fleetHoverPaused) {
+    state.pendingFleet = payload;
+    return;
+  }
+  state.fleet = payload;
+  renderFleet();
+}
+
+function initFleetHoverPause() {
+  const root = $('#agent-fleet-root');
+  if (!root) return;
+  root.addEventListener('mouseenter', () => { state.fleetHoverPaused = true; });
+  root.addEventListener('mouseleave', () => {
+    state.fleetHoverPaused = false;
+    const pending = state.pendingFleet;
+    state.pendingFleet = null;
+    if (pending) setFleet(pending);
+  });
+}
+
 function renderFleet() {
   const container = $('#agent-fleet-root');
   if (!container) return;
@@ -1079,10 +1107,10 @@ function isSseOpen() {
 
 async function refreshFleet() {
   try {
-    state.fleet = await fetchJson('/api/fleet');
-    renderFleet();
+    const fleet = await fetchJson('/api/fleet');
+    setFleet(fleet);
     renderConnection(isSseOpen() ? 'live' : 'polling');
-    return state.fleet;
+    return fleet;
   } catch (err) {
     renderConnection('degraded');
     throw err;
@@ -1250,8 +1278,7 @@ function applySse(name, data) {
   } else if (name === 'health_update') {
     state.health = data; state.healthUpdatedAt = new Date().toISOString(); renderHealth();
   } else if (name === 'fleet') {
-    state.fleet = data;
-    renderFleet();
+    setFleet(data);
     clearFleetFallback();
     scheduleFleetFallback();
   }
@@ -2410,6 +2437,7 @@ initLocaleToggle();
 initLogout();
 initTips();
 initInfoBarButtons();
+initFleetHoverPause();
 renderAll();
 initCharts();
 initTrendControls();

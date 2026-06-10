@@ -82,6 +82,12 @@ function colorForAgent(agent) {
   return agent?.color || '#64748b';
 }
 
+// 24s is a common multiple of every mascot animation cycle (0.8s/2s/3s), so a
+// negative delay of (now mod 24s) resumes the same phase after a tile rebuild.
+function mascotPhaseDelayMs(now = Date.now()) {
+  return -(now % 24000);
+}
+
 function mascotSrc(mood, root) {
   const cleanRoot = String(root || './img/mascot').replace(/\/+$/, '');
   return `${cleanRoot}/${MASCOT_BY_MOOD[mood]}`;
@@ -103,9 +109,9 @@ function ringLevel(pct) {
   return 'ok';
 }
 
-// Mirrors the single-agent context bar (barColor in app.js):
-// <50 ok, 50–75 warning, >75 danger.
-function contextLevel(pct) {
+// Mirrors the single-agent metric bars (barColor in app.js), used for the
+// context ring and the 5h/7d rate rows: <50 ok, 50–75 warning, >75 danger.
+function barLevel(pct) {
   if (pct == null) return 'ok';
   if (pct > 75) return 'danger';
   if (pct >= 50) return 'warning';
@@ -125,7 +131,7 @@ function miniRing(name, value, labels) {
 
 function rateRow(name, value) {
   const pct = pctValue(value);
-  const level = ringLevel(pct);
+  const level = barLevel(pct);
   const valueLabel = pct == null ? '--' : `${pct.toFixed(0)}%`;
   const width = pct == null ? 0 : pct.toFixed(1);
   return `<span class="fleet-rate-row rate-${level}" aria-label="${escapeHtml(name)} ${escapeHtml(valueLabel)}">
@@ -223,7 +229,7 @@ export function buildAgentFleetView(fleet, options = {}) {
       stateLabel: stateLabel(agent, labels, mood),
       activity,
       contextPct,
-      contextLevel: contextLevel(contextPct),
+      contextLevel: barLevel(contextPct),
       threshold,
       overThreshold: contextPct != null && threshold != null && contextPct >= threshold,
       model: labelText(agent.model),
@@ -276,7 +282,7 @@ function renderTile(tile, labels) {
     </div>
     <div class="agent-mascot-wrap">
       <span class="context-ring" aria-label="${escapeHtml(labels.context)} ${ringPct.toFixed(0)}%" style="--context-pct:${ringPct};"></span>
-      <img class="agent-mascot" src="${escapeHtml(tile.mascotSrc)}" alt="" loading="lazy">
+      <img class="agent-mascot" src="${escapeHtml(tile.mascotSrc)}" alt="" loading="lazy" style="animation-delay:${mascotPhaseDelayMs()}ms">
       <span class="context-chip${tile.overThreshold ? ' is-over' : ''}" title="${escapeHtml(labels.contextChipTitle)}">${ctxLabel} <small>/ ${thresholdLabel}</small></span>
     </div>
     <div class="fleet-cost-rows">

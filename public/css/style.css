@@ -408,6 +408,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   object-fit: contain;
   filter: hue-rotate(var(--agent-hue)) drop-shadow(0 8px 14px rgba(15, 23, 42, 0.16));
 }
+/* Same motion set as the single-agent mascot (keyframes shared below).
+   The inline negative animation-delay phase-locks the cycle to wall-clock
+   time so the ~1/s tile rebuilds don't restart the motion. */
+.agent-tile-busy .agent-mascot { animation: mascot-bob 0.8s ease-in-out infinite; }
+.agent-tile-thinking .agent-mascot { animation: mascot-tilt 3s ease-in-out infinite; }
+.agent-tile-idle .agent-mascot { animation: mascot-breathe 3s ease-in-out infinite; }
+.agent-tile-stuck .agent-mascot { animation: mascot-pulse 2s ease-in-out infinite; }
 .fleet-cost-rows {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -479,7 +486,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   min-width: 0;
 }
 .fleet-rate-row.rate-warning { --rate-color: #f59e0b; }
-.fleet-rate-row.rate-critical { --rate-color: #ef4444; }
+.fleet-rate-row.rate-danger { --rate-color: #ef4444; }
 .fleet-rate-row small {
   flex: 0 0 18px;
   color: var(--text-muted);

@@ -479,3 +479,40 @@ test('fleet tile renders context chip with usage and threshold, no tick line', (
   assert.match(empty, /-- <small>\/ --<\/small>/);
   assert.doesNotMatch(empty, /is-over/);
 });
+
+test('fleet wall pauses re-render on hover so native tooltips can appear', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // All fleet payload applications go through the hover gate...
+  assert.match(app, /function setFleet\(payload\) \{\n  if \(state\.fleetHoverPaused\) \{/);
+  assert.doesNotMatch(app, /state\.fleet = data;\n\s*renderFleet\(\)/);
+  // ...armed by pointer enter/leave on the grid root, flushing pending data on leave.
+  assert.match(app, /addEventListener\('mouseenter', \(\) => \{ state\.fleetHoverPaused = true; \}\)/);
+  assert.match(app, /addEventListener\('mouseleave'/);
+  assert.match(app, /if \(pending\) setFleet\(pending\)/);
+});
+
+test('fleet tile mascots animate per mood with a phase-locked delay across rebuilds', () => {
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  assert.match(css, /\.agent-tile-busy \.agent-mascot \{ animation: mascot-bob 0\.8s/);
+  assert.match(css, /\.agent-tile-thinking \.agent-mascot \{ animation: mascot-tilt 3s/);
+  assert.match(css, /\.agent-tile-idle \.agent-mascot \{ animation: mascot-breathe 3s/);
+  assert.match(css, /\.agent-tile-stuck \.agent-mascot \{ animation: mascot-pulse 2s/);
+
+  const html = renderAgentFleetHtml({ agents: [{ name: 'a', state: 'BUSY' }] });
+  // Negative wall-clock-derived delay so a rebuilt tile resumes mid-cycle.
+  assert.match(html, /class="agent-mascot"[^>]*style="animation-delay:-\d+ms"/);
+});
+
+test('fleet rate rows mirror the single-agent bar thresholds, not the system ring levels', () => {
+  const row = (pct) => renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', rate_limit_pct: pct, rate_limit_7d_pct: null }]
+  });
+  assert.match(row(42), /fleet-rate-row rate-ok/);
+  assert.match(row(50), /fleet-rate-row rate-warning/);
+  assert.match(row(75), /fleet-rate-row rate-warning/);
+  assert.match(row(76), /fleet-rate-row rate-danger/);
+  // 70 was 'warning' under the old ringLevel thresholds — still warning here,
+  // but 60 must now be warning too (was ok under ringLevel):
+  assert.match(row(60), /fleet-rate-row rate-warning/);
+  assert.match(row(null), /fleet-rate-row rate-ok/);
+});
