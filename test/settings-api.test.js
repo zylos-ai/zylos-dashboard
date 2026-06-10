@@ -148,6 +148,7 @@ test('settings validation: uses Codex built-ins for Codex runtime', () => {
 
 test('settings validation: accepts valid prices', () => {
   const prices = {
+    'claude-fable-5': { input: 10, output: 50, cacheRead: 1.00, cacheCreation: 20 },
     'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
     'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
     'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.10, cacheCreation: 2 },
