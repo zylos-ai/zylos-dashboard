@@ -279,7 +279,6 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   --agent-accent: #64748b;
   --agent-hue: 0deg;
   --context-pct: 0;
-  --threshold-pct: 70;
   display: grid;
   /* Flexible track on the activity row (7th), not the mascot row: rows above
      stay content-sized so model/cost/ring/rate rows align horizontally across
