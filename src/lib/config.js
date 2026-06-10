@@ -4,6 +4,9 @@ import path from 'node:path';
 import { validateFleetRegistry } from './fleet-registry.js';
 
 export const DEFAULT_CLAUDE_MODEL_PRICES = {
+  // cacheCreation follows this table's 2x-input convention, verified against
+  // costs Claude Code itself recorded in transcript JSONL (exact match).
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1.00, cacheCreation: 20 },
   'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
   'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
   'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.10, cacheCreation: 2 }
