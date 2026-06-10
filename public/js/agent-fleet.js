@@ -255,10 +255,28 @@ export function buildAgentFleetView(fleet, options = {}) {
     return acc;
   }, { busy: 0, thinking: 0, idle: 0, stuck: 0, offline: 0 });
 
+  // Fleet-wide totals of the same three cost tiers shown on each tile.
+  // null (rendered '--') when no agent reports that tier at all.
+  const agents = Array.isArray(fleet?.agents) ? fleet.agents : [];
+  const sumTier = (pick) => {
+    let total = null;
+    for (const agent of agents) {
+      const n = Number(pick(agent));
+      if (Number.isFinite(n)) total = (total ?? 0) + n;
+    }
+    return total;
+  };
+  const costTotals = {
+    session: money(sumTier((a) => a.session_cost ?? a.cost)),
+    daily: money(sumTier((a) => a.daily_cost)),
+    weekly: money(sumTier((a) => a.weekly_cost))
+  };
+
   return {
     labels,
     tiles,
     counts,
+    costTotals,
     updatedAt: fleet?.updated_at || null
   };
 }
@@ -310,10 +328,22 @@ function renderAgentFleetViewHtml(view) {
     return `<section class="agent-fleet"><p class="empty-state">${escapeHtml(labels.empty)}</p></section>`;
   }
   const working = view.counts.busy + view.counts.thinking;
-  const summary = `${working} ${labels.busy} / ${view.counts.idle} ${labels.idle} / ${view.counts.stuck} ${labels.stuck}`;
+  const seg = (count, label, dot) =>
+    `<span class="sum-seg${count === 0 ? ' is-zero' : ''}"><i class="sum-dot ${dot}"></i>${count} ${escapeHtml(label)}</span>`;
+  const costCell = (label, value) =>
+    `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`;
   return `<section class="agent-fleet" data-fleet-count="${view.tiles.length}">
     <div class="agent-fleet-summary">
-      <strong>${escapeHtml(summary)}</strong>
+      <span class="sum-states">
+        ${seg(working, labels.busy, 'dot-busy')}
+        ${seg(view.counts.idle, labels.idle, 'dot-idle')}
+        ${seg(view.counts.stuck, labels.stuck, 'dot-stuck')}
+      </span>
+      <span class="sum-costs">
+        ${costCell(labels.sessionCost, view.costTotals.session)}
+        ${costCell(labels.dailyCost, view.costTotals.daily)}
+        ${costCell(labels.weeklyCost, view.costTotals.weekly)}
+      </span>
     </div>
     <div class="agent-grid">
       ${view.tiles.map((tile) => renderTile(tile, labels)).join('')}

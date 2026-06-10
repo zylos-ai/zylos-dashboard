@@ -516,3 +516,28 @@ test('fleet rate rows mirror the single-agent bar thresholds, not the system rin
   assert.match(row(60), /fleet-rate-row rate-warning/);
   assert.match(row(null), /fleet-rate-row rate-ok/);
 });
+
+test('fleet summary shows state dots with dimmed zeros and aggregated cost tiers', () => {
+  const html = renderAgentFleetHtml({
+    agents: [
+      { name: 'a', state: 'BUSY', session_cost: 111.62, daily_cost: 63.03, weekly_cost: 1299.31 },
+      { name: 'b', state: 'IDLE', session_cost: 1.71, daily_cost: 142.55, weekly_cost: 687.24 }
+    ]
+  });
+  assert.match(html, /<span class="sum-seg"><i class="sum-dot dot-busy"><\/i>1 Working<\/span>/);
+  assert.match(html, /<span class="sum-seg"><i class="sum-dot dot-idle"><\/i>1 Idle<\/span>/);
+  assert.match(html, /<span class="sum-seg is-zero"><i class="sum-dot dot-stuck"><\/i>0 Possible Stuck<\/span>/);
+  assert.match(html, /<small>Session<\/small><strong>\$113\.33<\/strong>/);
+  assert.match(html, /<small>Today<\/small><strong>\$205\.58<\/strong>/);
+  assert.match(html, /<small>7 days<\/small><strong>\$1986\.55<\/strong>/);
+});
+
+test('fleet summary cost totals render -- when no agent reports a tier', () => {
+  const view = buildAgentFleetView({ agents: [{ name: 'a', state: 'IDLE' }] });
+  assert.deepEqual(view.costTotals, { session: '--', daily: '--', weekly: '--' });
+  // Partial fleet: one agent reporting still produces a total, not '--'.
+  const partial = buildAgentFleetView({
+    agents: [{ name: 'a', state: 'IDLE', session_cost: 2 }, { name: 'b', state: 'IDLE' }]
+  });
+  assert.equal(partial.costTotals.session, '$2.00');
+});
