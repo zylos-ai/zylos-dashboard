@@ -106,7 +106,9 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     }).catch(() => {});
   }
 
-  function tone(ctx, { from, to, at, duration, peak = 0.06 }) {
+  // Howard found 0.06 too quiet on external speakers; 0.18 is ~3x the
+  // amplitude (≈ +9.5 dB), still well below clipping for a single sine.
+  function tone(ctx, { from, to, at, duration, peak = 0.18 }) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
