@@ -263,5 +263,7 @@
   "result.interrupt_failed": "Interrupt failed: {error}",
   "result.restart_failed": "Restart failed: {error}",
   "result.upgrade_failed": "Upgrade failed: {error}",
-  "result.set_failed": "Setting failed: {error}"
+  "result.set_failed": "Setting failed: {error}",
+  "agent_fleet.rate_5h": "5h",
+  "agent_fleet.rate_7d": "7d"
 }

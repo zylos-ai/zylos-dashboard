@@ -263,5 +263,7 @@
   "result.interrupt_failed": "中断失败：{error}",
   "result.restart_failed": "重启失败：{error}",
   "result.upgrade_failed": "升级失败：{error}",
-  "result.set_failed": "设置失败：{error}"
+  "result.set_failed": "设置失败：{error}",
+  "agent_fleet.rate_5h": "5h",
+  "agent_fleet.rate_7d": "7d"
 }

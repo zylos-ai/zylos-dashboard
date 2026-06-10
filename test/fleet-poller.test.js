@@ -579,3 +579,70 @@ test('fleet poller reads top-level context_pct when metrics object is absent (#1
   const record = poller.getFleet().agents[0];
   assert.equal(record.context_pct, 63.5);
 });
+
+// --- Fleet tile iteration 2: name-keyed identity color, activity feed, rate limits ---
+
+test('stateToFleetRecord keys color/hue to the configured display name, not remote self-identity', () => {
+  const record = stateToFleetRecord({
+    name: 'Jinglever',
+    base_url: 'https://example.com/dashboard'
+  }, {
+    state: 'IDLE',
+    agent: { name: 'some-hostname.local', color: '#4f46e5', hue: 330 }
+  }, { self: false, nowMs: 0 });
+
+  assert.equal(record.color, agentColor('Jinglever').color);
+  assert.equal(record.hue, agentColor('Jinglever').hue);
+});
+
+test('stateToFleetRecord still honours explicit per-agent color overrides from fleet config', () => {
+  const record = stateToFleetRecord({
+    name: 'Jinglever',
+    color: '#123456',
+    hue: 42
+  }, {
+    state: 'IDLE',
+    agent: { hue: 330 }
+  }, { self: false, nowMs: 0 });
+
+  assert.equal(record.color, '#123456');
+  assert.equal(record.hue, 42);
+});
+
+test('stateToFleetRecord derives activity_feed from running tools', () => {
+  const record = stateToFleetRecord({ name: 'a' }, {
+    state: 'BUSY',
+    running_tools: [
+      { tool_name: 'Bash', tool_detail: 'npm test', started_at: '2026-06-10T00:00:00Z' },
+      { tool_name: 'Read', tool_detail: 'foo.js', started_at: '2026-06-10T00:00:05Z' }
+    ]
+  }, { self: false, nowMs: 0 });
+
+  assert.equal(record.activity_feed.length, 2);
+  assert.deepEqual(record.activity_feed[0], {
+    kind: 'tool', label: 'Bash: npm test', started_at: '2026-06-10T00:00:00Z'
+  });
+  assert.deepEqual(record.activity_feed[1], {
+    kind: 'tool', label: 'Read: foo.js', started_at: '2026-06-10T00:00:05Z'
+  });
+});
+
+test('stateToFleetRecord activity_feed shows thinking when busy without tools, empty when idle', () => {
+  const busy = stateToFleetRecord({ name: 'a' }, { state: 'BUSY', running_tools: [] }, { self: false, nowMs: 0 });
+  assert.deepEqual(busy.activity_feed, [{ kind: 'thinking', label: null, started_at: null }]);
+
+  const idle = stateToFleetRecord({ name: 'a' }, { state: 'IDLE' }, { self: false, nowMs: 0 });
+  assert.deepEqual(idle.activity_feed, []);
+});
+
+test('stateToFleetRecord passes rate limit percentages through, defaulting to null', () => {
+  const withRates = stateToFleetRecord({ name: 'a' }, {
+    state: 'IDLE', rate_limit_pct: 13, rate_limit_7d_pct: 9
+  }, { self: false, nowMs: 0 });
+  assert.equal(withRates.rate_limit_pct, 13);
+  assert.equal(withRates.rate_limit_7d_pct, 9);
+
+  const without = stateToFleetRecord({ name: 'a' }, { state: 'IDLE' }, { self: false, nowMs: 0 });
+  assert.equal(without.rate_limit_pct, null);
+  assert.equal(without.rate_limit_7d_pct, null);
+});

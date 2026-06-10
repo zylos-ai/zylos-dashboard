@@ -321,6 +321,21 @@ const c4Reader = new C4Reader(config.zylosDir);
 // 9. Ingest handler (with state engine reference)
 const ingestHandler = new IngestHandler(store, sanitizer, stateEngine, config);
 
+// Rate-limit metric values arrive either as a plain number or as an object
+// keyed by window (same variants the single-agent page handles).
+function rateLimitPct(metricName) {
+  try {
+    const v = metricResolver.resolve(metricName).value;
+    if (v == null) return null;
+    const n = typeof v === 'object'
+      ? Number(v['5h'] ?? v.five_hour ?? v.short ?? v['7d'] ?? v.seven_day ?? v.value)
+      : Number(v);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildApiStatePayload() {
   const stateData = stateEngine.getState();
   // Include the agent's deterministic identity color/hue so the single-agent
@@ -330,6 +345,8 @@ function buildApiStatePayload() {
   stateData.new_session_threshold = getNewSessionThreshold();
   stateData.system_metrics = getSystemMetrics();
   stateData.context_pct = metricResolver.resolve('context_pct').value;
+  stateData.rate_limit_pct = rateLimitPct('rate_limit');
+  stateData.rate_limit_7d_pct = rateLimitPct('rate_limit_7d');
   Object.assign(stateData, getCostTiers());
   return stateData;
 }

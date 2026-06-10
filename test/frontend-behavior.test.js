@@ -340,3 +340,51 @@ test('Agent Fleet is the top-level fleet view and pulse is gone from UI', () => 
   assert.match(html, /id="back-to-fleet"/);
   assert.match(html, /id="agent-fleet-root"/);
 });
+
+// --- Fleet tile iteration 2 rendering ---
+
+test('fleet tile renders mini ring with centered value and label below', () => {
+  const html = renderAgentFleetHtml({ agents: [{ name: 'a', state: 'IDLE', cpu_pct: 8 }] });
+  assert.match(html, /class="fleet-mini-ring-dial"><span>8%<\/span><\/span>\s*<small>CPU<\/small>/);
+});
+
+test('fleet tile always renders 5h/7d rate rows, with -- when unreported', () => {
+  const html = renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', rate_limit_pct: 13, rate_limit_7d_pct: null }]
+  });
+  assert.match(html, /class="fleet-rate-row rate-ok" aria-label="5h 13%"/);
+  assert.match(html, /aria-label="7d --"/);
+  assert.match(html, /width:13\.0%/);
+});
+
+test('fleet tile activity feed mirrors running tools with single-line rows', () => {
+  const html = renderAgentFleetHtml({
+    agents: [{
+      name: 'a',
+      state: 'BUSY',
+      activity_feed: [
+        { kind: 'tool', label: 'Bash: npm test', started_at: new Date(Date.now() - 5000).toISOString() },
+        { kind: 'tool', label: 'Read: foo.js', started_at: null }
+      ]
+    }]
+  });
+  assert.match(html, /class="fleet-feed"/);
+  assert.match(html, /Bash: npm test/);
+  assert.match(html, /class="fleet-feed-age">\d+s</);
+});
+
+test('fleet tile activity feed falls back to legacy single-line activity', () => {
+  const html = renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'IDLE', activity: 'Prompt from lark', activity_feed: [] }]
+  });
+  assert.doesNotMatch(html, /class="fleet-feed"/);
+  assert.match(html, /Prompt from lark/);
+});
+
+test('fleet tile renders thinking feed entry from kind, not label', () => {
+  const html = renderAgentFleetHtml({
+    agents: [{ name: 'a', state: 'BUSY', activity_feed: [{ kind: 'thinking', label: null, started_at: null }] }]
+  });
+  assert.match(html, /fleet-feed-row is-thinking/);
+  assert.match(html, /Thinking…/);
+});

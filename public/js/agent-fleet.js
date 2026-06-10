@@ -102,9 +102,52 @@ function miniRing(name, value, labels) {
   const valueLabel = pct == null ? '--' : `${ringPct.toFixed(0)}%`;
   const level = ringLevel(pct);
   return `<span class="fleet-mini-ring ring-${level}" style="--ring-pct:${ringPct};" aria-label="${escapeHtml(name)} ${escapeHtml(valueLabel)}">
-    <span>${escapeHtml(valueLabel)}</span>
+    <span class="fleet-mini-ring-dial"><span>${escapeHtml(valueLabel)}</span></span>
     <small>${escapeHtml(name)}</small>
   </span>`;
+}
+
+function rateRow(name, value) {
+  const pct = pctValue(value);
+  const level = ringLevel(pct);
+  const valueLabel = pct == null ? '--' : `${pct.toFixed(0)}%`;
+  const width = pct == null ? 0 : pct.toFixed(1);
+  return `<span class="fleet-rate-row rate-${level}" aria-label="${escapeHtml(name)} ${escapeHtml(valueLabel)}">
+    <small>${escapeHtml(name)}</small>
+    <span class="fleet-rate-bar"><i style="width:${width}%"></i></span>
+    <strong>${escapeHtml(valueLabel)}</strong>
+  </span>`;
+}
+
+// Always rendered (with "--" when the remote doesn't report rate limits yet)
+// so tiles keep the same vertical rhythm across mixed fleet versions.
+function rateRows(tile, labels) {
+  return `<div class="fleet-rate-rows">${rateRow(labels.rate5h, tile.rate5hPct)}${rateRow(labels.rate7d, tile.rate7dPct)}</div>`;
+}
+
+function feedAge(startedAt) {
+  const ms = Date.parse(startedAt);
+  if (!Number.isFinite(ms)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
+// Mirrors the single-agent Current Activity feed: one row per entry,
+// single-line truncation, elapsed time on the right.
+function activityFeedRows(tile, labels) {
+  const entries = (tile.activityFeed || []).slice(0, 3);
+  if (entries.length === 0) return '';
+  return entries.map((entry) => {
+    const isThinking = entry.kind === 'thinking';
+    const label = isThinking ? labels.thinkingActivity : (entry.label || '');
+    const age = entry.started_at ? feedAge(entry.started_at) : '';
+    return `<span class="fleet-feed-row${isThinking ? ' is-thinking' : ''}">
+      <span class="fleet-feed-label">${escapeHtml(label)}</span>
+      ${age ? `<small class="fleet-feed-age">${escapeHtml(age)}</small>` : ''}
+    </span>`;
+  }).join('');
 }
 
 export function defaultAgentFleetLabels() {
@@ -129,6 +172,9 @@ export function defaultAgentFleetLabels() {
     cpu: 'CPU',
     memory: 'Memory',
     disk: 'Disk',
+    rate5h: '5h',
+    rate7d: '7d',
+    thinkingActivity: 'Thinking…',
     subagent: 'Subagent',
     empty: 'No fleet agents configured'
   };
@@ -159,6 +205,9 @@ export function buildAgentFleetView(fleet, options = {}) {
       overThreshold: contextPct != null && threshold != null && contextPct >= threshold,
       model: labelText(agent.model),
       effort: labelText(agent.effort),
+      activityFeed: Array.isArray(agent.activity_feed) ? agent.activity_feed : [],
+      rate5hPct: pctValue(agent.rate_limit_pct),
+      rate7dPct: pctValue(agent.rate_limit_7d_pct),
       sessionCostLabel: money(agent.session_cost ?? agent.cost),
       dailyCostLabel: money(agent.daily_cost),
       weeklyCostLabel: money(agent.weekly_cost),
@@ -191,6 +240,7 @@ function renderTile(tile, labels) {
   const showReason = REASON_BADGE_REASONS.has(String(tile.reason || '').toLowerCase());
   const reason = showReason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
+  const feedHtml = activityFeedRows(tile, labels);
   return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}${tile.overThreshold ? ' is-over-threshold' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
@@ -215,9 +265,10 @@ function renderTile(tile, labels) {
       ${miniRing(labels.memory, tile.memPct, labels)}
       ${miniRing(labels.disk, tile.diskPct, labels)}
     </div>
-    <div class="agent-activity">
+    ${rateRows(tile, labels)}
+    <div class="agent-activity${feedHtml ? ' has-feed' : ''}">
       <span class="subagent-light${tile.hasSubagent ? ' is-on' : ''}" aria-label="${escapeHtml(subagentLabel)}"></span>
-      <span>${escapeHtml(tile.activity)}</span>
+      ${feedHtml ? `<div class="fleet-feed">${feedHtml}</div>` : `<span>${escapeHtml(tile.activity)}</span>`}
     </div>
     ${reason}
   </a>`;

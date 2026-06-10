@@ -160,6 +160,9 @@ function agentFleetLabels() {
     cpu: t('label.cpu'),
     memory: t('label.memory'),
     disk: t('label.disk'),
+    rate5h: t('agent_fleet.rate_5h'),
+    rate7d: t('agent_fleet.rate_7d'),
+    thinkingActivity: t('activity.thinking'),
     subagent: t('label.subagents'),
     empty: t('agent_fleet.empty')
   };

@@ -281,10 +281,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   --context-pct: 0;
   --threshold-pct: 70;
   display: grid;
-  /* Flexible track on the activity row (6th), not the mascot row: rows above
-     stay content-sized so model/cost/ring rows align horizontally across
-     tiles regardless of how many lines each tile's activity text wraps to. */
-  grid-template-rows: auto auto auto auto auto 1fr auto;
+  /* Flexible track on the activity row (7th), not the mascot row: rows above
+     stay content-sized so model/cost/ring/rate rows align horizontally across
+     tiles regardless of how tall each tile's activity feed is. */
+  grid-template-rows: auto auto auto auto auto auto 1fr auto;
   gap: var(--space-sm);
   min-width: 0;
   min-height: 360px;
@@ -426,9 +426,14 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   --ring-pct: 0;
   --ring-color: var(--green, #059669);
   display: grid;
-  place-items: center;
-  gap: 2px;
+  justify-items: center;
+  gap: 4px;
   min-width: 0;
+}
+.fleet-mini-ring-dial {
+  display: grid;
+  place-items: center;
+  width: min(100%, 56px);
   aspect-ratio: 1;
   border-radius: 50%;
   background:
@@ -437,10 +442,82 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .fleet-mini-ring.ring-warning { --ring-color: #f59e0b; }
 .fleet-mini-ring.ring-critical { --ring-color: #ef4444; }
-.fleet-mini-ring span {
+.fleet-mini-ring-dial span {
   color: var(--text);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
+}
+.fleet-rate-rows {
+  display: grid;
+  gap: 4px;
+}
+.fleet-rate-row {
+  --rate-color: var(--green, #059669);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.fleet-rate-row.rate-warning { --rate-color: #f59e0b; }
+.fleet-rate-row.rate-critical { --rate-color: #ef4444; }
+.fleet-rate-row small {
+  flex: 0 0 18px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.fleet-rate-row strong {
+  flex: 0 0 32px;
+  text-align: right;
+  color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+.fleet-rate-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+}
+.fleet-rate-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--rate-color);
+}
+.fleet-feed {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fleet-feed-row {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+.fleet-feed-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+}
+.fleet-feed-row.is-thinking .fleet-feed-label {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.fleet-feed-age {
+  flex: none;
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
 }
 .agent-activity {
   min-height: 54px;

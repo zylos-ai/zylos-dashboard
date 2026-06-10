@@ -151,6 +151,27 @@ function deriveActivity(state) {
   return state?.last_prompt?.summary || state?.last_message || state?.reason || null;
 }
 
+// Mirror of the single-agent Current Activity feed (renderToolFeed): running
+// tools first, a synthetic "thinking" entry when busy with no visible tool.
+// Falls back to [] so consumers can degrade to the single-line `activity`.
+function deriveActivityFeed(state) {
+  const feed = [];
+  const tools = Array.isArray(state?.running_tools) ? state.running_tools : [];
+  for (const tool of tools.slice(0, 3)) {
+    feed.push({
+      kind: 'tool',
+      label: tool.tool_detail
+        ? `${tool.tool_name || 'tool'}: ${tool.tool_detail}`
+        : (tool.tool_name || 'Running tool'),
+      started_at: tool.started_at || null
+    });
+  }
+  if (feed.length === 0 && String(state?.state || '').toUpperCase() === 'BUSY') {
+    feed.push({ kind: 'thinking', label: null, started_at: null });
+  }
+  return feed;
+}
+
 function sanitizeRecord(record) {
   return {
     name: record.name,
@@ -158,6 +179,9 @@ function sanitizeRecord(record) {
     hue: record.hue,
     state: record.state,
     activity: record.activity,
+    activity_feed: Array.isArray(record.activity_feed) ? record.activity_feed : [],
+    rate_limit_pct: record.rate_limit_pct ?? null,
+    rate_limit_7d_pct: record.rate_limit_7d_pct ?? null,
     context_pct: record.context_pct,
     cost: record.cost,
     session_cost: record.session_cost,
@@ -184,11 +208,15 @@ export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {
   const nowMs = opts.nowMs ?? Date.now();
   const self = opts.self === true;
   const name = agentConfig.name ?? statePayload?.agent?.name;
+  // Identity color/hue is keyed to the name DISPLAYED on this wall (local
+  // fleet config), never the remote's self-reported identity: an unconfigured
+  // remote falls back to a hostname-derived hue that can collide with other
+  // tiles (issue: Jinglever's hostname hashed to ~the same hue as zylos-01).
   const color = agentConfig.color?.color
     ? agentConfig.color
     : {
-        color: agentConfig.color || statePayload?.agent?.color || agentColor(name).color,
-        hue: agentConfig.hue ?? statePayload?.agent?.hue ?? agentColor(name).hue
+        color: agentConfig.color || agentColor(name).color,
+        hue: agentConfig.hue ?? agentColor(name).hue
       };
   const runtimeInfo = statePayload?.runtime_info || null;
   const systemMetrics = statePayload?.system_metrics || null;
@@ -203,6 +231,9 @@ export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {
     hue: color?.hue,
     state: liveState,
     activity: deriveActivity(statePayload),
+    activity_feed: deriveActivityFeed(statePayload),
+    rate_limit_pct: statePayload?.rate_limit_pct ?? null,
+    rate_limit_7d_pct: statePayload?.rate_limit_7d_pct ?? null,
     context_pct: statePayload?.context_pct ?? metricValue(statePayload, 'context_pct'),
     cost: statePayload?.session_cost ?? statePayload?.daily_cost ?? statePayload?.weekly_cost ?? metricValue(statePayload, 'session_cost') ?? metricValue(statePayload, 'daily_cost'),
     session_cost: statePayload?.session_cost ?? metricValue(statePayload, 'session_cost'),
