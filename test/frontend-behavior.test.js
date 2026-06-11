@@ -472,9 +472,17 @@ test('fleet tile context level mirrors the single-agent bar thresholds, not new_
   assert.doesNotMatch(tile(42), /is-over-threshold/);
 
   const view = buildAgentFleetView({
-    agents: [{ name: 'a', state: 'IDLE', context_pct: 0.6 }]
+    agents: [{ name: 'a', state: 'IDLE', context_pct: 60 }]
   });
   assert.equal(view.tiles[0].contextLevel, 'warning');
+
+  // #251: values are 0-100 percentages — never fraction-inferred. A genuine
+  // 1% weekly usage must render 1%, not a full red bar.
+  const tiny = buildAgentFleetView({
+    agents: [{ name: 'a', state: 'IDLE', context_pct: 0.6, rate_limit_7d_pct: 1 }]
+  });
+  assert.equal(tiny.tiles[0].contextLevel, 'ok');
+  assert.equal(tiny.tiles[0].rate7dPct, 1);
 });
 
 test('liveStateMood upgrades busy-with-no-tools to thinking (detail page parity with #186)', () => {
@@ -702,7 +710,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=52/);
+  assert.match(index, /app\.js\?v=53/);
   assert.match(index, /style\.css\?v=39/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
@@ -770,7 +778,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=52/);
+  assert.match(index, /app\.js\?v=53/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

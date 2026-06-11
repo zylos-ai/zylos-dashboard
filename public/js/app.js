@@ -117,10 +117,12 @@ function initTheme(theme) {
 }
 
 // ─── Formatting ───
+// Input is always a 0-100 percentage (statusline, Codex percent_used, system
+// metrics). No fraction inference — 0.5 means 0.5%, not 50% (#251).
 function barPct(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, n < 1 ? n * 100 : n));
+  return Math.max(0, Math.min(100, n));
 }
 
 function barColor(pctValue) {
@@ -130,11 +132,12 @@ function barColor(pctValue) {
   return 'bar-danger';
 }
 
+// Input is a 0-1 ratio (cache_hit_rate is computed as read/total). Always
+// scale; do not pass 0-100 percentages here.
 function pctDecimal(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
-  const p = n <= 1 ? n * 100 : n;
-  return `${p.toFixed(1)}%`;
+  return `${Math.max(0, Math.min(100, n * 100)).toFixed(1)}%`;
 }
 
 function tok(v) {
@@ -713,7 +716,7 @@ function renderMetrics() {
   const ctxBar = $('#metric-context-bar');
   const threshold = state.newSessionThreshold || 70;
   const cvNum = Number(cv);
-  const cvAbs = Number.isFinite(cvNum) ? (cvNum < 1 ? cvNum * 100 : cvNum) : 0;
+  const cvAbs = Number.isFinite(cvNum) ? barPct(cvNum) : 0;
   ctxBar.style.width = `${barPct(cv)}%`;
   ctxBar.className = `progress-fill ${barColor(cv)}`;
   const thresholdMarker = $('#metric-context-threshold');
@@ -771,8 +774,8 @@ function renderMetrics() {
   const CACHE_RING_C = 2 * Math.PI * 22;
   const cacheEl = $('#cache-ring');
   if (cacheEl) {
-    const cr = ts?.cache_rate;
-    const cv = cr != null ? (cr <= 1 ? cr * 100 : cr) : 0;
+    const cr = ts?.cache_rate; // 0-1 ratio by construction
+    const cv = cr != null ? Math.max(0, Math.min(100, cr * 100)) : 0;
     cacheEl.style.strokeDasharray = CACHE_RING_C;
     cacheEl.style.strokeDashoffset = CACHE_RING_C * (1 - Math.min(100, cv) / 100);
   }
@@ -865,8 +868,7 @@ function renderHealth() {
   state.lastCpuPct = cpuResolved.lastGood;
   $('#system-cpu').textContent = cpuResolved.display;
   if (cpuResolved.lastGood !== null) {
-    const ringVal = cpuResolved.lastGood < 1 ? cpuResolved.lastGood * 100 : cpuResolved.lastGood;
-    setRing('cpu-ring', ringVal);
+    setRing('cpu-ring', cpuResolved.lastGood); // 0-100 percent; setRing clamps
   }
 
   // Memory — ring shows %, detail shows used/total

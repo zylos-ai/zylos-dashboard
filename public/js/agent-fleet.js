@@ -16,11 +16,14 @@ export function escapeHtml(value) {
     .replaceAll('"', '&quot;');
 }
 
+// Input is always a 0-100 percentage (context_pct, rate_limit_pct, cpu/mem/
+// disk). Never infer fractions: a remote agent's genuine 1% weekly usage must
+// render as 1%, not a full red bar (#251).
 function pctValue(value) {
   if (value == null || value === '') return null;
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(100, n <= 1 ? n * 100 : n));
+  return Math.max(0, Math.min(100, n));
 }
 
 function money(value) {
