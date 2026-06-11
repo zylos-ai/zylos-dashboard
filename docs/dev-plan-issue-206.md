@@ -36,13 +36,18 @@ Replace #205's blanket hide of Actions/Settings in remote view with scope-based 
 
 ### C. Proxy write forwarding (`src/lib/fleet-proxy.js`)
 - [ ] `proxyApi`: allow exactly `POST /api/actions/<action>` and `PUT /api/settings`; every other non-GET/HEAD stays 403 `read_only_proxy`.
-- [ ] `_fetchUpstream`: forward the request body for write methods — buffer raw bytes with a size cap (e.g. 1 MB → 413), preserve `content-type`. (No streaming `duplex` games; bounded buffer is simpler and testable.)
-- [ ] Existing 401-retry (token refresh) applies to writes too — safe because 401 means the upstream never executed the action.
+- [ ] `_fetchUpstream`: forward the request body for write methods — buffer raw bytes with a size cap (e.g. 1 MB → 413), preserve `content-type`. Strip the inbound `content-length` and let fetch compute it from the buffered body. (No streaming `duplex` games; bounded buffer is simpler and testable.)
+- [ ] Existing 401-retry (token refresh) applies to writes too — safe because 401 means the upstream never executed the action (producer validates bearer in `auth.handle()` before any action/settings handler runs).
 - [ ] Upstream status/body passthrough incl. `403 insufficient_scope`; existing secret guard applies to write responses same as reads.
+
+### C2. Consumer boundary gate (`src/lib/auth.js`) — review finding #1
+Today the consumer admin gate only matches local paths (`/api/actions`, `PUT /api/settings`); fleet paths admit any valid API session. Once the proxy forwards writes, a **read**-scope API session on the consumer could execute remote **admin** actions via `/fleet/<name>/api/...` — an escalation the proxy must not introduce.
+- [ ] Extend `needsAdmin` to also match proxied writes: `POST /fleet/<name>/api/actions/*` and `PUT /fleet/<name>/api/settings` require a browser session or an **admin**-scope consumer API session; a read-scope consumer API session → 403 `insufficient_scope`.
+- [ ] This is defense at the consumer boundary only — the producer remains the final authorization authority for the fleet key's scope.
 
 ### D. Standalone remote page access discovery (`src/lib/fleet-proxy.js` serveHtml + `src/index.js` local HTML serving + `index.html`)
 - [ ] `index.html` gains a `__REMOTE_ACCESS__` placeholder (script global, alongside `__BASE_PATH__`).
-- [ ] Fleet-served HTML: replace with poller's cached scope for that agent (`'read'` if unknown yet).
+- [ ] Fleet-served HTML: **actively resolve** scope before injection — `getSessionToken(agent)` then `getAgentAccess(agent)`; only on exchange failure or missing scope fall back to `'read'`. (Cached-scope-only would pin an admin key's standalone page to read right after a consumer restart, with no upgrade path — review finding #2.)
 - [ ] Locally served HTML: replace with `'admin'`.
 
 ### E. Frontend (`public/js/app.js`)
@@ -61,7 +66,9 @@ Replace #205's blanket hide of Actions/Settings in remote view with scope-based 
 
 ## Test Checklist
 
-- [ ] Proxy: whitelisted write forwarded with body + content-type; non-whitelisted write (e.g. `POST /api/auth/token`, `DELETE`) → 403 `read_only_proxy`; upstream `403 insufficient_scope` passed through verbatim; oversized body → 413; 401-retry on write; secret guard on write responses. (Updates `test/fleet-proxy.test.js:279` which currently asserts the blanket 403.)
+- [ ] Proxy: whitelisted write forwarded with body + content-type; non-whitelisted write (e.g. `POST /api/auth/token`, `DELETE`) → 403 `read_only_proxy`; upstream `403 insufficient_scope` passed through verbatim; oversized body → 413; 401-retry on write proves the upstream executed exactly once (first 401 never hit the action handler, post-refresh attempt runs once); secret guard on write responses. (Updates `test/fleet-proxy.test.js:279` which currently asserts the blanket 403.)
+- [ ] Consumer boundary gate: read-scope consumer API session **cannot** write via `/fleet/<name>/api/actions/...` even when the remote fleet key is admin (403 `insufficient_scope`); admin-scope consumer API session and browser session pass through to the remote.
+- [ ] Standalone HTML access injection: empty cache + admin exchange → injects `admin`; exchange failure or missing scope → `read`.
 - [ ] Poller: scope captured from exchange; missing scope → `'read'`; `getAgentAccess` unknown-agent/no-token behavior; `getFleet` records carry `access`.
 - [ ] Payload: self record `access: 'admin'`; leak guard still passes.
 - [ ] Frontend: renderInfoBar three states (local / remote+admin / remote+read); handler gating; actions/settings fetches hit `/fleet/<name>/api/...` when in-page remote; pollAndReload target captured at action time.
@@ -71,7 +78,7 @@ Replace #205's blanket hide of Actions/Settings in remote view with scope-based 
 
 - [ ] Token exchange response includes `scope` on current producers (it does — `exchangeApiKeyForToken` returns it). Absent → treated as `read`; **never** assumed admin.
 - [ ] Producer admin gate is authoritative and already deployed on both fleet machines (auth.js `needsAdmin`) — guaranteed by current main.
-- [ ] CSRF posture of proxied writes equals existing local `/api/actions` (same-origin JSON POST under cookie session) — no new exposure class; the proxy only adds Bearer auth upstream.
+- [ ] CSRF posture of proxied writes equals existing local `/api/actions` for the **browser-cookie path** (same-origin JSON POST, Strict cookie). The API-token path is a separate concern — covered by the consumer boundary gate (C2), not by CSRF reasoning.
 - [ ] Existing fleet configs use read-scope keys (current default). Acceptance requires issuing one admin key on a producer (`scripts/api-key.js generate <name> admin`) and swapping it into the consumer config.
 - [ ] Remote actions (restart/upgrade/switch-model) executing on the remote machine is intended behavior, not a side effect.
 
@@ -79,7 +86,8 @@ Replace #205's blanket hide of Actions/Settings in remote view with scope-based 
 
 - [ ] **Read key (current config)**: remote detail shows Actions/⚙️ disabled with tooltip; settings opens read-only with remote values, save disabled; browser network tab shows zero writes to local root from remote view. Screenshot.
 - [ ] **Defense-in-depth**: with read key, force `curl -X POST <consumer>/fleet/<name>/api/actions/interrupt` (authed) → 403 `insufficient_scope` from the remote (not `read_only_proxy`).
-- [ ] **Admin key**: issue admin key on Jinglever's producer (coordinate with him), swap into consumer config; buttons enabled; run one **low-impact** action end-to-end (e.g. settings PUT with unchanged values, or switch-effort to its current value) — verify it executed on the remote, not locally. Screenshot.
+- [ ] **Admin key**: issue a **temporary** admin key on Jinglever's producer (coordinate with him), swap into consumer config; buttons enabled; run one **low-impact** action end-to-end (e.g. settings PUT with unchanged values, or switch-effort to its current value) — verify it executed on the remote, not locally. Screenshot (key never visible in logs, screenshots, or chat).
+- [ ] **Admin key lifecycle**: key is created for this acceptance only, transmitted over a Howard-authorized private path, and after acceptance is **revoked** with the consumer config restored to the read key.
 - [ ] Local agent detail completely unaffected (buttons enabled, local routing). No regressions: in-page fleet ↔ remote switch, back-nav, SSE reconnect.
 - [ ] Standalone `/fleet/<name>/` page shows the same gating.
 - [ ] `npm test` green, `npm run check` clean.
