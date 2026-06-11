@@ -20,6 +20,9 @@
 ---
 
 <p align="center">
+  <img src="docs/images/fleet.jpg" alt="Agent Fleet — multi-agent wall with live state, costs, and system gauges per agent" width="720">
+</p>
+<p align="center">
   <img src="docs/images/overview.jpg" alt="Overview — live agent state, capacity, runtime gauges" width="720">
 </p>
 <p align="center">
