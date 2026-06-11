@@ -17,13 +17,13 @@ This is a sensitive write surface. The implementation must never save from stale
 - `PUT /api/memory/file?path=<relative>` producer endpoint with JSON body `{ "text": "...", "sha256": "<opened-file-sha256>" }`.
 - Strict conflict detection using sha256.
 - Same path jail, symlink rejection, file type restrictions, UTF-8/text validation, and 1 MiB size cap as the read side.
-- UI dirty state, Save/Reset controls, saving/error/conflict states, and refresh/merge-oriented conflict UX.
+- UI dirty state, Save/Reset controls, saving/error/conflict states, Howard-approved three-layer conflict UX, localStorage draft autosave, and live change notice while editing.
 - Tests covering local API, proxy write gates, frontend behavior, and conflict handling.
 
 **Out of scope**:
 
 - Force overwrite button.
-- Full diff/merge editor.
+- Full-featured merge editor or external diff dependency. A simple local LCS line diff in the conflict panel is in scope.
 - Editing binary/unsupported files or files above the 1 MiB cap.
 - Creating, deleting, renaming, moving files/directories.
 - Editing Memory git history or commit metadata.
@@ -138,7 +138,55 @@ When a supported file is open:
   - a save is already in flight.
 - Reset/Revert restores the editor draft to the last loaded server text.
 - Dirty state is visible in the file header and/or Save button.
-- Switching files with unsaved edits should confirm before discarding.
+- Switching files with unsaved edits should autosave the draft and allow navigation without destructive discard pressure.
+
+### Draft autosave
+
+Drafts are automatically persisted to `localStorage` while editing:
+
+- Key by agent context plus file path so local and remote drafts do not collide:
+  - local/self example: `memoryDraft:self:identity.md`,
+  - in-page remote example: `memoryDraft:remote:<agentName>:identity.md`,
+  - standalone remote can use its `BASE_PATH`/remote identity as part of the key.
+- Persist `{ path, draftText, baseSha256, savedAt }` on a short edit debounce.
+- On file open, if a draft exists for the same agent+path:
+  - show a "restored unsaved draft" notice,
+  - load the draft into the editor without mutating the loaded server file metadata,
+  - provide a Discard draft action that removes the localStorage entry and restores the server text.
+- Clear the draft only after a successful save or explicit discard.
+- If switching files, keep the old file's draft in localStorage rather than forcing the user to lose or confirm away edits.
+
+### Conflict panel
+
+On `409 memory_conflict`, the UI must not discard the user's draft.
+
+Flow:
+
+1. Keep the user's current draft as "mine".
+2. Fetch the latest file from the producer as "theirs"; the latest response supplies the fresh `sha256`.
+3. Render a conflict panel with a simple line-level diff of mine vs theirs.
+   - Use a small dependency-free LCS line diff in frontend code.
+   - A side-by-side diff is preferred; a unified diff is acceptable if layout is tight.
+   - This is not a full merge editor.
+4. Offer three actions:
+   - **Use mine**: re-submit the preserved draft with the fresh `sha256`.
+   - **Take theirs**: discard the draft, adopt the latest server text, clear the draft key.
+   - **Manual merge**: keep the editor open with the user's editable draft; user edits, then Save submits with the fresh `sha256`.
+
+All three actions preserve the no-force-overwrite invariant. Even "Use mine" is a normal `PUT` with the refreshed base hash, not a hash bypass.
+
+### Live change notice
+
+For v0.3.0 choose the zero-producer-change option: while edit mode is active and the file has a loaded `baseSha256`, the client performs a lightweight recheck every 20 seconds.
+
+- Re-fetch `GET /api/memory/file?path=<current>` through `agentPath()`.
+- Compare the returned `sha256` with the editor's `baseSha256`.
+- If it differs, show an inline "file changed on disk" notice before the user submits.
+- The notice offers the same conflict panel flow as a submit-time conflict: keep mine, fetch/show theirs, and use the fresh sha for any re-submit.
+- Pause the polling when edit mode exits, the tab is hidden, the file changes, or a save is in flight.
+- This works for remote editing because the existing fleet proxy already supports memory reads and `text/event-stream`; no new producer `fs.watch` or SSE event is needed for v0.3.0.
+
+Producer `fs.watch` + `memory_file_changed` SSE remains a possible future enhancement if the 20s polling delay proves insufficient.
 
 Save flow:
 
@@ -153,9 +201,9 @@ Save flow:
    - refresh git metadata best-effort,
    - refresh tree best-effort so size/mtime update.
 6. On `memory_conflict`:
-   - preserve the user's draft in the browser,
-   - show a conflict state explaining the file changed on disk,
-   - provide a Refresh latest action that reloads the file and keeps the user's draft available to copy manually,
+   - preserve the user's draft in the browser and localStorage,
+   - fetch the latest file,
+   - show the conflict panel with mine/theirs/manual-merge actions,
    - do not offer force overwrite in v0.3.0.
 
 Remote behavior:
@@ -166,7 +214,11 @@ Remote behavior:
 
 I18n:
 
-- Add EN/ZH strings for Edit, Save, Reset, Saving, Saved, Unsaved changes, Conflict, Refresh latest, invalid write, and save failure.
+- Add EN/ZH strings for Edit, Save, Reset, Saving, Saved, Unsaved changes, restored draft, discard draft, Conflict, Use mine, Take theirs, Manual merge, file changed on disk, Refresh latest, invalid write, and save failure.
+
+Implementation ordering:
+
+- #229 replaces the Markdown renderer in the same viewer. Implement #227 only after #229 is merged and rebase on that `main` so edit mode does not fork the Raw/Rendered render path.
 
 ## Implementation Steps
 
@@ -190,9 +242,11 @@ I18n:
    - rely on existing body cap and secret guard.
 5. Frontend:
    - add edit/save/reset controls in the Memory viewer header or toolbar,
-   - store `baseSha256`, `baseText`, `draftText`, `saving`, `dirty`, and `conflict` state,
-   - preserve draft on conflict,
-   - prevent accidental file switches with unsaved changes,
+   - store `baseSha256`, `baseText`, `draftText`, `saving`, `dirty`, `draftRestored`, `liveChanged`, and `conflict` state,
+   - autosave drafts to localStorage by agent+path and restore/clear them correctly,
+   - preserve draft on conflict and render the mine/theirs diff panel,
+   - allow file switches without losing drafts by relying on per-file draft persistence,
+   - poll the current file sha every 20 seconds while editing to show live change notices,
    - refresh metadata/tree after successful save,
    - ensure read-only remote contexts cannot enter edit mode.
 6. CSS/i18n/cache bust.
@@ -229,7 +283,12 @@ Frontend/static:
 - Save body includes both `text` and the opened file `sha256`.
 - Read-only remote contexts cannot edit.
 - Conflict response preserves draft and surfaces refresh/merge UX.
-- Unsaved changes guard is wired when switching files.
+- Conflict panel renders a line diff and exposes Use mine, Take theirs, and Manual merge flows.
+- Use mine re-submits the preserved draft with the fresh sha, not with the stale sha.
+- Take theirs adopts the latest server text and clears the draft.
+- Manual merge keeps an editable draft and saves with the fresh sha after user edits.
+- localStorage draft autosave writes by agent+path, restores with a notice, survives file switches/reload, and clears on successful save/discard.
+- Live edit-mode recheck detects a changed sha and shows the same conflict notice before submit.
 - EN/ZH strings and cache bumps are present.
 
 Regression:
@@ -244,7 +303,9 @@ Regression:
 
 - Local Memory tab can edit `identity.md` or a safe fixture file and immediately shows the new hash/mtime after save.
 - A stale browser tab receives a conflict instead of overwriting a newer on-disk edit.
-- The user's draft is still available after conflict.
+- The user's draft is still available after conflict, reload, and file switching.
+- Conflict UX offers Use mine, Take theirs, and Manual merge, all without a force-overwrite API.
+- While editing, a file changed on disk is surfaced by the 20s sha recheck before submit when possible.
 - Read-scope local API token cannot save.
 - In-page remote with admin key can save through `/fleet/<agent>/api/memory/file`.
 - In-page remote with read key cannot save; API returns 403 and UI remains read-only.
@@ -259,3 +320,4 @@ Regression:
 - Confirm `sha256` conflict detection uses the current file bytes read on the producer at save time, not cached tree metadata.
 - Confirm no force-overwrite path exists in v0.3.0.
 - Confirm temp-file names cannot escape the target directory and are cleaned up best-effort.
+- Accepted residual risk for v0.3.0: the in-process per-path mutex serializes dashboard saves, but an agent process can still write the same file in the small window between producer hash-check and temp-file rename. That out-of-band write could be overwritten. The window is expected to be milliseconds and is accepted for v0.3.0; localStorage drafts plus 20s live sha recheck reduce practical user-facing exposure, but they do not eliminate this producer-side TOCTOU window.
