@@ -255,11 +255,22 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .memory-dir:hover { background: var(--bg-elevated); color: var(--text); }
 
 .memory-dir-caret {
+  display: inline-flex;
   flex: none;
-  width: 10px;
-  font-size: 9px;
-  line-height: 1;
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
+  transition: transform 120ms ease;
 }
+
+.memory-dir-caret.expanded { transform: rotate(90deg); }
+.memory-dir-caret svg { width: 14px; height: 14px; }
+.memory-dir:hover .memory-dir-caret { color: var(--text); }
+
+.memory-head-actions { display: flex; gap: 6px; }
+
+#memory-fold svg { width: 15px; height: 15px; vertical-align: -2px; }
+#memory-fold:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .memory-file {
   display: grid;

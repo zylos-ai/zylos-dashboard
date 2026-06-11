@@ -1202,6 +1202,22 @@ function preferredMemoryPath(root) {
     null;
 }
 
+// Chevron rotates 90° via the .expanded class — one icon, CSS owns the state.
+const MEMORY_CARET_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>';
+// Feather chevrons-down-up / chevrons-up-down for the fold-all toggle.
+const MEMORY_FOLD_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/></svg>';
+const MEMORY_UNFOLD_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>';
+
+function collectMemoryDirPaths(node, out = []) {
+  if (!node) return out;
+  if (node.type === 'directory' && node.path) out.push(node.path);
+  for (const child of node.children || []) collectMemoryDirPaths(child, out);
+  return out;
+}
+
 function renderMemoryTreeNode(node, depth = 0) {
   if (!node) return '';
   if (node.type === 'directory') {
@@ -1210,7 +1226,7 @@ function renderMemoryTreeNode(node, depth = 0) {
       ? ''
       : (node.children || []).map(child => renderMemoryTreeNode(child, depth + 1)).join('');
     const label = node.path
-      ? `<button class="memory-dir" type="button" data-dir="${esc(node.path)}" aria-expanded="${!collapsed}" style="padding-left:${8 + depth * 14}px"><span class="memory-dir-caret">${collapsed ? '\u25B8' : '\u25BE'}</span>${esc(node.name)}</button>`
+      ? `<button class="memory-dir" type="button" data-dir="${esc(node.path)}" aria-expanded="${!collapsed}" style="padding-left:${8 + depth * 14}px"><span class="memory-dir-caret${collapsed ? '' : ' expanded'}">${MEMORY_CARET_ICON}</span>${esc(node.name)}</button>`
       : '';
     return `${label}${children}`;
   }
@@ -1342,6 +1358,15 @@ function renderMemory() {
       renderMemory();
     });
   });
+  const fold = $('#memory-fold');
+  if (fold) {
+    const dirs = collectMemoryDirPaths(state.memory.tree?.root);
+    const allCollapsed = dirs.length > 0 && dirs.every(d => state.memory.collapsed.has(d));
+    fold.disabled = dirs.length === 0;
+    fold.innerHTML = allCollapsed ? MEMORY_UNFOLD_ICON : MEMORY_FOLD_ICON;
+    fold.title = allCollapsed ? t('memory.expand_all') : t('memory.collapse_all');
+    fold.setAttribute('aria-label', fold.title);
+  }
 
   const file = state.memory.file;
   if (!file) {
@@ -1772,6 +1797,13 @@ function initTabs() {
 
 function initMemoryControls() {
   $('#memory-refresh')?.addEventListener('click', () => loadMemoryTree({ force: true }).catch(() => {}));
+  $('#memory-fold')?.addEventListener('click', () => {
+    const dirs = collectMemoryDirPaths(state.memory.tree?.root);
+    if (!dirs.length) return;
+    const allCollapsed = dirs.every(d => state.memory.collapsed.has(d));
+    state.memory.collapsed = allCollapsed ? new Set() : new Set(dirs);
+    renderMemory();
+  });
   document.querySelectorAll('.memory-mode').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.memory.mode = btn.dataset.mode === 'raw' ? 'raw' : 'rendered';

@@ -690,8 +690,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=46/);
-  assert.match(index, /style\.css\?v=34/);
+  assert.match(index, /app\.js\?v=47/);
+  assert.match(index, /style\.css\?v=35/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -725,7 +725,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=46/);
+  assert.match(index, /app\.js\?v=47/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -882,6 +882,9 @@ test('memory tree directories collapse and expand (#222)', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   // Directory rows are buttons carrying their path and expansion state.
   assert.match(app, /<button class="memory-dir" type="button" data-dir="\$\{esc\(node\.path\)\}" aria-expanded="\$\{!collapsed\}"/);
+  // #226: caret is an SVG chevron rotated by class, large enough to read.
+  assert.match(app, /memory-dir-caret\$\{collapsed \? '' : ' expanded'\}/);
+  assert.match(app, /MEMORY_CARET_ICON/);
   // Collapsed directories render no children.
   assert.match(app, /state\.memory\.collapsed\.has\(node\.path\)/);
   // Toggling flips membership in the collapsed set and re-renders.
@@ -911,4 +914,19 @@ test('stale rate-limit windows stop painting after resets_at passes (#224)', () 
   assert.match(app, /const r7 = r7Expired \? null :/);
   // Producer payload (self tile + remote polling) applies the same rule.
   assert.match(index, /rateLimitWindowExpired\(resolved\.dimensions, metricName\)/);
+});
+
+test('memory tree has a collapse-all/expand-all toggle (#226)', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const html = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
+  const i18nEn = fs.readFileSync(path.resolve('public/i18n/en.json'), 'utf8');
+  const i18nZh = fs.readFileSync(path.resolve('public/i18n/zh.json'), 'utf8');
+  assert.match(html, /id="memory-fold"/);
+  // Toggle folds every directory at once, or expands everything back.
+  assert.match(app, /state\.memory\.collapsed = allCollapsed \? new Set\(\) : new Set\(dirs\)/);
+  // Button label/icon track whether everything is already collapsed.
+  assert.match(app, /allCollapsed \? MEMORY_UNFOLD_ICON : MEMORY_FOLD_ICON/);
+  assert.match(app, /allCollapsed \? t\('memory\.expand_all'\) : t\('memory\.collapse_all'\)/);
+  assert.match(i18nEn, /memory\.collapse_all/);
+  assert.match(i18nZh, /memory\.collapse_all/);
 });

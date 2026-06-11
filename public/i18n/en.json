@@ -5,6 +5,8 @@
   "tab.trends": "Trends",
   "memory.title": "Memory",
   "memory.refresh": "Refresh memory tree",
+  "memory.collapse_all": "Collapse all directories",
+  "memory.expand_all": "Expand all directories",
   "memory.select_file": "Select a file",
   "memory.rendered": "Rendered",
   "memory.raw": "Raw",

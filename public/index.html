@@ -7,11 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=34">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=35">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=46"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=47"></script>
 </head>
 <body>
 <header class="app-header">
@@ -309,7 +309,10 @@
       <aside class="memory-tree-card" aria-labelledby="memory-title">
         <div class="memory-head">
           <h2 id="memory-title" data-i18n="memory.title">Memory</h2>
-          <button class="memory-refresh" id="memory-refresh" type="button" data-i18n-title="memory.refresh">↻</button>
+          <div class="memory-head-actions">
+            <button class="memory-refresh" id="memory-fold" type="button" data-i18n-title="memory.collapse_all"></button>
+            <button class="memory-refresh" id="memory-refresh" type="button" data-i18n-title="memory.refresh">↻</button>
+          </div>
         </div>
         <div class="memory-tree" id="memory-tree"></div>
       </aside>
