@@ -2149,7 +2149,13 @@ function initTabs() {
     const tab = path.endsWith('/trends') ? 'trends' : (path.endsWith('/memory') ? 'memory' : 'overview');
     activateTab(tab, false);
   });
-  document.addEventListener('visibilitychange', syncFleetSubscription);
+  document.addEventListener('visibilitychange', () => {
+    syncFleetSubscription();
+    // A backgrounded tab freezes SSE and the poll timers, so on return the
+    // page may paint a pre-freeze frame (e.g. a rate-limit window that has
+    // since reset) until the 10-30s fallbacks fire. Refetch now instead (#247).
+    if (document.visibilityState === 'visible') refreshAll().catch(() => {});
+  });
   const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : (window.location.pathname.endsWith('/memory') ? 'memory' : 'overview');
   activateTab(initialTab, false);
 }
