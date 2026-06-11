@@ -29,7 +29,7 @@ Everything since v0.2.0. (0.3.0 was version-bumped internally but never publishe
 - Rate-limit bars invalidate after the reset window expires — show `--` instead of a stale frozen percentage, on both fleet tiles and the single-agent page (#224)
 - Memory tab pins the page frame on desktop with independently scrolling tree/content panes; directory tree is collapsible with clear chevrons and a collapse-all/expand-all toggle (#222, #226)
 - Memory edit mode's Reset button is now labeled Cancel — it exits editing and discards changes (#236)
-- Tool/turn events now come from the JSONL pipeline (assistant messages, token usage, turn durations); UserPromptSubmit/Stop hooks restored and self-heal after upgrades (#147, #160)
+- Assistant transcript ingestion now uses the JSONL pipeline for assistant messages, token usage, and turn-duration support; UserPromptSubmit/Stop hooks were restored and self-heal after upgrades (#147, #160)
 - Claude model selector refreshed — Opus 4.8 and Haiku 4.5 with default aliases; Haiku hides the effort selector (#152, #153)
 - Add-agent "Read key" field and hints renamed to "API key" — the field accepts any-scope key, and admin keys grant remote write; `read_api_key` API/config field unchanged (#238)
 
