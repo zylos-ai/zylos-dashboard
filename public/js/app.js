@@ -887,7 +887,7 @@ function renderHealth() {
   // Disk
   const diskPct = Number(diskVal);
   $('#system-disk').textContent = pct(diskVal);
-  if (Number.isFinite(diskPct)) setRing('disk-ring', diskPct < 1 ? diskPct * 100 : diskPct);
+  if (Number.isFinite(diskPct)) setRing('disk-ring', diskPct); // 0-100 percent; setRing clamps
 
   // Scheduler — timeline of upcoming tasks
   const sched = sysResp.scheduler;

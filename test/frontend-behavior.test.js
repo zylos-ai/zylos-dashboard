@@ -483,6 +483,14 @@ test('fleet tile context level mirrors the single-agent bar thresholds, not new_
   });
   assert.equal(tiny.tiles[0].contextLevel, 'ok');
   assert.equal(tiny.tiles[0].rate7dPct, 1);
+
+  // Static guard: the fraction heuristic must not creep back into any
+  // percent-typed frontend file (cache_rate ratio sites scale via an
+  // explicit unconditional * 100 instead).
+  for (const f of ['public/js/app.js', 'public/js/agent-fleet.js', 'public/js/gauge-utils.js']) {
+    const src = fs.readFileSync(path.resolve(f), 'utf8');
+    assert.doesNotMatch(src, /<=? ?1 \? [\w.]+ \* 100/, `${f} reintroduced the fraction heuristic`);
+  }
 });
 
 test('liveStateMood upgrades busy-with-no-tools to thinking (detail page parity with #186)', () => {
