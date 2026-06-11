@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-06-12
+
+### Fixed
+- Progress bars no longer 100x-inflate genuine 0-1% readings. The fraction-vs-percent heuristic (`n <= 1 ? n * 100 : n`) was removed from every percent-typed gauge — fleet tiles (context ring, threshold chip, 5h/7d rate bars, CPU/Memory/Disk mini rings) and the single-agent page (bars, labels, context threshold marker, system CPU/Disk rings). A remote agent's genuine 1% weekly usage rendered as a full red 100% bar, most visibly right after a rate-limit window reset. Cache-rate sites (true 0-1 ratios) now scale explicitly, and a static regression guard keeps the heuristic from returning (#251, #252)
+
 ## [0.3.2] - 2026-06-11
 
 Everything since v0.2.0. (0.3.0 and 0.3.1 were version-bumped internally but never published; their changes ship here.)
