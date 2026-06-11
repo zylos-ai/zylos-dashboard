@@ -2781,12 +2781,20 @@ async function copyDashboardBaseUrl() {
   }
 }
 
+let fleetManageStatusTimer = null;
+
 function fleetManageStatus(message, kind = '') {
   const status = fleetManageModal?.querySelector('#fleet-manage-status');
   if (!status) return;
+  clearTimeout(fleetManageStatusTimer);
+  fleetManageStatusTimer = null;
   status.textContent = message;
   status.className = `modal-status ${kind}`.trim();
   status.hidden = !message;
+  // #242: success feedback auto-dismisses; errors stay until the next action.
+  if (message && kind === 'success') {
+    fleetManageStatusTimer = setTimeout(() => fleetManageStatus(''), 5000);
+  }
 }
 
 function setFleetAddBusy(isBusy) {
@@ -2958,7 +2966,10 @@ async function openFleetManageModal(draft = null) {
 }
 
 function closeFleetManageModal() {
-  if (fleetManageModal) fleetManageModal.hidden = true;
+  if (!fleetManageModal) return;
+  fleetManageModal.hidden = true;
+  // #242: never carry a stale status into the next open.
+  fleetManageStatus('');
 }
 
 async function testFleetAgent() {

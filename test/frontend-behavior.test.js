@@ -699,8 +699,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=50/);
-  assert.match(index, /style\.css\?v=38/);
+  assert.match(index, /app\.js\?v=51/);
+  assert.match(index, /style\.css\?v=39/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -767,7 +767,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=50/);
+  assert.match(index, /app\.js\?v=51/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -846,6 +846,16 @@ test('fleet management entry is local-only and modal is extensible for future ma
     assert.equal(typeof pack['fleet_manage.base_url_hint'], 'string');
     assert.equal(typeof pack['fleet_manage.base_url_copied'], 'string');
   }
+
+  // #241: the back-to-fleet button must not stretch when a flex parent
+  // (memory-tab-active pinned layout) applies align-items: stretch.
+  const backToFleetRule = css.match(/\.back-to-fleet \{[^}]*\}/)[0];
+  assert.match(backToFleetRule, /align-self:\s*flex-start/);
+
+  // #242: success statuses auto-dismiss; closing the modal clears the status.
+  assert.match(app, /clearTimeout\(fleetManageStatusTimer\)/);
+  assert.match(app, /fleetManageStatusTimer = setTimeout\(\(\) => fleetManageStatus\(''\), 5000\);/);
+  assert.match(app, /function closeFleetManageModal\(\) \{\s*if \(!fleetManageModal\) return;\s*fleetManageModal\.hidden = true;[\s\S]{0,80}fleetManageStatus\(''\);/);
 });
 
 test('i18n loader survives flaky pack fetches (#208)', async () => {

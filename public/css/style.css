@@ -625,6 +625,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .back-to-fleet {
   display: inline-flex;
+  /* #241: keep intrinsic width when a flex parent would otherwise stretch it
+     (the memory-tab-active pinned layout makes #agent-detail a flex column). */
+  align-self: flex-start;
   align-items: center;
   height: 30px;
   margin: var(--space-sm) 0 0 var(--space-lg);
