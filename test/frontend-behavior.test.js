@@ -564,3 +564,84 @@ test('fleet summary cost totals treat explicit null as unreported, but 0 as a re
   assert.equal(zero.costTotals.session, '$0.0000');
   assert.equal(zero.costTotals.daily, '--');
 });
+
+test('in-page remote viewing rewrites agent data paths through the fleet proxy', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // Single choke point: every JSON fetch goes through agentPath().
+  assert.match(app, /const r = await fetch\(api\(agentPath\(path\)\), \{ cache: 'no-store' \}\);/);
+  // Only /api/* paths are re-rooted; /api/fleet (our own wall) and non-API
+  // paths like /login always stay on the local dashboard root.
+  assert.match(app, /if \(!path\.startsWith\('\/api\/'\) \|\| path === '\/api\/fleet'\) return path;/);
+  assert.match(app, /return `\$\{remotePrefix\(\)\}\$\{path\}`;/);
+  // Remote prefix URL-encodes the agent name.
+  assert.match(app, /`\/fleet\/\$\{encodeURIComponent\(state\.remoteAgent\)\}`/);
+});
+
+test('SSE stream follows the viewed agent and remote fleet events never clobber the local wall', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  assert.match(app, /new EventSource\(api\(agentPath\('\/api\/stream'\)\)\)/);
+  // Reconnect probe targets the same agent the stream does.
+  assert.match(app, /await fetch\(api\(agentPath\('\/api\/state'\)\), \{ cache: 'no-store' \}\);/);
+  // A remote agent's stream describes its own fleet — drop those events.
+  assert.match(app, /if \(name === 'fleet' && state\.remoteAgent\) return;/);
+});
+
+test('entering and exiting a remote agent resets per-agent state and resubscribes SSE', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const enter = app.slice(app.indexOf('function enterRemoteAgent('), app.indexOf('function exitRemoteAgent('));
+  const exit = app.slice(app.indexOf('function exitRemoteAgent('), app.indexOf('function initFleetMode('));
+  for (const fn of [enter, exit]) {
+    assert.match(fn, /resetAgentData\(\);/);
+    assert.match(fn, /connectSse\(\);/);
+    assert.match(fn, /refreshAll\(\)\.catch/);
+  }
+  assert.match(enter, /showAgentDetail\(\);/);
+  assert.match(exit, /showFleetView\(\);/);
+  // resetAgentData clears incremental DOM, not just state, so panels from two
+  // agents never mix.
+  const reset = app.slice(app.indexOf('function resetAgentData('), app.indexOf('function enterRemoteAgent('));
+  assert.match(reset, /prevSubagentIds\.clear\(\);/);
+  assert.match(reset, /#tool-feed/);
+  assert.match(reset, /#subagent-list/);
+  assert.match(reset, /renderAll\(\);/);
+});
+
+test('single-agent dashboards never activate in-page remote viewing', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const enter = app.slice(app.indexOf('function enterRemoteAgent('), app.indexOf('function exitRemoteAgent('));
+  // Guard sits at the function entry so both the tile-click path and a stale
+  // popstate /fleet/<name> match are bypassed when there is no fleet wall.
+  assert.match(enter, /if \(!state\.multiAgent\) return;/);
+  assert.ok(enter.indexOf('if (!state.multiAgent) return;') < enter.indexOf('state.remoteAgent = name;'));
+});
+
+test('back button resolves in-page remote first, standalone remote second, fleet wall last', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // Anchor inside initFleetMode — applyFleetMode also references #back-to-fleet.
+  const fleetMode = app.indexOf('function initFleetMode(');
+  const start = app.indexOf("const backBtn = $('#back-to-fleet');", fleetMode);
+  const handler = app.slice(start, app.indexOf('initLocaleToggle', start));
+  const inPage = handler.indexOf('if (state.remoteAgent) {');
+  const standalone = handler.indexOf('if (REMOTE_AGENT) {');
+  const wall = handler.indexOf('showFleetView();');
+  assert.ok(inPage > -1 && standalone > inPage && wall > standalone);
+  assert.match(handler, /exitRemoteAgent\(\);/);
+  assert.match(handler, /window\.location\.href = PARENT_DASHBOARD_PATH;/);
+});
+
+test('popstate routes /fleet/<name> paths into remote view only on the parent document', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // The standalone remote document (REMOTE_AGENT) keeps plain tab routing.
+  assert.match(app, /if \(!REMOTE_AGENT\) \{\s*\n\s*const m = path\.match\(\/\\\/fleet\\\/\(\[\^\/\]\+\)\\\/\?\(\?::?trends\)\?\$\/\);?/);
+  assert.match(app, /enterRemoteAgent\(decodeURIComponent\(m\[1\]\), \{ push: false \}\);/);
+  assert.match(app, /else if \(state\.remoteAgent\) \{\s*\n\s*exitRemoteAgent\(\{ push: false \}\);/);
+  // Tab pushState carries the remote prefix so deep links stay consistent.
+  assert.match(app, /const path = name === 'overview' \? `\$\{prefix\}\/` : `\$\{prefix\}\/\$\{name\}`;/);
+});
+
+test('fleet wall tiles enter remote agents in-page instead of full navigation', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const fleetMode = app.indexOf('function initFleetMode(');
+  const block = app.slice(fleetMode, app.indexOf("const backBtn = $('#back-to-fleet');", fleetMode));
+  assert.match(block, /if \(tile\.dataset\.agent\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*enterRemoteAgent\(tile\.dataset\.agent\);/);
+});

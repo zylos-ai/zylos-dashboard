@@ -45,12 +45,29 @@ const state = {
   charts: {},
   lastCpuPct: null,
   multiAgent: false,
-  fleetViewActive: false
+  fleetViewActive: false,
+  remoteAgent: null
 };
 
 const $ = (sel) => document.querySelector(sel);
 
 function api(path) { return `${BASE_PATH}${path}`; }
+
+// ─── In-page remote agent viewing (#203 Option B) ───
+// While a remote agent is being viewed, agent-scoped data paths are re-rooted
+// at the server-side proxy (/fleet/<name>/api/...). Fleet-wall data and auth
+// endpoints always come from our own dashboard root. In the standalone remote
+// document (REMOTE_AGENT mode) BASE_PATH already targets the remote, so
+// state.remoteAgent stays null there and these helpers pass through.
+function remotePrefix() {
+  return state.remoteAgent ? `/fleet/${encodeURIComponent(state.remoteAgent)}` : '';
+}
+
+function agentPath(path) {
+  if (!state.remoteAgent) return path;
+  if (!path.startsWith('/api/') || path === '/api/fleet') return path;
+  return `${remotePrefix()}${path}`;
+}
 
 // ─── Theme ───
 function initTheme(theme) {
@@ -1050,7 +1067,7 @@ function renderAll() {
 
 // ─── Data fetching ───
 async function fetchJson(path) {
-  const r = await fetch(api(path), { cache: 'no-store' });
+  const r = await fetch(api(agentPath(path)), { cache: 'no-store' });
   if (r.status === 401) {
     window.location.href = api('/login');
     throw new Error('unauthorized');
@@ -1277,6 +1294,8 @@ async function refreshAll() {
 // ─── SSE ───
 function applySse(name, data) {
   if (!data || typeof data !== 'object') return;
+  // A remote agent's stream describes its own fleet; never let it clobber ours.
+  if (name === 'fleet' && state.remoteAgent) return;
   if (name === 'state_change') {
     const prevRi = state.dashboardState?.runtime_info;
     // The SSE state payload carries only raw state — the agent identity color
@@ -1320,7 +1339,7 @@ function connectSse() {
   }
   clearTimeout(state.sseReconnectTimer);
 
-  state.eventSource = new EventSource(api('/api/stream'));
+  state.eventSource = new EventSource(api(agentPath('/api/stream')));
 
   state.eventSource.onopen = () => {
     state.sseRetries = 0;
@@ -1347,7 +1366,7 @@ function scheduleSseReconnect() {
   state.sseRetries = (state.sseRetries || 0) + 1;
   state.sseReconnectTimer = setTimeout(async () => {
     try {
-      const r = await fetch(api('/api/state'), { cache: 'no-store' });
+      const r = await fetch(api(agentPath('/api/state')), { cache: 'no-store' });
       if (r.status === 401) {
         window.location.href = api('/login');
         return;
@@ -1373,7 +1392,8 @@ function initTabs() {
     });
     if (name === 'trends') refreshCharts();
     if (push) {
-      const path = name === 'overview' ? '/' : `/${name}`;
+      const prefix = remotePrefix();
+      const path = name === 'overview' ? `${prefix}/` : `${prefix}/${name}`;
       window.history.pushState({ tab: name }, '', api(path));
     }
   };
@@ -1383,7 +1403,18 @@ function initTabs() {
     });
   });
   window.addEventListener('popstate', () => {
-    const tab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
+    const path = window.location.pathname;
+    // In-page remote viewing only exists on the parent document; the
+    // standalone remote document (REMOTE_AGENT) keeps plain tab routing.
+    if (!REMOTE_AGENT) {
+      const m = path.match(/\/fleet\/([^/]+)\/?(?:trends)?$/);
+      if (m) {
+        enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
+      } else if (state.remoteAgent) {
+        exitRemoteAgent({ push: false });
+      }
+    }
+    const tab = path.endsWith('/trends') ? 'trends' : 'overview';
     activateTab(tab, false);
   });
   document.addEventListener('visibilitychange', syncFleetSubscription);
@@ -1428,6 +1459,57 @@ function applyFleetMode(fleet) {
   }
 }
 
+// Clear all per-agent data and incremental DOM so two agents' panels never
+// mix while switching the detail view between self and a remote agent.
+function resetAgentData() {
+  state.dashboardState = null;
+  state.metrics = new Map();
+  state.aggregated = {};
+  state.health = null;
+  state.system = null;
+  state.summary = null;
+  state.communication = null;
+  state.timeline = null;
+  state.sourceUpdatedAt = null;
+  state.metricsUpdatedAt = null;
+  state.healthUpdatedAt = null;
+  state.summaryUpdatedAt = null;
+  state.commUpdatedAt = null;
+  state.timelineUpdatedAt = null;
+  prevSubagentIds.clear();
+  const feed = $('#tool-feed');
+  if (feed) feed.innerHTML = '';
+  const subs = $('#subagent-list');
+  if (subs) subs.innerHTML = '';
+  const msg = $('#assistant-message');
+  if (msg) { msg.hidden = true; msg.textContent = ''; }
+  renderAll();
+}
+
+function enterRemoteAgent(name, { push = true } = {}) {
+  // Single-agent dashboards have no fleet wall to come back to — never
+  // activate remote viewing there, even if a stale history entry matches.
+  if (!state.multiAgent) return;
+  if (!name || state.remoteAgent === name) return;
+  state.remoteAgent = name;
+  resetAgentData();
+  connectSse();
+  showAgentDetail();
+  refreshAll().catch(() => {});
+  if (activeTabName() === 'trends') refreshCharts();
+  if (push) window.history.pushState({ remoteAgent: name }, '', api(`${remotePrefix()}/`));
+}
+
+function exitRemoteAgent({ push = true } = {}) {
+  if (!state.remoteAgent) return;
+  state.remoteAgent = null;
+  resetAgentData();
+  connectSse();
+  showFleetView();
+  refreshAll().catch(() => {});
+  if (push) window.history.pushState({ tab: 'overview' }, '', api('/'));
+}
+
 function initFleetMode() {
   // Intercept self-tile clicks: switch to the agent dashboard instead of a
   // full navigation that would just reload the wall. External tiles navigate
@@ -1436,15 +1518,25 @@ function initFleetMode() {
   if (root) {
     root.addEventListener('click', (e) => {
       const tile = e.target.closest('.agent-tile');
-      if (tile && tile.dataset.self === 'true') {
+      if (!tile) return;
+      if (tile.dataset.self === 'true') {
         e.preventDefault();
         showAgentDetail();
+        return;
+      }
+      if (tile.dataset.agent) {
+        e.preventDefault();
+        enterRemoteAgent(tile.dataset.agent);
       }
     });
   }
   const backBtn = $('#back-to-fleet');
   if (backBtn) {
     backBtn.addEventListener('click', () => {
+      if (state.remoteAgent) {
+        exitRemoteAgent();
+        return;
+      }
       if (REMOTE_AGENT) {
         window.location.href = PARENT_DASHBOARD_PATH;
         return;
