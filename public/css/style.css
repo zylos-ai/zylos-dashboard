@@ -2336,3 +2336,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .action-btn-primary:hover { background: #2563eb; border-color: #2563eb; }
 
 .settings-status-ok { color: #22c55e; }
+
+/* Issue #203: smooth cross-document transition between the fleet wall and
+   proxied remote detail pages (same document served under /fleet/<name>/).
+   Same-origin navigations cross-fade instead of flashing a full reload;
+   unsupported browsers ignore this block and keep the plain navigation. */
+@view-transition {
+  navigation: auto;
+}
