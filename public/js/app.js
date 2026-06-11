@@ -305,7 +305,12 @@ function renderInfoBar() {
     parts.push(cv);
   }
 
-  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}">⚙️</button></span>`;
+  // Actions/Settings operate on the local dashboard only — hide them while
+  // viewing a remote agent in-page (remote viewing is read-only).
+  const buttons = state.remoteAgent
+    ? ''
+    : `<span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}">⚙️</button></span>`;
+  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span>${buttons}`;
 }
 
 // ─── Render: State ───
@@ -1483,6 +1488,10 @@ function resetAgentData() {
   if (subs) subs.innerHTML = '';
   const msg = $('#assistant-message');
   if (msg) { msg.hidden = true; msg.textContent = ''; }
+  // Local-only modals must not survive a switch (e.g. browser-back into a
+  // remote view while the Actions modal is open).
+  closeActionsModal();
+  closeSettingsModal();
   renderAll();
 }
 
@@ -2538,6 +2547,9 @@ async function execAction(action, body) {
 
 function initInfoBarButtons() {
   document.addEventListener('click', (e) => {
+    // No local-only modals while viewing a remote agent — the buttons are
+    // hidden, but the ↑update badge (remote runtime info) still renders.
+    if (state.remoteAgent) return;
     if (e.target.closest('#settings-btn')) { e.preventDefault(); openSettingsModal(); return; }
     if (e.target.closest('#actions-btn, .info-bar-update')) { e.preventDefault(); openActionsModal(); }
   });

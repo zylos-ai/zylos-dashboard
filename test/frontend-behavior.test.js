@@ -645,3 +645,20 @@ test('fleet wall tiles enter remote agents in-page instead of full navigation', 
   const block = app.slice(fleetMode, app.indexOf("const backBtn = $('#back-to-fleet');", fleetMode));
   assert.match(block, /if \(tile\.dataset\.agent\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*enterRemoteAgent\(tile\.dataset\.agent\);/);
 });
+
+test('local-only Actions/Settings are unreachable while viewing a remote agent in-page', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // Info bar omits the Actions/Settings buttons (they POST to the local
+  // dashboard root — interrupt/restart/upgrade must not hit the wrong agent).
+  assert.match(app, /const buttons = state\.remoteAgent\s*\n\s*\? ''/);
+  assert.match(app, /\$\{parts\.join\(' · '\)\}<\/span>\$\{buttons\}/);
+  // Click handler bails too — the ↑update badge (remote runtime info) still
+  // renders inside the info text and must not open the local Actions modal.
+  const handler = app.slice(app.indexOf('function initInfoBarButtons('), app.indexOf('function startTimers('));
+  assert.ok(handler.indexOf('if (state.remoteAgent) return;') < handler.indexOf("closest('#settings-btn')"));
+  // An already-open modal cannot survive entering/exiting a remote view
+  // (browser-back with the Actions modal open).
+  const reset = app.slice(app.indexOf('function resetAgentData('), app.indexOf('function enterRemoteAgent('));
+  assert.match(reset, /closeActionsModal\(\);/);
+  assert.match(reset, /closeSettingsModal\(\);/);
+});
