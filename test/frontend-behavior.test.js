@@ -699,7 +699,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=49/);
+  assert.match(index, /app\.js\?v=50/);
   assert.match(index, /style\.css\?v=38/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
@@ -767,7 +767,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=49/);
+  assert.match(index, /app\.js\?v=50/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -828,6 +828,23 @@ test('fleet management entry is local-only and modal is extensible for future ma
     assert.equal(typeof pack['fleet_manage.reserved_name'], 'string');
     assert.equal(typeof pack['fleet_manage.auth_failed'], 'string');
     assert.equal(typeof pack['fleet_manage.invalid_scope'], 'string');
+  }
+
+  // #238: the add-agent key field accepts any-scope API key — copy must not say "read key"
+  assert.equal(en['fleet_manage.read_key'], 'API key');
+  assert.equal(en['fleet_manage.missing_read_api_key'], 'API key is required.');
+  assert.doesNotMatch(en['fleet_manage.keys_hint'], /read key/i);
+  assert.doesNotMatch(en['fleet_manage.add_key_hint'], /read key/i);
+
+  // #239: copyable Base URL for key handoff in the API Keys tab
+  assert.match(app, /function dashboardBaseUrl\(\)/);
+  assert.match(app, /\$\{window\.location\.origin\}\$\{BASE_PATH\}/);
+  assert.match(app, /id="api-base-url" type="text" readonly/);
+  assert.match(app, /id="api-base-url-copy"/);
+  assert.match(app, /addEventListener\('click', copyDashboardBaseUrl\)/);
+  for (const pack of [en, zh]) {
+    assert.equal(typeof pack['fleet_manage.base_url_hint'], 'string');
+    assert.equal(typeof pack['fleet_manage.base_url_copied'], 'string');
   }
 });
 

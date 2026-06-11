@@ -2717,6 +2717,14 @@ function createFleetManageModal() {
       <section class="manage-section">
         <span class="action-group-label">${esc(t('fleet_manage.api_keys'))}</span>
         <small class="fleet-help">${esc(t('fleet_manage.keys_hint'))}</small>
+        <div class="action-field">
+          <label class="action-field-label" for="api-base-url">${esc(t('fleet_manage.base_url'))}</label>
+          <div class="api-key-copy-row">
+            <input class="action-input api-base-url" id="api-base-url" type="text" readonly value="${esc(dashboardBaseUrl())}" />
+            <button class="action-btn action-btn-sm" id="api-base-url-copy" type="button">${esc(t('fleet_manage.copy_key'))}</button>
+          </div>
+        </div>
+        <small class="fleet-help">${esc(t('fleet_manage.base_url_hint'))}</small>
         <div class="fleet-agent-list" id="api-key-list"></div>
       </section>
       <section class="manage-section">
@@ -2754,7 +2762,23 @@ function createFleetManageModal() {
   overlay.querySelector('#fleet-add-save').addEventListener('click', saveFleetAgent);
   overlay.querySelector('#api-key-create').addEventListener('click', createApiKey);
   overlay.querySelector('#api-key-scope').addEventListener('change', updateApiKeyScopeWarning);
+  overlay.querySelector('#api-base-url-copy').addEventListener('click', copyDashboardBaseUrl);
   return overlay;
+}
+
+function dashboardBaseUrl() {
+  return `${window.location.origin}${BASE_PATH}`;
+}
+
+async function copyDashboardBaseUrl() {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+    await navigator.clipboard.writeText(dashboardBaseUrl());
+    fleetManageStatus(t('fleet_manage.base_url_copied'), 'success');
+  } catch {
+    fleetManageModal?.querySelector('#api-base-url')?.select();
+    fleetManageStatus(t('fleet_manage.copy_failed'), 'error');
+  }
 }
 
 function fleetManageStatus(message, kind = '') {
