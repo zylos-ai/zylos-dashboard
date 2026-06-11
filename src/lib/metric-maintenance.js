@@ -1,4 +1,4 @@
-export function runMetricMaintenance(store, { now = new Date(), lastVacuumDate = null, vacuumMaxBytes = 500 * 1024 * 1024 } = {}) {
+export function runMetricMaintenance(store, { now = new Date(), lastVacuumDate = null, vacuumMaxBytes = 2 * 1024 * 1024 * 1024 } = {}) {
   store.deleteMetricsByNameAndSource('usage_event', '%', 90);
   store.deleteMetricsByNameAndSource('ttft%', '%', 90);
   store.deleteMetricsByNameAndSource('turn_duration%', '%', 90);

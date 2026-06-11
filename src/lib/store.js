@@ -658,7 +658,7 @@ export class Store {
     return { vacuumed: true };
   }
 
-  vacuumIfSmall(maxBytes = 500 * 1024 * 1024) {
+  vacuumIfSmall(maxBytes = 2 * 1024 * 1024 * 1024) {
     const sizeBytes = this.dbSizeBytes();
     if (sizeBytes > maxBytes) {
       return { vacuumed: false, skipped: true, reason: 'db_too_large', sizeBytes, maxBytes };

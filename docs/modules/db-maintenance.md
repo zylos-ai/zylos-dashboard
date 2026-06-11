@@ -14,7 +14,7 @@ The dashboard runs hourly retention cleanup:
 - `otel_*` sources: preserved (sample data for future use)
 - other legacy metrics: 90 days
 
-Automatic `VACUUM` is guarded. It runs only when the database file is smaller than 500 MB. Larger databases are skipped and require manual compaction during a maintenance window.
+Automatic `VACUUM` is guarded. It runs only when the database file is smaller than 2 GB. Larger databases are skipped and require manual compaction during a maintenance window.
 
 ## Manual Compaction For Large Databases
 
