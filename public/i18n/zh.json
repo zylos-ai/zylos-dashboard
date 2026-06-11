@@ -13,7 +13,7 @@
   "memory.edit": "编辑",
   "memory.save": "保存",
   "memory.saving": "保存中...",
-  "memory.reset": "重置",
+  "memory.reset": "取消",
   "memory.loading": "正在加载记忆...",
   "memory.empty": "选择一个记忆文件查看内容。",
   "memory.no_commit": "无提交记录",

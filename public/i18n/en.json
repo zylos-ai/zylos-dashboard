@@ -13,7 +13,7 @@
   "memory.edit": "Edit",
   "memory.save": "Save",
   "memory.saving": "Saving...",
-  "memory.reset": "Reset",
+  "memory.reset": "Cancel",
   "memory.loading": "Loading memory...",
   "memory.empty": "Select a memory file to view it.",
   "memory.no_commit": "no commit recorded",
