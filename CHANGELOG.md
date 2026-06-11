@@ -5,7 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-06-03
+## [0.3.0] - 2026-06-11
+
+### Added
+- Agent Fleet — complete redesign of the multi-agent wall (#157, #165): state-aligned mascots with animation, model + effort, context ring with configurable threshold tick, three-tier cost (session/today/7d), CPU/Mem/Disk rings, live activity feed, self-first sorting
+- Fleet summary header with per-state dots and aggregated fleet cost tiers (#191)
+- Fleet tile refinements: name-keyed identity hue, mini metric rings, 5h/7d rate-limit bars, single-agent-style activity feed (#185, #187), phase-locked mascot motion with hover-pause (#190), context chip + thinking mascot on detail page (#189), typing-octopus busy mascot (#192)
+- Sound cues on agent start/finish with global mute toggle (#194)
+- In-page remote agent detail — fleet wall drills into a remote agent without full navigation, with View Transitions and back-to-fleet (#204, #205)
+- Scope-gated remote Actions/Settings — remote controls always visible, invocability follows the fleet API key scope (read/admin); whitelisted proxy write forwarding with dual-layer authorization (consumer boundary gate + producer final authority), read-only Settings viewing under read keys (#207)
+- API token authentication with read/admin scopes for programmatic access (#146)
+- Tiered metric retention, aggregation, and DB maintenance (#149)
+- Codex CLI latest-version and running-session version tracking (#150, #154)
+- Updated Claude model list — Opus 4.8 defaults and Haiku (#153)
+
+### Changed
+- Fleet poller consumes SSE `fleet_state` instead of HTTP polling, with byte-level idle watchdog and fallback polling (#176, #181)
+- Self fleet tile updates via full fleet payload rebroadcast — no more 10–30s lag versus the single-agent view (#188)
+
+### Fixed
+- Remote fleet tiles flapping to OFFLINE on idle remotes (#181)
+- Phantom "running tool" states from out-of-order hook ingestion and dead-session orphans (#183)
+- Fleet/self cost field mapping showing `--` on self tile (#174)
+- Offline agents showing $0 instead of `--` in fleet cost totals (#191)
+- Audio output device routing and unlock for sound cues (#196, #198)
+- Numerous fleet rendering, SSE parsing, and state-engine fixes across #166–#202
 
 ### Added
 - Codex runtime observability MVP — full dashboard support for Codex runtime with latency metrics (TTFT, turn duration), Codex-specific collectors, and runtime-aware panel visibility (#131)
