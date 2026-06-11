@@ -388,8 +388,51 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .memory-markdown h3:first-child { margin-top: 0; }
 
 .memory-markdown p,
-.memory-markdown ul { margin: 0 0 var(--space-md); }
+.memory-markdown ul,
+.memory-markdown ol { margin: 0 0 var(--space-md); }
 .memory-markdown li { margin: 3px 0; }
+
+/* #229: markdown-it renders inline/block elements the minimal renderer skipped. */
+.memory-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.memory-markdown code {
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--bg);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.92em;
+}
+.memory-markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.memory-markdown blockquote {
+  margin: 0 0 var(--space-md);
+  padding: 2px var(--space-md);
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+.memory-markdown hr {
+  margin: var(--space-md) 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.memory-markdown table {
+  margin: 0 0 var(--space-md);
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.memory-markdown th,
+.memory-markdown td {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.memory-markdown th { background: var(--bg); }
 
 /* #222: while the Memory tab is front-most, pin the page frame (header/tabs
    stay put, no page scroll) and let each pane scroll internally. The class is

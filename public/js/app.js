@@ -1239,55 +1239,30 @@ function renderMemoryTreeNode(node, depth = 0) {
   </button>`;
 }
 
-function renderMarkdown(text) {
-  const lines = String(text || '').split(/\r?\n/);
-  const html = [];
-  let inCode = false;
-  let listOpen = false;
-  const closeList = () => {
-    if (listOpen) {
-      html.push('</ul>');
-      listOpen = false;
-    }
-  };
-  for (const line of lines) {
-    if (line.startsWith('```')) {
-      closeList();
-      if (inCode) html.push('</code></pre>');
-      else html.push('<pre><code>');
-      inCode = !inCode;
-      continue;
-    }
-    if (inCode) {
-      html.push(`${esc(line)}\n`);
-      continue;
-    }
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
-    if (heading) {
-      closeList();
-      const level = heading[1].length;
-      html.push(`<h${level}>${esc(heading[2])}</h${level}>`);
-      continue;
-    }
-    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
-    if (bullet) {
-      if (!listOpen) {
-        html.push('<ul>');
-        listOpen = true;
-      }
-      html.push(`<li>${esc(bullet[1])}</li>`);
-      continue;
-    }
-    if (!line.trim()) {
-      closeList();
-      continue;
-    }
-    closeList();
-    html.push(`<p>${esc(line)}</p>`);
+// Memory content is semi-trusted (agent-written): html:false keeps raw HTML
+// escaped, matching the XSS posture of the previous minimal renderer.
+let markdownRenderer = null;
+
+function getMarkdownRenderer() {
+  if (!markdownRenderer && typeof window.markdownit === 'function') {
+    markdownRenderer = window.markdownit({ html: false, linkify: true });
+    const renderToken = (tokens, idx, options, env, self) => self.renderToken(tokens, idx, options);
+    const defaultLinkOpen = markdownRenderer.renderer.rules.link_open || renderToken;
+    markdownRenderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+      tokens[idx].attrSet('target', '_blank');
+      tokens[idx].attrSet('rel', 'noopener noreferrer');
+      return defaultLinkOpen(tokens, idx, options, env, self);
+    };
   }
-  closeList();
-  if (inCode) html.push('</code></pre>');
-  return html.join('');
+  return markdownRenderer;
+}
+
+function renderMarkdown(text) {
+  const source = String(text || '');
+  const md = getMarkdownRenderer();
+  // Vendored script failed to load: degrade to the escaped raw view.
+  if (!md) return `<pre class="memory-raw"><code>${esc(source)}</code></pre>`;
+  return md.render(source);
 }
 
 function renderMemoryContent() {
