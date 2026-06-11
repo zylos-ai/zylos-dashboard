@@ -10,22 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything since v0.2.0. (0.3.0 was version-bumped internally but never published; its changes ship here.)
 
 ### Added
-- **Agent Fleet wall** — replaces Pulse Wall as the multi-agent landing view: per-agent mascot tiles with state-aligned motion, identity hue, model/effort, context ring with threshold chip, session/today/7d cost tiers, CPU/memory/disk mini rings, 5h/7d rate-limit bars, live activity feed with subagent indicator, and summary state dots with aggregated fleet costs (#164, #185, #187, #189, #190, #191)
+- **Agent Fleet wall** — replaces Pulse Wall as the multi-agent landing view: per-agent mascot tiles with state-aligned motion, identity hue, model/effort, context ring with threshold chip, session/today/7d cost tiers, CPU/memory/disk mini rings, 5h/7d rate-limit bars, live activity feed with subagent indicator, and summary state dots with aggregated fleet costs; the single-agent page shares the same octopus mascot set and identity hue (legacy robot mascot retired) (#164, #185, #187, #189, #190, #191)
 - **Memory browser** — admin-only read view of the agent's memory directory: file tree, rendered/raw markdown viewer, git commit metadata; remote agents browsable through the fleet proxy with path jail, size caps, and symlink rejection (#213)
 - **Memory online editing** — edit memory files from the Memory tab, locally and on remote agents via admin-scope keys: sha256 optimistic locking (409 on conflict, never blind-overwrite), conflict panel with mine/theirs line diff and use-mine / take-theirs / manual-merge actions, localStorage draft autosave surviving reloads, 20s live change detection while editing; read keys stay fully read-only (#227)
 - **markdown-it rendering** for memory files — vendored bundle, raw HTML disabled (escaped), links hardened with `target="_blank" rel="noopener noreferrer"`, tables/blockquotes/inline formatting now render (#229)
 - **In-page remote agent detail** — fleet tiles open remote dashboards inside the page through the fleet proxy instead of full navigation, with smooth view transitions (#203)
 - **API key management UI** and scoped fleet access — create/revoke admin- and read-scope keys; remote Actions/Settings/Memory gated by exchanged key scope with producer-side final authority (#207, #212)
-- **Fleet onboarding management UI** — add/edit/remove fleet agents from the dashboard (#210, #215)
+- **Fleet onboarding management UI** — add/remove remote fleet agents and rename the local dashboard agent, all from the dashboard (#210, #215)
 - **Copyable Base URL in the API Keys tab** — key handoff now carries both halves the consumer's add-agent form needs (#239)
-- **Sound cues** — fleet wall plays marimba cues on agent start/finish (scheme ear-picked via audition page) with a global mute toggle that follows system output device changes (#194, #218, #223)
+- **Sound cues** — fleet wall plays cues on agent start/finish, iterated to an ear-picked marimba scheme, with a global mute toggle that follows system output device changes (#194, #218, #223)
 - Busy mascot now types on a small keyboard (#192)
+- **API token authentication** for programmatic access — create scoped keys (read/admin) and exchange them for 24h session tokens via `POST /api/auth/token`; SSE connections are evicted on key revoke/expiry (#140, #146)
+- **Codex runtime version visibility** — tracks the latest Codex CLI release and the running session's version, reset on session change so badges never go stale (#150, #151)
+- **Tiered metric retention and DB maintenance** — metric aggregation tiers with bounded retention, PM2 sampling at 60s with 7-day windows, WAL checkpointing; keeps the dashboard database compact long-term (#141, #148)
 
 ### Changed
 - Fleet liveness is connection-based with an SSE idle watchdog — remote tiles no longer flap to OFFLINE between event bursts (#180)
 - Rate-limit bars invalidate after the reset window expires — show `--` instead of a stale frozen percentage, on both fleet tiles and the single-agent page (#224)
 - Memory tab pins the page frame on desktop with independently scrolling tree/content panes; directory tree is collapsible with clear chevrons and a collapse-all/expand-all toggle (#222, #226)
 - Memory edit mode's Reset button is now labeled Cancel — it exits editing and discards changes (#236)
+- Tool/turn events now come from the JSONL pipeline (assistant messages, token usage, turn durations); UserPromptSubmit/Stop hooks restored and self-heal after upgrades (#147, #160)
+- Claude model selector refreshed — Opus 4.8 and Haiku 4.5 with default aliases; Haiku hides the effort selector (#152, #153)
 - Add-agent "Read key" field and hints renamed to "API key" — the field accepts any-scope key, and admin keys grant remote write; `read_api_key` API/config field unchanged (#238)
 
 ### Fixed
@@ -38,6 +43,9 @@ Everything since v0.2.0. (0.3.0 was version-bumped internally but never publishe
 - Sound cue loudness, scheduling consistency, and cross-page playback (#195–#200)
 - Bell first-paint flash and rate-limit reset countdown regression (#202)
 - Last tool-feed row's elapsed time right-aligns like the others (#233)
+- Version reminder no longer suggests an older version as the upgrade target (#143)
+- Fleet routing and single-agent polish — back-to-fleet control hidden in single-agent mode, reverse-proxied remote drill-down asset/API paths, stable mascot tint across SSE updates, tile alignment (#159, #161, #163, #184)
+- Fleet wall switches to the live wall after the first agent is added to an empty fleet (#214)
 - ← Fleet back button no longer stretches full width on the Memory tab (#241)
 - Fleet manage modal status feedback auto-dismisses after 5s and clears on close instead of persisting forever (#242)
 
