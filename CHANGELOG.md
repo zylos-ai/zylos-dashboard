@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-06-11
+## [0.3.1] - 2026-06-11
+
+Everything since v0.2.0. (0.3.0 was version-bumped internally but never published; its changes ship here.)
 
 ### Added
 - **Agent Fleet wall** — replaces Pulse Wall as the multi-agent landing view: per-agent mascot tiles with state-aligned motion, identity hue, model/effort, context ring with threshold chip, session/today/7d cost tiers, CPU/memory/disk mini rings, 5h/7d rate-limit bars, live activity feed with subagent indicator, and summary state dots with aggregated fleet costs (#164, #185, #187, #189, #190, #191)
@@ -15,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **In-page remote agent detail** — fleet tiles open remote dashboards inside the page through the fleet proxy instead of full navigation, with smooth view transitions (#203)
 - **API key management UI** and scoped fleet access — create/revoke admin- and read-scope keys; remote Actions/Settings/Memory gated by exchanged key scope with producer-side final authority (#207, #212)
 - **Fleet onboarding management UI** — add/edit/remove fleet agents from the dashboard (#210, #215)
+- **Copyable Base URL in the API Keys tab** — key handoff now carries both halves the consumer's add-agent form needs (#239)
 - **Sound cues** — fleet wall plays marimba cues on agent start/finish (scheme ear-picked via audition page) with a global mute toggle that follows system output device changes (#194, #218, #223)
 - Busy mascot now types on a small keyboard (#192)
 
@@ -23,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate-limit bars invalidate after the reset window expires — show `--` instead of a stale frozen percentage, on both fleet tiles and the single-agent page (#224)
 - Memory tab pins the page frame on desktop with independently scrolling tree/content panes; directory tree is collapsible with clear chevrons and a collapse-all/expand-all toggle (#222, #226)
 - Memory edit mode's Reset button is now labeled Cancel — it exits editing and discards changes (#236)
+- Add-agent "Read key" field and hints renamed to "API key" — the field accepts any-scope key, and admin keys grant remote write; `read_api_key` API/config field unchanged (#238)
 
 ### Fixed
 - Phantom "running tools" from out-of-order hook ingestion (post-before-pre race) with session-superseded sweep (#182)
@@ -34,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sound cue loudness, scheduling consistency, and cross-page playback (#195–#200)
 - Bell first-paint flash and rate-limit reset countdown regression (#202)
 - Last tool-feed row's elapsed time right-aligns like the others (#233)
+- ← Fleet back button no longer stretches full width on the Memory tab (#241)
+- Fleet manage modal status feedback auto-dismisses after 5s and clears on close instead of persisting forever (#242)
 
 ## [0.2.0] - 2026-06-03
 
