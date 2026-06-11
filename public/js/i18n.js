@@ -13,6 +13,9 @@ let currentLocale = 'en';
 let translations = {};
 let assetRoot = '';
 let healTimer = null;
+// Bumped by every initI18n call; async continuations compare against it so a
+// slow stale request can never overwrite a newer locale's pack or cache.
+let requestSeq = 0;
 
 export function setAssetRoot(root) { assetRoot = root; }
 export function getLocale() { return currentLocale; }
@@ -70,14 +73,14 @@ function writeCachedPack(locale, pack) {
 // Late recovery: keep retrying in the background and re-render static labels
 // once a fresh pack lands, so a transient failure heals without a manual
 // refresh. Dynamic regions already re-render on their own timers.
-function scheduleHeal(locale) {
+function scheduleHeal(locale, seq) {
   let attempts = 0;
   const tick = async () => {
-    if (locale !== currentLocale) return;
+    if (seq !== requestSeq) return;
     attempts++;
     try {
       const pack = await fetchPack(locale);
-      if (locale !== currentLocale) return;
+      if (seq !== requestSeq) return;
       translations = pack;
       writeCachedPack(locale, pack);
       renderI18n();
@@ -89,18 +92,23 @@ function scheduleHeal(locale) {
 }
 
 export async function initI18n(locale) {
-  currentLocale = resolveLocale(locale);
-  localStorage.setItem(STORAGE_KEY, currentLocale);
-  document.documentElement.lang = currentLocale;
+  const targetLocale = resolveLocale(locale);
+  const seq = ++requestSeq;
+  currentLocale = targetLocale;
+  localStorage.setItem(STORAGE_KEY, targetLocale);
+  document.documentElement.lang = targetLocale;
   clearTimeout(healTimer);
   try {
-    translations = await fetchPackWithRetry(currentLocale);
-    writeCachedPack(currentLocale, translations);
+    const pack = await fetchPackWithRetry(targetLocale);
+    if (seq !== requestSeq) return; // superseded by a newer call while fetching
+    translations = pack;
+    writeCachedPack(targetLocale, pack);
   } catch {
     // Never throw: a failed pack fetch must not kill app startup (top-level
     // await). Fall back to the last good pack — stale text beats raw keys.
-    translations = readCachedPack(currentLocale) || {};
-    scheduleHeal(currentLocale);
+    if (seq !== requestSeq) return;
+    translations = readCachedPack(targetLocale) || {};
+    scheduleHeal(targetLocale, seq);
   }
 }
 

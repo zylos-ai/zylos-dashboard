@@ -688,17 +688,65 @@ test('i18n loader survives flaky pack fetches (#208)', async () => {
   // initI18n (a top-level await rejection would kill the whole app).
   assert.match(i18n, /if \(!resp\.ok\) throw/);
   assert.match(i18n, /for \(let i = 0; i < FETCH_ATTEMPTS; i\+\+\)/);
-  assert.match(i18n, /translations = readCachedPack\(currentLocale\) \|\| \{\};/);
+  assert.match(i18n, /translations = readCachedPack\(targetLocale\) \|\| \{\};/);
   // Last good pack is cached per locale and used as the offline fallback.
   assert.match(i18n, /localStorage\.setItem\(PACK_CACHE_PREFIX \+ locale, JSON\.stringify\(pack\)\)/);
   // Background self-heal re-renders static labels once a late fetch succeeds,
   // and a stale heal loop stops after a locale switch.
-  assert.match(i18n, /scheduleHeal\(currentLocale\);/);
-  assert.match(i18n, /if \(locale !== currentLocale\) return;/);
+  assert.match(i18n, /scheduleHeal\(targetLocale, seq\);/);
+  assert.match(i18n, /if \(seq !== requestSeq\) return;/);
   assert.match(i18n, /renderI18n\(\);[\s\S]*?\} catch \{/);
 
   // The module itself is cache-busted: a stale i18n.js would reintroduce the
   // bug class even with a fresh app.js.
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   assert.match(app, /from '\.\/i18n\.js\?v=2'/);
+});
+
+test('overlapping initI18n calls: stale slow request cannot overwrite the newer locale (#211 review)', async () => {
+  const store = new Map();
+  const savedGlobals = {
+    localStorage: globalThis.localStorage,
+    document: globalThis.document,
+    fetch: globalThis.fetch
+  };
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k)
+  };
+  const navDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { language: 'en' }, configurable: true
+  });
+  globalThis.document = { documentElement: { lang: '' }, querySelectorAll: () => [] };
+  const pending = {};
+  globalThis.fetch = (url) => new Promise((resolve) => {
+    const locale = String(url).includes('/zh.json') ? 'zh' : 'en';
+    pending[locale] = (pack) => resolve({ ok: true, json: async () => pack });
+  });
+
+  try {
+    // Fresh module instance so stubs apply and state is isolated.
+    const { initI18n, t } = await import('../public/js/i18n.js?test=race');
+
+    const slowEn = initI18n('en');          // captured first, resolves last
+    const fastZh = initI18n('zh');          // newer call supersedes
+    pending.zh({ 'btn.actions': '操作', 'race.marker': 'zh-pack' });
+    await fastZh;
+    assert.equal(t('race.marker'), 'zh-pack');
+
+    pending.en({ 'btn.actions': 'Actions', 'race.marker': 'en-pack' });
+    await slowEn;
+    // The stale English response must not overwrite translations…
+    assert.equal(t('race.marker'), 'zh-pack');
+    // …nor pollute any locale's cache (zh cache intact, en cache never written).
+    assert.match(store.get('zylos-dashboard-i18n-zh'), /zh-pack/);
+    assert.equal(store.has('zylos-dashboard-i18n-en'), false);
+  } finally {
+    globalThis.localStorage = savedGlobals.localStorage;
+    globalThis.document = savedGlobals.document;
+    globalThis.fetch = savedGlobals.fetch;
+    if (navDesc) Object.defineProperty(globalThis, 'navigator', navDesc);
+  }
 });
