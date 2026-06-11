@@ -652,7 +652,8 @@ test('remote Actions/Settings are gated by access and routed through the viewed 
   assert.match(app, /agent\?\.access === 'admin' \? 'admin' : 'read'/);
   assert.match(app, /const REMOTE_ACCESS = document\.documentElement\.dataset\.remoteAccess === 'admin' \? 'admin' : 'read';/);
   assert.match(app, /id="actions-btn"[^`]+disabled/);
-  assert.match(app, /remote\.read_only_tooltip/);
+  assert.match(app, /remote\.actions_read_only_tooltip/);
+  assert.match(app, /remote\.settings_read_only_tooltip/);
 
   // Settings stays viewable under read access, but writes and action modals are gated.
   const handler = app.slice(app.indexOf('function initInfoBarButtons('), app.indexOf('function startTimers('));

@@ -324,8 +324,9 @@ function renderInfoBar() {
   }
 
   const readOnly = remoteIsReadOnly();
-  const readOnlyTitle = readOnly ? ` title="${esc(t('remote.read_only_tooltip'))}"` : '';
-  const buttons = `<span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button"${readOnly ? ' disabled' : ''}${readOnlyTitle}>${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}"${readOnlyTitle}>⚙️</button></span>`;
+  const actionsTitle = readOnly ? ` title="${esc(t('remote.actions_read_only_tooltip'))}"` : '';
+  const settingsTitle = readOnly ? ` title="${esc(t('remote.settings_read_only_tooltip'))}"` : '';
+  const buttons = `<span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button"${readOnly ? ' disabled' : ''}${actionsTitle}>${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}"${settingsTitle}>⚙️</button></span>`;
   bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span>${buttons}`;
 }
 
