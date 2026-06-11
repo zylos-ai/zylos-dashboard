@@ -55,6 +55,7 @@ const state = {
     file: null,
     git: null,
     mode: 'rendered',
+    collapsed: new Set(),
     loading: false,
     error: null
   }
@@ -175,6 +176,13 @@ function fmtAge(ts) {
   const h = Math.floor(a / 3600);
   const m = Math.floor((a % 3600) / 60);
   return m > 0 ? t('time.hours', { h, m }) : t('time.hours_exact', { h });
+}
+
+function rateWindowExpired(resetsAt) {
+  const ts = Number(resetsAt);
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const ms = ts < 1e12 ? ts * 1000 : ts;
+  return ms <= Date.now();
 }
 
 function fmtResetTime(unixSeconds) {
@@ -682,9 +690,14 @@ function renderMetrics() {
   const cv = metVal(ctx);
   const rv = metVal(rate);
   const ro = rv && typeof rv === 'object';
-  const r5 = ro ? (rv['5h'] ?? rv.five_hour ?? rv.short ?? rv.value) : rv;
   const rate7d = state.metrics.get('rate_limit_7d');
-  const r7 = metVal(rate7d) ?? (ro ? (rv['7d'] ?? rv.seven_day ?? rv.long) : null);
+  // A rate-limit reading whose window already reset is stale by definition —
+  // statusline stops updating while the agent idles, so without this check a
+  // final "100%" would keep painting red long after the quota refreshed (#224).
+  const r5Expired = rateWindowExpired(rate?.dimensions?.rate_limit_resets_at ?? rate?.dimensions?.resets_at ?? rate?.resets_at);
+  const r7Expired = rateWindowExpired(rate7d?.dimensions?.rate_limit_7d_resets_at ?? rate7d?.dimensions?.resets_at ?? rate7d?.resets_at);
+  const r5 = r5Expired ? null : (ro ? (rv['5h'] ?? rv.five_hour ?? rv.short ?? rv.value) : rv);
+  const r7 = r7Expired ? null : (metVal(rate7d) ?? (ro ? (rv['7d'] ?? rv.seven_day ?? rv.long) : null));
 
   $('#metric-context-value').textContent = pct(cv);
   const ctxBar = $('#metric-context-bar');
@@ -706,7 +719,7 @@ function renderMetrics() {
   }
   $('#metric-context-source').textContent = srcLabel(ctx);
 
-  $('#metric-rate-5h-value').textContent = pct(r5);
+  $('#metric-rate-5h-value').textContent = r5 == null ? '--' : pct(r5);
   const r5Bar = $('#metric-rate-5h-bar');
   r5Bar.style.width = `${barPct(r5)}%`;
   r5Bar.className = `progress-fill ${barColor(r5)}`;
@@ -1151,6 +1164,7 @@ function resetMemoryState() {
     file: null,
     git: null,
     mode: 'rendered',
+    collapsed: new Set(),
     loading: false,
     error: null
   };
@@ -1191,8 +1205,13 @@ function preferredMemoryPath(root) {
 function renderMemoryTreeNode(node, depth = 0) {
   if (!node) return '';
   if (node.type === 'directory') {
-    const children = (node.children || []).map(child => renderMemoryTreeNode(child, depth + 1)).join('');
-    const label = node.path ? `<div class="memory-dir" style="padding-left:${8 + depth * 14}px">${esc(node.name)}</div>` : '';
+    const collapsed = node.path ? state.memory.collapsed.has(node.path) : false;
+    const children = collapsed
+      ? ''
+      : (node.children || []).map(child => renderMemoryTreeNode(child, depth + 1)).join('');
+    const label = node.path
+      ? `<button class="memory-dir" type="button" data-dir="${esc(node.path)}" aria-expanded="${!collapsed}" style="padding-left:${8 + depth * 14}px"><span class="memory-dir-caret">${collapsed ? '\u25B8' : '\u25BE'}</span>${esc(node.name)}</button>`
+      : '';
     return `${label}${children}`;
   }
   const active = state.memory.selectedPath === node.path;
@@ -1313,6 +1332,15 @@ function renderMemory() {
   tree.innerHTML = state.memory.tree ? renderMemoryTreeNode(state.memory.tree.root) : `<p class="empty-state">${esc(t('memory.loading'))}</p>`;
   tree.querySelectorAll('.memory-file').forEach((btn) => {
     btn.addEventListener('click', () => openMemoryFile(btn.dataset.path).catch(() => {}));
+  });
+  tree.querySelectorAll('.memory-dir').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const dir = btn.dataset.dir;
+      if (!dir) return;
+      if (state.memory.collapsed.has(dir)) state.memory.collapsed.delete(dir);
+      else state.memory.collapsed.add(dir);
+      renderMemory();
+    });
   });
 
   const file = state.memory.file;
@@ -1544,9 +1572,19 @@ function transitionView(target, { animate = true } = {}) {
   setTimeout(finish, 460); // fallback if transitionend doesn't fire
 }
 
+// #222: the Memory tab pins the page frame (body becomes a fixed-height flex
+// column, both memory panes scroll internally). The pin must drop whenever the
+// memory tab stops being front-most — another tab, or the fleet wall sliding
+// over the agent detail view.
+function syncMemoryPinned() {
+  const memoryTabActive = Boolean(document.querySelector('.tab[data-tab="memory"]')?.classList.contains('active'));
+  document.body.classList.toggle('memory-tab-active', memoryTabActive && !state.fleetViewActive);
+}
+
 function showFleetView(opts = {}) {
   if (!state.multiAgent) return;
   state.fleetViewActive = true;
+  syncMemoryPinned();
   refreshFleet().catch(() => {});
   transitionView('fleet', opts);
   scheduleFleetFallback();
@@ -1556,6 +1594,7 @@ function showAgentDetail(opts = {}) {
   state.fleetViewActive = false;
   transitionView('agent', opts);
   clearFleetFallback();
+  syncMemoryPinned();
 }
 
 function clearFleetFallback() {
@@ -1697,6 +1736,7 @@ function initTabs() {
       p.classList.toggle('active', active);
       p.hidden = !active;
     });
+    syncMemoryPinned();
     if (name === 'trends') refreshCharts();
     if (name === 'memory') loadMemoryTree().catch(() => {});
     if (push) {

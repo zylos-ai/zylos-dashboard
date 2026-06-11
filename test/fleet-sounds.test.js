@@ -189,7 +189,7 @@ test('unmute confirmation plays after a suspended context resumes', async (t) =>
   assert.ok(ctx.resumeCalls >= 1);
 
   await flushMicrotasks();
-  assert.equal(ctx.oscillatorStarts, 2, 'confirmation cue plays two crisp rising notes once resume() settles');
+  assert.equal(ctx.oscillatorStarts, 4, 'confirmation cue plays two rising strikes (2 oscillators each: fundamental + partial) once resume() settles');
 });
 
 test('first cue after unmute is not dropped by a suspended context', async (t) => {
@@ -205,7 +205,7 @@ test('first cue after unmute is not dropped by a suspended context', async (t) =
   sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] }); // seed
   sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] }); // start cue, ctx suspended
   await flushMicrotasks();
-  assert.equal(ctx.oscillatorStarts, 2, 'start cue plays two rising notes after resume() settles');
+  assert.equal(ctx.oscillatorStarts, 4, 'start cue plays two strikes (2 oscillators each) after resume() settles');
 });
 
 test('start cue has two notes and finish cue has three notes', async (t) => {
@@ -216,11 +216,11 @@ test('start cue has two notes and finish cue has three notes', async (t) => {
   sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] });
   sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] });
   await flushMicrotasks();
-  assert.equal(contexts[0].oscillatorStarts, 2, 'start cue is two notes');
+  assert.equal(contexts[0].oscillatorStarts, 4, 'start cue is two strikes (2 oscillators each)');
 
   sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] });
   await flushMicrotasks();
-  assert.equal(contexts[0].oscillatorStarts, 5, 'finish cue adds three notes');
+  assert.equal(contexts[0].oscillatorStarts, 10, 'finish cue adds three strikes (2 oscillators each)');
 });
 
 // ─── Output device routing + global unlock (#195) ───
@@ -342,7 +342,7 @@ test('unmute after a cancelled cue still plays its confirmation', async (t) => {
   await flushMicrotasks();
   assert.equal(contexts.length, 2);
   assert.equal(contexts[0].oscillatorStarts, 0);
-  assert.equal(contexts[1].oscillatorStarts, 2, 'confirmation plays on the fresh context');
+  assert.equal(contexts[1].oscillatorStarts, 4, 'confirmation plays on the fresh context (two strikes, 2 oscillators each)');
 });
 
 test('pointerdown does not create or resume audio while muted', async (t) => {

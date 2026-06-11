@@ -88,6 +88,22 @@ const METRIC_CHAINS = {
 
 const DEFAULT_STALENESS_S = 120;
 
+// Statusline only updates while the runtime is active, so an idle agent keeps
+// reporting its last rate-limit reading (e.g. a red 100%) long after the
+// window's resets_at has passed. Once the window rolled over, the stored
+// percentage describes a window that no longer exists — callers should treat
+// it as expired/unknown until the next statusline event fills the fresh
+// window (#224). resets_at arrives as unix seconds (statusline) but tolerate
+// milliseconds, mirroring fmtResetTime() on the frontend.
+export function rateLimitWindowExpired(dimensions, metricName, now = Date.now()) {
+  const dims = dimensions || {};
+  const raw = dims[`${metricName}_resets_at`] ?? dims.resets_at ?? null;
+  const ts = Number(raw);
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const ms = ts < 1e12 ? ts * 1000 : ts;
+  return ms <= now;
+}
+
 export class MetricResolver {
   constructor(store, collectors, config, { stateEngine } = {}) {
     this.store = store;

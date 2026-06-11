@@ -690,8 +690,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=45/);
-  assert.match(index, /style\.css\?v=33/);
+  assert.match(index, /app\.js\?v=46/);
+  assert.match(index, /style\.css\?v=34/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -725,7 +725,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=45/);
+  assert.match(index, /app\.js\?v=46/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -865,4 +865,50 @@ test('overlapping initI18n calls: stale slow request cannot overwrite the newer 
     globalThis.fetch = savedGlobals.fetch;
     if (navDesc) Object.defineProperty(globalThis, 'navigator', navDesc);
   }
+});
+
+test('memory tab pins the page frame and panes scroll independently (#222)', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  // The pin is class-driven and must drop when the fleet wall takes over.
+  assert.match(app, /function syncMemoryPinned\(\)/);
+  assert.match(app, /classList\.toggle\('memory-tab-active', memoryTabActive && !state\.fleetViewActive\)/);
+  // Pinned frame: fixed-height body, no page scroll, panes scroll internally.
+  assert.match(css, /body\.memory-tab-active \{[^}]*height: 100dvh;[^}]*overflow: hidden;/s);
+  assert.match(css, /body\.memory-tab-active \.memory-tree \{ flex: 1; min-height: 0; max-height: none; \}/);
+});
+
+test('memory tree directories collapse and expand (#222)', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // Directory rows are buttons carrying their path and expansion state.
+  assert.match(app, /<button class="memory-dir" type="button" data-dir="\$\{esc\(node\.path\)\}" aria-expanded="\$\{!collapsed\}"/);
+  // Collapsed directories render no children.
+  assert.match(app, /state\.memory\.collapsed\.has\(node\.path\)/);
+  // Toggling flips membership in the collapsed set and re-renders.
+  assert.match(app, /state\.memory\.collapsed\.delete\(dir\)/);
+  assert.match(app, /state\.memory\.collapsed\.add\(dir\)/);
+});
+
+test('fleet sound cues use the marimba strike timbre Howard picked (#223)', () => {
+  const sounds = fs.readFileSync(path.resolve('public/js/fleet-sounds.js'), 'utf8');
+  // Fixed-pitch percussive strike with a 4th-harmonic partial — no glide.
+  assert.match(sounds, /function strike\(ctx, \{ freq, at, decay = 0\.28, peak = 0\.34 \}\)/);
+  assert.match(sounds, /freq \* 4/);
+  assert.doesNotMatch(sounds, /'triangle'/);
+  assert.doesNotMatch(sounds, /exponentialRampToValueAtTime\(to,/);
+  // Approved phrases: start E5->A5, finish A5->E5->B4 with a longer last decay.
+  assert.match(sounds, /strike\(ctx, \{ freq: 659, at \}\)/);
+  assert.match(sounds, /strike\(ctx, \{ freq: 880, at: at \+ 0\.13 \}\)/);
+  assert.match(sounds, /strike\(ctx, \{ freq: 494, at: at \+ 0\.24, decay: 0\.4 \}\)/);
+});
+
+test('stale rate-limit windows stop painting after resets_at passes (#224)', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
+  // Single-agent bars null out expired readings instead of showing the last value.
+  assert.match(app, /function rateWindowExpired\(resetsAt\)/);
+  assert.match(app, /const r5 = r5Expired \? null :/);
+  assert.match(app, /const r7 = r7Expired \? null :/);
+  // Producer payload (self tile + remote polling) applies the same rule.
+  assert.match(index, /rateLimitWindowExpired\(resolved\.dimensions, metricName\)/);
 });

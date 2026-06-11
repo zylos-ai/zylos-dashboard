@@ -124,20 +124,32 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     }).catch(() => {});
   }
 
-  // Short triangle tones read brighter and crisper than the previous longer
-  // sine blips without increasing peak loudness.
-  function tone(ctx, { from, to, at, duration, peak = 0.36 }) {
+  // Marimba-style strike: fixed pitch (no glide), near-instant attack into an
+  // exponential decay, plus a quiet 4th-harmonic partial that fades faster
+  // than the fundamental — the sparkle that reads as "wooden bar" instead of
+  // "synth blip". Timbre and note timings were ear-picked by Howard from the
+  // #218 audition page (scheme 2, see issue #223).
+  function strike(ctx, { freq, at, decay = 0.28, peak = 0.34 }) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(from, at);
-    osc.frequency.exponentialRampToValueAtTime(to, at + duration);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, at);
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(peak, at + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    gain.gain.exponentialRampToValueAtTime(peak, at + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + decay);
     osc.connect(gain).connect(ctx.destination);
     osc.start(at);
-    osc.stop(at + duration + 0.03);
+    osc.stop(at + decay + 0.05);
+    const partial = ctx.createOscillator();
+    const partialGain = ctx.createGain();
+    partial.type = 'sine';
+    partial.frequency.setValueAtTime(freq * 4, at);
+    partialGain.gain.setValueAtTime(0.0001, at);
+    partialGain.gain.exponentialRampToValueAtTime(peak * 0.25, at + 0.004);
+    partialGain.gain.exponentialRampToValueAtTime(0.0001, at + decay * 0.6);
+    partial.connect(partialGain).connect(ctx.destination);
+    partial.start(at);
+    partial.stop(at + decay);
   }
 
   // Cues scheduled at exactly currentTime start mid-render-quantum, so a
@@ -148,22 +160,23 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
   // threshold where a cue would feel detached from the event.
   const SCHEDULE_LEAD = 0.08;
 
-  // Start: two short rising notes. Finish: three short falling notes. Distinct shapes
-  // so they're tellable apart without looking at the wall.
+  // Start: two rising strikes (E5 -> A5). Finish: three falling strikes
+  // (A5 -> E5 -> B4) with a longer last decay so the phrase settles. Distinct
+  // shapes so they're tellable apart without looking at the wall.
   function playStart() {
     playWhenRunning((ctx) => {
       const at = ctx.currentTime + SCHEDULE_LEAD;
-      tone(ctx, { from: 660, to: 880, at, duration: 0.09 });
-      tone(ctx, { from: 784, to: 1175, at: at + 0.09, duration: 0.09 });
+      strike(ctx, { freq: 659, at });
+      strike(ctx, { freq: 880, at: at + 0.13 });
     });
   }
 
   function playFinish() {
     playWhenRunning((ctx) => {
       const at = ctx.currentTime + SCHEDULE_LEAD;
-      tone(ctx, { from: 1175, to: 880, at, duration: 0.08 });
-      tone(ctx, { from: 880, to: 659, at: at + 0.08, duration: 0.08 });
-      tone(ctx, { from: 659, to: 494, at: at + 0.16, duration: 0.1 });
+      strike(ctx, { freq: 880, at });
+      strike(ctx, { freq: 659, at: at + 0.12 });
+      strike(ctx, { freq: 494, at: at + 0.24, decay: 0.4 });
     });
   }
 

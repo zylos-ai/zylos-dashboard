@@ -236,11 +236,29 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 
 .memory-dir {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
   padding: 7px 8px 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-muted);
+  cursor: pointer;
   font-size: 11px;
   font-weight: 700;
+  text-align: left;
   text-transform: uppercase;
+}
+
+.memory-dir:hover { background: var(--bg-elevated); color: var(--text); }
+
+.memory-dir-caret {
+  flex: none;
+  width: 10px;
+  font-size: 9px;
+  line-height: 1;
 }
 
 .memory-file {
@@ -361,6 +379,36 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .memory-markdown p,
 .memory-markdown ul { margin: 0 0 var(--space-md); }
 .memory-markdown li { margin: 3px 0; }
+
+/* #222: while the Memory tab is front-most, pin the page frame (header/tabs
+   stay put, no page scroll) and let each pane scroll internally. The class is
+   managed by syncMemoryPinned() in app.js and dropped whenever another tab or
+   the fleet wall takes over. Desktop only — stacked mobile panes keep the
+   normal page scroll. */
+@media (min-width: 761px) {
+  body.memory-tab-active {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+  }
+  body.memory-tab-active .view-stack { flex: 1; min-height: 0; }
+  body.memory-tab-active .view-stack > .app-view { min-height: 0; }
+  body.memory-tab-active #agent-detail {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  body.memory-tab-active #agent-detail main { flex: 1; min-height: 0; overflow: hidden; }
+  body.memory-tab-active #tab-memory { height: 100%; }
+  body.memory-tab-active .memory-layout { height: 100%; min-height: 0; }
+  body.memory-tab-active .memory-tree-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  body.memory-tab-active .memory-tree { flex: 1; min-height: 0; max-height: none; }
+}
 
 @media (max-width: 760px) {
   .memory-layout { grid-template-columns: 1fr; }

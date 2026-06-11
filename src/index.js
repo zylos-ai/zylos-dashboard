@@ -26,7 +26,7 @@ import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
 import { ConversationCollector } from './lib/collectors/conversation-collector.js';
 import { CodexRolloutCollector } from './lib/collectors/codex-rollout-collector.js';
 import { StateEngine } from './lib/state-engine.js';
-import { MetricResolver } from './lib/metric-resolver.js';
+import { MetricResolver, rateLimitWindowExpired } from './lib/metric-resolver.js';
 import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { runMetricMaintenance } from './lib/metric-maintenance.js';
 import { buildSystemPayload } from './lib/system-api.js';
@@ -333,8 +333,10 @@ const ingestHandler = new IngestHandler(store, sanitizer, stateEngine, config);
 // keyed by window (same variants the single-agent page handles).
 function rateLimitPct(metricName) {
   try {
-    const v = metricResolver.resolve(metricName).value;
+    const resolved = metricResolver.resolve(metricName);
+    const v = resolved.value;
     if (v == null) return null;
+    if (rateLimitWindowExpired(resolved.dimensions, metricName)) return null;
     const n = typeof v === 'object'
       ? Number(v['5h'] ?? v.five_hour ?? v.short ?? v['7d'] ?? v.seven_day ?? v.value)
       : Number(v);
