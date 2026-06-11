@@ -672,3 +672,33 @@ test('remote Actions/Settings are gated by access and routed through the viewed 
   assert.match(reset, /closeActionsModal\(\);/);
   assert.match(reset, /closeSettingsModal\(\);/);
 });
+
+test('i18n loader survives flaky pack fetches (#208)', async () => {
+  const { isValidPack } = await import('../public/js/i18n.js');
+
+  // Sentinel-key validation rejects proxy/captive-portal JSON and non-packs.
+  assert.equal(isValidPack({ 'btn.actions': 'Actions' }), true);
+  assert.equal(isValidPack({ error: 'bad gateway' }), false);
+  assert.equal(isValidPack(['btn.actions']), false);
+  assert.equal(isValidPack(null), false);
+  assert.equal(isValidPack('btn.actions'), false);
+
+  const i18n = fs.readFileSync(path.resolve('public/js/i18n.js'), 'utf8');
+  // HTTP failures are detected, retried with backoff, and never thrown out of
+  // initI18n (a top-level await rejection would kill the whole app).
+  assert.match(i18n, /if \(!resp\.ok\) throw/);
+  assert.match(i18n, /for \(let i = 0; i < FETCH_ATTEMPTS; i\+\+\)/);
+  assert.match(i18n, /translations = readCachedPack\(currentLocale\) \|\| \{\};/);
+  // Last good pack is cached per locale and used as the offline fallback.
+  assert.match(i18n, /localStorage\.setItem\(PACK_CACHE_PREFIX \+ locale, JSON\.stringify\(pack\)\)/);
+  // Background self-heal re-renders static labels once a late fetch succeeds,
+  // and a stale heal loop stops after a locale switch.
+  assert.match(i18n, /scheduleHeal\(currentLocale\);/);
+  assert.match(i18n, /if \(locale !== currentLocale\) return;/);
+  assert.match(i18n, /renderI18n\(\);[\s\S]*?\} catch \{/);
+
+  // The module itself is cache-busted: a stale i18n.js would reintroduce the
+  // bug class even with a fresh app.js.
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  assert.match(app, /from '\.\/i18n\.js\?v=2'/);
+});

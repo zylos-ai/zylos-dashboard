@@ -1,5 +1,5 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
-import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
+import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
 
