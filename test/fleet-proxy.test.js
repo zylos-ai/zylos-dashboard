@@ -64,6 +64,61 @@ test('fleet proxy prefixes rewritten paths with the reverse-proxy base path (#15
   }
 });
 
+test('fleet proxy standalone HTML resolves admin access before injection', async () => {
+  const tokenRequests = [];
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: 'http://remote.invalid', read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: {
+      getSessionToken: async (name) => {
+        tokenRequests.push(name);
+        return 'zylos_st_secret';
+      },
+      getAgentAccess: () => 'admin'
+    }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/`);
+    assert.equal(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, /data-remote-access="admin"/);
+    assert.deepEqual(tokenRequests, ['Remote']);
+  } finally {
+    await hub.close();
+  }
+});
+
+test('fleet proxy standalone HTML falls back to read when access cannot be resolved', async () => {
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: 'http://remote.invalid', read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: {
+      getSessionToken: async () => {
+        const err = new Error('auth_failed');
+        err.status = 403;
+        throw err;
+      },
+      getAgentAccess: () => 'admin'
+    }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/`);
+    assert.equal(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, /data-remote-access="read"/);
+  } finally {
+    await hub.close();
+  }
+});
+
 test('fleet proxy injects session token for API and keeps token out of client response', async () => {
   let seenAuth = null;
   const remote = await listen((req, res) => {
@@ -246,9 +301,11 @@ test('fleet proxy rejects unsafe API methods before reaching upstream', async ()
   }
 });
 
-test('fleet proxy forwards SSE and blocks action POSTs read-only', async () => {
+test('fleet proxy forwards SSE and whitelisted action POSTs with body', async () => {
   let sseAuth = null;
-  let actionHit = false;
+  let actionAuth = null;
+  let actionBody = null;
+  let actionContentType = null;
   const remote = await listen((req, res) => {
     if (req.url === '/api/stream') {
       sseAuth = req.headers.authorization;
@@ -256,8 +313,18 @@ test('fleet proxy forwards SSE and blocks action POSTs read-only', async () => {
       res.end('event: state_change\ndata: {"ok":true}\n\n');
       return;
     }
-    if (req.url.startsWith('/api/actions/')) actionHit = true;
-    res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.url.startsWith('/api/actions/')) {
+      actionAuth = req.headers.authorization;
+      actionContentType = req.headers['content-type'];
+      req.setEncoding('utf8');
+      req.on('data', chunk => { actionBody = `${actionBody || ''}${chunk}`; });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
     res.end('{}');
   });
   const proxy = new FleetProxy({
@@ -276,9 +343,154 @@ test('fleet proxy forwards SSE and blocks action POSTs read-only', async () => {
     assert.equal(await sse.text(), 'event: state_change\ndata: {"ok":true}\n\n');
     assert.equal(sseAuth, 'Bearer zylos_st_secret');
 
-    const action = await fetch(`${hub.origin}/fleet/Remote/api/actions/upgrade-cc`, { method: 'POST' });
-    assert.equal(action.status, 403);
-    assert.equal(actionHit, false);
+    const action = await fetch(`${hub.origin}/fleet/Remote/api/actions/upgrade-cc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'now' })
+    });
+    assert.equal(action.status, 200);
+    assert.deepEqual(await action.json(), { ok: true });
+    assert.equal(actionAuth, 'Bearer zylos_st_secret');
+    assert.equal(actionContentType, 'application/json');
+    assert.equal(actionBody, '{"mode":"now"}');
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy keeps non-whitelisted writes read-only', async () => {
+  let remoteHit = false;
+  const remote = await listen((_req, res) => {
+    remoteHit = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const token = await fetch(`${hub.origin}/fleet/Remote/api/auth/token`, { method: 'POST' });
+    assert.equal(token.status, 403);
+    const del = await fetch(`${hub.origin}/fleet/Remote/api/settings`, { method: 'DELETE' });
+    assert.equal(del.status, 403);
+    assert.equal(remoteHit, false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy passes through upstream insufficient_scope for whitelisted writes', async () => {
+  const remote = await listen((_req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'insufficient_scope', required: 'admin' }));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    assert.equal(resp.status, 403);
+    assert.deepEqual(await resp.json(), { error: 'insufficient_scope', required: 'admin' });
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy refreshes token once for write 401 and reuses the request body', async () => {
+  const seenAuth = [];
+  const seenBodies = [];
+  let actionExecutions = 0;
+  const remote = await listen((req, res) => {
+    seenAuth.push(req.headers.authorization);
+    if (seenAuth.length === 1) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'expired' }));
+      return;
+    }
+    req.setEncoding('utf8');
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      actionExecutions += 1;
+      seenBodies.push(body);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  const tokenRequests = [];
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: {
+      getSessionToken: async (_name, options = {}) => {
+        tokenRequests.push(options.force ? 'force' : 'cached');
+        return options.force ? 'zylos_st_refreshed' : 'zylos_st_cached';
+      }
+    }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/actions/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"reason":"test"}'
+    });
+    assert.equal(resp.status, 200);
+    assert.deepEqual(tokenRequests, ['cached', 'force']);
+    assert.deepEqual(seenAuth, ['Bearer zylos_st_cached', 'Bearer zylos_st_refreshed']);
+    assert.equal(actionExecutions, 1);
+    assert.deepEqual(seenBodies, ['{"reason":"test"}']);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy rejects oversized write bodies before upstream', async () => {
+  let remoteHit = false;
+  const remote = await listen((_req, res) => {
+    remoteHit = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/actions/interrupt`, {
+      method: 'POST',
+      body: 'x'.repeat(1024 * 1024 + 1)
+    });
+    assert.equal(resp.status, 413);
+    assert.equal(remoteHit, false);
   } finally {
     await hub.close();
     await remote.close();

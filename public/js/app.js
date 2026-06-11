@@ -14,6 +14,7 @@ setAssetRoot(ASSET_ROOT);
 const REMOTE_AGENT_MATCH = BASE_PATH.match(/\/fleet\/([^/]+)$/);
 const REMOTE_AGENT = REMOTE_AGENT_MATCH ? decodeURIComponent(REMOTE_AGENT_MATCH[1]) : null;
 const PARENT_DASHBOARD_PATH = REMOTE_AGENT ? `${BASE_PATH.slice(0, REMOTE_AGENT_MATCH.index)}/` : null;
+const REMOTE_ACCESS = document.documentElement.dataset.remoteAccess === 'admin' ? 'admin' : 'read';
 
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
 const THEMES = ['light'];
@@ -67,6 +68,23 @@ function agentPath(path) {
   if (!state.remoteAgent) return path;
   if (!path.startsWith('/api/') || path === '/api/fleet') return path;
   return `${remotePrefix()}${path}`;
+}
+
+function remoteAccess() {
+  if (state.remoteAgent) {
+    const agent = state.fleet?.agents?.find(a => a.name === state.remoteAgent);
+    return agent?.access === 'admin' ? 'admin' : 'read';
+  }
+  if (REMOTE_AGENT) return REMOTE_ACCESS;
+  return 'admin';
+}
+
+function remoteIsReadOnly() {
+  return (state.remoteAgent || REMOTE_AGENT) && remoteAccess() !== 'admin';
+}
+
+function viewedAgentName() {
+  return state.remoteAgent || REMOTE_AGENT || state.dashboardState?.agent?.name || '';
 }
 
 // ─── Theme ───
@@ -305,11 +323,9 @@ function renderInfoBar() {
     parts.push(cv);
   }
 
-  // Actions/Settings operate on the local dashboard only — hide them while
-  // viewing a remote agent in-page (remote viewing is read-only).
-  const buttons = state.remoteAgent
-    ? ''
-    : `<span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}">⚙️</button></span>`;
+  const readOnly = remoteIsReadOnly();
+  const readOnlyTitle = readOnly ? ` title="${esc(t('remote.read_only_tooltip'))}"` : '';
+  const buttons = `<span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button"${readOnly ? ' disabled' : ''}${readOnlyTitle}>${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}"${readOnlyTitle}>⚙️</button></span>`;
   bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span>${buttons}`;
 }
 
@@ -1948,6 +1964,7 @@ function createSettingsModal() {
       </div>
     </div>
   </div>
+  <div class="modal-status" id="settings-readonly-note" hidden></div>
   <div class="modal-status" id="settings-status" hidden></div>
   <div class="settings-footer">
     <button class="action-btn" id="settings-cancel" type="button">${esc(t('btn.cancel'))}</button>
@@ -1974,6 +1991,21 @@ function createSettingsModal() {
   return overlay;
 }
 
+function applySettingsReadOnly(readOnly) {
+  if (!settingsModal) return;
+  const note = settingsModal.querySelector('#settings-readonly-note');
+  if (note) {
+    note.textContent = t('settings.read_only_note');
+    note.hidden = !readOnly;
+  }
+  settingsModal.querySelector('#settings-save').disabled = readOnly;
+  settingsModal.querySelector('#settings-add-model').disabled = readOnly;
+  settingsModal.querySelector('#settings-add-priority-model').disabled = readOnly;
+  settingsModal.querySelectorAll('.settings-input, .settings-remove-btn').forEach((el) => {
+    el.disabled = readOnly;
+  });
+}
+
 function addPriceRow(prefix, prices, builtIn, rowsId = 'settings-price-rows') {
   const tbody = document.getElementById(rowsId);
   const tr = document.createElement('tr');
@@ -1993,10 +2025,12 @@ function addPriceRow(prefix, prices, builtIn, rowsId = 'settings-price-rows') {
 async function openSettingsModal() {
   const modal = createSettingsModal();
   const status = modal.querySelector('#settings-status');
+  const readOnly = remoteIsReadOnly();
   status.hidden = true;
+  applySettingsReadOnly(readOnly);
 
   try {
-    const resp = await fetch(api('/api/settings'));
+    const resp = await fetch(api(agentPath('/api/settings')));
     if (!resp.ok) throw new Error('Failed to load settings');
     const data = await resp.json();
     const runtimeLabel = data.runtime === 'codex' ? 'Codex' : 'Claude';
@@ -2027,6 +2061,7 @@ async function openSettingsModal() {
     if (fastModeGroup) fastModeGroup.hidden = data.fastMode?.mode !== 'multiplier';
     const fastInput = document.getElementById('settings-fast-multiplier');
     if (fastInput) fastInput.value = data.fastMode?.multiplier ?? data.fastModeMultiplier ?? 6;
+    applySettingsReadOnly(readOnly);
   } catch (err) {
     status.textContent = err.message;
     status.hidden = false;
@@ -2040,6 +2075,7 @@ function closeSettingsModal() {
 }
 
 async function saveSettings() {
+  if (remoteIsReadOnly()) return;
   const status = settingsModal.querySelector('#settings-status');
   status.hidden = true;
 
@@ -2081,7 +2117,7 @@ async function saveSettings() {
   }
 
   try {
-    const resp = await fetch(api('/api/settings'), {
+    const resp = await fetch(api(agentPath('/api/settings')), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -2288,6 +2324,7 @@ function createActionsModal() {
 }
 
 async function openActionsModal() {
+  if (remoteIsReadOnly()) return;
   const modal = createActionsModal();
   modal.hidden = false;
 
@@ -2410,7 +2447,7 @@ const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime
 let countdownTimer = null;
 let pendingConfirmCancel = null;
 
-function startCountdownAndReload(seconds, statusEl) {
+function startCountdownAndReload(seconds, statusEl, healthPath = '/api/health') {
   if (countdownTimer) clearInterval(countdownTimer);
   let remaining = seconds;
 
@@ -2431,18 +2468,18 @@ function startCountdownAndReload(seconds, statusEl) {
       clearInterval(countdownTimer);
       countdownTimer = null;
       if (statusEl) statusEl.textContent = t('status.reloading');
-      pollAndReload();
+      pollAndReload(healthPath);
       return;
     }
     tick();
   }, 1000);
 }
 
-async function pollAndReload() {
+async function pollAndReload(healthPath = '/api/health') {
   for (let i = 0; i < 15; i++) {
     await new Promise(r => setTimeout(r, 2000));
     try {
-      const r = await fetch(api('/api/health'), { cache: 'no-store' });
+      const r = await fetch(api(healthPath), { cache: 'no-store' });
       if (r.ok) { window.location.reload(); return; }
     } catch {}
   }
@@ -2484,6 +2521,9 @@ function showConfirm(text) {
 }
 
 async function execAction(action, body) {
+  if (remoteIsReadOnly()) return false;
+  const actionPath = agentPath(`/api/actions/${action}`);
+  const healthPath = agentPath('/api/health');
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
       'interrupt': t('confirm.interrupt'),
@@ -2498,7 +2538,11 @@ async function execAction(action, body) {
         ? t('confirm.upgrade_codex')
         : t('confirm.upgrade_cc')
     };
-    if (!(await showConfirm(labels[action] || t('confirm.fallback', { action })))) return false;
+    let message = labels[action] || t('confirm.fallback', { action });
+    if (state.remoteAgent || REMOTE_AGENT) {
+      message = `${message}\n${t('confirm.remote_target', { agent: viewedAgentName() })}`;
+    }
+    if (!(await showConfirm(message))) return false;
   }
 
   const statusEl = actionsModal?.querySelector('#action-status');
@@ -2509,14 +2553,14 @@ async function execAction(action, body) {
   }
 
   try {
-    const r = await fetch(api(`/api/actions/${action}`), {
+    const r = await fetch(api(actionPath), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {})
     });
     const result = await r.json();
     if (result.ok && result.detached) {
-      startCountdownAndReload(15, statusEl);
+      startCountdownAndReload(15, statusEl, healthPath);
       return true;
     }
     if (statusEl) {
@@ -2547,11 +2591,11 @@ async function execAction(action, body) {
 
 function initInfoBarButtons() {
   document.addEventListener('click', (e) => {
-    // No local-only modals while viewing a remote agent — the buttons are
-    // hidden, but the ↑update badge (remote runtime info) still renders.
-    if (state.remoteAgent) return;
     if (e.target.closest('#settings-btn')) { e.preventDefault(); openSettingsModal(); return; }
-    if (e.target.closest('#actions-btn, .info-bar-update')) { e.preventDefault(); openActionsModal(); }
+    if (e.target.closest('#actions-btn, .info-bar-update')) {
+      e.preventDefault();
+      if (!remoteIsReadOnly()) openActionsModal();
+    }
   });
 }
 

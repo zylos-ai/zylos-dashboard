@@ -88,6 +88,41 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
   assert.equal(fleet.agents[0].self, false, 'external records must not be flagged self');
 });
 
+test('fleet poller captures token exchange scope as agent access', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_admin', expires_at: new Date(120000).toISOString(), scope: 'admin' });
+    }
+    return jsonResponse({ state: 'IDLE' });
+  };
+
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  assert.equal(poller.getAgentAccess('Remote'), 'read');
+  await poller.pollOnce();
+  assert.equal(poller.getAgentAccess('Remote'), 'admin');
+  assert.equal(poller.getFleet().agents[0].access, 'admin');
+});
+
+test('fleet poller treats missing or unknown scope as read access', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_read', expires_at: new Date(120000).toISOString(), scope: 'owner' });
+    }
+    return jsonResponse({ state: 'IDLE' });
+  };
+
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  await poller.pollOnce();
+  assert.equal(poller.getAgentAccess('Remote'), 'read');
+  assert.equal(poller.getFleet().agents[0].access, 'read');
+});
+
 test('fleet poller refreshes token after expiry and on state 401', async () => {
   let now = 0;
   let tokenCount = 0;
@@ -364,8 +399,10 @@ test('buildFleetPayload includes self first and rejects leaked secrets', () => {
   assert.equal(payload.count, 2);
   assert.equal(payload.agents[0].name, 'local');
   assert.equal(payload.agents[0].self, true);
+  assert.equal(payload.agents[0].access, 'admin');
   assert.equal(payload.agents[1].name, 'remote');
   assert.equal(payload.agents[1].self, false);
+  assert.equal(payload.agents[1].access, 'read');
 
   assert.throws(() => buildFleetPayload({
     selfRecord: self,

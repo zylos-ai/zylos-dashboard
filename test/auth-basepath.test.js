@@ -53,6 +53,17 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+async function listen(handler) {
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    server,
+    close: () => new Promise(resolve => server.close(resolve))
+  };
+}
+
 function form(body) {
   return new URLSearchParams(body);
 }
@@ -328,6 +339,105 @@ test('/api/stream accepts Bearer API session and emits initial fleet_state', asy
     assert.equal(body.includes(token), false);
   } finally {
     await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
+test('proxied remote writes require consumer admin API scope or browser session', async () => {
+  let actionHits = 0;
+  const remote = await listen((req, res) => {
+    if (req.url === '/api/auth/token') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        token: 'zylos_st_remote_admin',
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        scope: 'admin'
+      }));
+      return;
+    }
+    if (req.url === '/api/actions/interrupt') {
+      actionHits += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', {
+    auth: { enabled: true, password: 'secret' },
+    fleet: {
+      agents: [
+        { name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_remote' }
+      ]
+    }
+  });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const store = new Store(dbPath);
+    const readKey = generateApiKey();
+    const adminKey = generateApiKey();
+    store.insertApiKey({ name: 'read-key', keyHash: hashApiKey(readKey), scope: 'read' });
+    store.insertApiKey({ name: 'admin-key', keyHash: hashApiKey(adminKey), scope: 'admin' });
+    store.close();
+
+    const readTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readKey}` }
+    });
+    const adminTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey}` }
+    });
+    const { token: readToken } = await readTokenResp.json();
+    const { token: adminToken } = await adminTokenResp.json();
+
+    const readWrite = await fetch(`${origin}/fleet/Remote/api/actions/interrupt`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${readToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    });
+    assert.equal(readWrite.status, 403);
+    assert.deepEqual(await readWrite.json(), { error: 'insufficient_scope', required: 'admin' });
+    assert.equal(actionHits, 0);
+
+    const adminWrite = await fetch(`${origin}/fleet/Remote/api/actions/interrupt`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    });
+    assert.equal(adminWrite.status, 200);
+    assert.equal(actionHits, 1);
+
+    const login = await fetch(`${origin}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form({ password: 'secret', next: '/' }),
+      redirect: 'manual'
+    });
+    const cookie = login.headers.get('set-cookie');
+    const browserWrite = await fetch(`${origin}/fleet/Remote/api/actions/interrupt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    });
+    assert.equal(browserWrite.status, 200);
+    assert.equal(actionHits, 2);
+  } finally {
+    await closeServer(server);
+    await remote.close();
     fs.rmSync(zylosDir, { recursive: true, force: true });
   }
 });

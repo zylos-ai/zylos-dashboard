@@ -972,7 +972,8 @@ export function createServer() {
     const browserBase = browserBaseFromRequest(req);
     const html = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8')
       .replaceAll('__BASE_PATH__', browserBase)
-      .replaceAll('__ASSET_ROOT__', browserBase ? `${browserBase}/_assets` : '/_assets');
+      .replaceAll('__ASSET_ROOT__', browserBase ? `${browserBase}/_assets` : '/_assets')
+      .replaceAll('__REMOTE_ACCESS__', 'admin');
     sendHtml(res, 200, html);
   }
 

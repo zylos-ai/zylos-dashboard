@@ -206,7 +206,8 @@ function sanitizeRecord(record) {
     health_reason: record.health_reason,
     updated_at: record.updated_at,
     base_url: record.base_url,
-    self: record.self === true
+    self: record.self === true,
+    access: record.access === 'admin' ? 'admin' : 'read'
   };
 }
 
@@ -257,7 +258,8 @@ export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {
     pulse_rate: pulseRate,
     health_reason: healthReason,
     updated_at: nowIso(nowMs),
-    self
+    self,
+    access: opts.access
   });
 }
 
@@ -307,7 +309,8 @@ export class FleetPoller {
         last_seen: null,
         pulse_rate: null,
         health_reason: 'not_polled',
-        updated_at: nowIso(this.now())
+        updated_at: nowIso(this.now()),
+        access: 'read'
       }));
     }
   }
@@ -351,6 +354,11 @@ export class FleetPoller {
       throw err;
     }
     return this._ensureToken(agent, { force: Boolean(options.force) });
+  }
+
+  getAgentAccess(agentName) {
+    const cached = this.tokens.get(agentName);
+    return cached?.scope === 'admin' ? 'admin' : 'read';
   }
 
   async pollOnce() {
@@ -429,7 +437,8 @@ export class FleetPoller {
     const expiresAtMs = Number.isFinite(parsedExpiresAtMs)
       ? parsedExpiresAtMs
       : now + toNumber(body.ttl_seconds, 86400) * 1000;
-    this.tokens.set(agent.name, { token: body.token, expiresAtMs });
+    const scope = body.scope === 'admin' ? 'admin' : 'read';
+    this.tokens.set(agent.name, { token: body.token, expiresAtMs, scope });
     return body.token;
   }
 
@@ -481,7 +490,8 @@ export class FleetPoller {
     this.records.set(agent.name, stateToFleetRecord(agent, state, {
       self: false,
       base_url: agent.base_url,
-      nowMs: this.now()
+      nowMs: this.now(),
+      access: this.getAgentAccess(agent.name)
     }));
   }
 

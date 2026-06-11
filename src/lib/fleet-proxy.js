@@ -6,6 +6,7 @@ import { sendHtml, sendJson, sendText, serveStatic } from './http.js';
 
 const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
 const STREAM_GUARD_TAIL_CHARS = 128;
+const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 
 function decodeAgentName(value) {
   try {
@@ -50,6 +51,27 @@ function containsSecret(value) {
 
 function isSseResponse(resp) {
   return /\btext\/event-stream\b/i.test(resp.headers.get('content-type') || '');
+}
+
+function isAllowedProxyWrite(method, suffix) {
+  return method === 'POST' && /^\/api\/actions\/[^/]+$/.test(suffix) ||
+    method === 'PUT' && suffix === '/api/settings';
+}
+
+async function readBodyBuffer(req, maxBytes = MAX_WRITE_BODY_BYTES) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      const err = new Error('request_body_too_large');
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 function createSecretGuard(token) {
@@ -148,9 +170,17 @@ export class FleetProxy {
       // the paths fall back to /fleet/<name>. See issue #159.
       const browserBase = browserBaseFromRequest(req);
       const prefix = browserPath(browserBase, `fleet/${encodeURIComponent(agent.name)}`);
+      let access = 'read';
+      try {
+        await this.poller.getSessionToken(agent.name);
+        access = this.poller.getAgentAccess?.(agent.name) === 'admin' ? 'admin' : 'read';
+      } catch {
+        access = 'read';
+      }
       const html = fs.readFileSync(path.join(this.rootDir, 'index.html'), 'utf8')
         .replaceAll('__BASE_PATH__', prefix)
-        .replaceAll('__ASSET_ROOT__', browserPath(prefix, '_assets'));
+        .replaceAll('__ASSET_ROOT__', browserPath(prefix, '_assets'))
+        .replaceAll('__REMOTE_ACCESS__', access);
       sendHtml(res, 200, html);
       return true;
     }
@@ -168,7 +198,7 @@ export class FleetProxy {
   }
 
   async proxyApi(req, res, agent, suffix, search) {
-    if (!['GET', 'HEAD'].includes(req.method)) {
+    if (!['GET', 'HEAD'].includes(req.method) && !isAllowedProxyWrite(req.method, suffix)) {
       sendJson(res, 403, { error: 'read_only_proxy' });
       return;
     }
@@ -188,8 +218,9 @@ export class FleetProxy {
         token = await this.poller.getSessionToken(agent.name, { force: true });
         remoteResp = await this._fetchUpstream(req, agent, suffix, search, token);
       }
-    } catch {
-      sendJson(res, 502, { error: 'upstream_unreachable' });
+    } catch (err) {
+      if (err.status === 413) sendJson(res, 413, { error: 'request_body_too_large' });
+      else sendJson(res, 502, { error: 'upstream_unreachable' });
       return;
     }
 
@@ -252,12 +283,17 @@ export class FleetProxy {
     }
   }
 
-  _fetchUpstream(req, agent, suffix, search, token) {
+  async _fetchUpstream(req, agent, suffix, search, token) {
     const headers = stripHopByHop(req.headers);
     headers.authorization = `Bearer ${token}`;
-    return this.fetch(remoteUrl(agent, suffix, search), {
+    const options = {
       method: req.method,
       headers
-    });
+    };
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      if (!req._fleetProxyBody) req._fleetProxyBody = await readBodyBuffer(req);
+      options.body = req._fleetProxyBody;
+    }
+    return this.fetch(remoteUrl(agent, suffix, search), options);
   }
 }

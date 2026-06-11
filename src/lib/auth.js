@@ -270,6 +270,16 @@ function nextTarget(req, base) {
   return isPathWithinBase(target, base) ? target : browserRoot(base);
 }
 
+function needsAdminApiAccess(pathname, method) {
+  if (pathname.startsWith('/api/actions')) return true;
+  if (pathname === '/api/settings' && method === 'PUT') return true;
+  const proxiedWrite = pathname.match(/^\/fleet\/[^/]+\/api\/(.+)$/);
+  if (!proxiedWrite) return false;
+  const remotePath = `/api/${proxiedWrite[1]}`;
+  return method === 'POST' && remotePath.startsWith('/api/actions/') ||
+    method === 'PUT' && remotePath === '/api/settings';
+}
+
 export function generateApiKey() {
   return API_KEY_PREFIX + crypto.randomBytes(32).toString('hex');
 }
@@ -378,8 +388,7 @@ export class AuthGate {
 
     const apiAuth = this.getApiAuth(req);
     if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/'))) {
-      const needsAdmin = pathname.startsWith('/api/actions') ||
-        (pathname === '/api/settings' && req.method === 'PUT');
+      const needsAdmin = needsAdminApiAccess(pathname, req.method);
       if (needsAdmin && apiAuth.scope !== 'admin') {
         sendJson(res, 403, { error: 'insufficient_scope', required: 'admin' });
         return true;

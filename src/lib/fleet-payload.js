@@ -17,8 +17,12 @@ export function assertFleetPayloadSafe(payload) {
 export function buildFleetPayload({ remoteFleet, selfRecord, nowIso = new Date().toISOString() }) {
   const remoteAgents = Array.isArray(remoteFleet?.agents) ? remoteFleet.agents : [];
   const agents = [
-    { ...selfRecord, self: true },
-    ...remoteAgents.map((agent) => ({ ...agent, self: agent.self === true }))
+    { ...selfRecord, self: true, access: 'admin' },
+    ...remoteAgents.map((agent) => ({
+      ...agent,
+      self: agent.self === true,
+      access: agent.access === 'admin' ? 'admin' : 'read'
+    }))
   ];
   const payload = {
     ...(remoteFleet || {}),
