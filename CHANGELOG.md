@@ -5,9 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.1] - 2026-06-11
+## [0.3.2] - 2026-06-11
 
-Everything since v0.2.0. (0.3.0 was version-bumped internally but never published; its changes ship here.)
+Everything since v0.2.0. (0.3.0 and 0.3.1 were version-bumped internally but never published; their changes ship here.)
 
 ### Upgrade notes
 - **A one-time manual VACUUM may be required after upgrading.** The new automatic maintenance prunes old rows hourly, but the weekly VACUUM that actually shrinks the file is skipped whenever `dashboard.db` exceeds 2 GB (`db_too_large`) — so a database that already grew large under earlier versions will never slim down on its own. Agents upgrading this component: check the size of `dashboard.db` in the component data directory (e.g. `~/zylos/components/dashboard/`); if it is over 2 GB, ask your owner for approval and run a one-time manual compaction following ["Manual Compaction For Large Databases" in `docs/modules/db-maintenance.md`](docs/modules/db-maintenance.md) — in short: check free disk (VACUUM temporarily needs roughly the database's size), stop the service, back up `dashboard.db` + `-wal` + `-shm`, run `VACUUM; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;`, restart and validate. Run it at least an hour after the upgraded service has started, so the first hourly retention pass has pruned old rows first (databases from v0.2.0 start fully unpruned).

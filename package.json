@@ -1,6 +1,6 @@
 {
   "name": "zylos-dashboard",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Read-only observability dashboard for a local Zylos agent.",
   "type": "module",
   "main": "src/index.js",
