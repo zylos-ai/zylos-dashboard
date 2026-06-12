@@ -29,6 +29,7 @@ import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver, rateLimitWindowExpired } from './lib/metric-resolver.js';
 import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { runMetricMaintenance } from './lib/metric-maintenance.js';
+import { EventLoopMonitor } from './lib/event-loop-monitor.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
@@ -108,6 +109,11 @@ const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
+
+// Event-loop delay observability (#260)
+const eventLoopMonitor = new EventLoopMonitor({
+  blockWarnMs: config.observability?.event_loop_warn_ms
+}).start();
 
 // 4. Spool drain (DB-only, before state engine)
 const spoolDrainer = new SpoolDrainer(store, sanitizer, config);
@@ -880,6 +886,7 @@ function handleApi(req, res, pathname, url) {
       startedAt: startedAt.toISOString(),
       uptimeSeconds: Math.round(process.uptime()),
       phase: 'phase2a',
+      event_loop: eventLoopMonitor.snapshot(),
       source: sourceHealth
     });
     return true;
