@@ -5,7 +5,7 @@ const SECRET_PATTERNS = [
   'zylos_st_'
 ];
 
-const TOKEN_PATTERN = /zylos_(?:ak|st)_[A-Za-z0-9_-]+/g;
+const VALUE_SECRET_PATTERN = /zylos_(?:ak|st)_(?:[A-Za-z0-9_-]+|\.\.\.[A-Za-z0-9_-]+)?/g;
 const SECRET_FIELD_NAME_PATTERN = /\bread_(?:api_key|session_token)\b/g;
 
 export function assertFleetPayloadSafe(payload) {
@@ -19,7 +19,7 @@ export function assertFleetPayloadSafe(payload) {
 
 function redactString(value) {
   return value
-    .replace(TOKEN_PATTERN, '[redacted]')
+    .replace(VALUE_SECRET_PATTERN, '[redacted]')
     .replace(SECRET_FIELD_NAME_PATTERN, '[redacted]');
 }
 
@@ -57,4 +57,17 @@ export function buildFleetPayload({
   };
   if (assertSafe) assertFleetPayloadSafe(payload);
   return payload;
+}
+
+export function buildSafeFleetPayload(options) {
+  const payload = buildFleetPayload({ ...options, assertSafe: false });
+  try {
+    assertFleetPayloadSafe(payload);
+    return { payload, redacted: false };
+  } catch (err) {
+    if (err?.code !== 'fleet_secret_leak_guard') throw err;
+    const redacted = redactFleetPayload(payload);
+    assertFleetPayloadSafe(redacted);
+    return { payload: redacted, redacted: true };
+  }
 }

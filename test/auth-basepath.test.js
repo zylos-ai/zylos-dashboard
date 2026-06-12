@@ -69,6 +69,10 @@ function form(body) {
   return new URLSearchParams(body);
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 test('auth protects API and renders proxy-prefixed login URLs', async () => {
   const { origin, server } = await makeServer();
   try {
@@ -797,7 +801,11 @@ test('fleet management API is admin-gated, masks keys, persists atomically, and 
     }
     if (req.url === '/api/state') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ state: 'IDLE', runtime_info: { zylos_version: '0.3.0' } }));
+      res.end(JSON.stringify({
+        state: 'BUSY',
+        active_subagents: [{ last_activity: 'masked zylos_ak_...abcd in activity text' }],
+        runtime_info: { zylos_version: '0.3.0' }
+      }));
       return;
     }
     if (req.url === '/api/stream') {
@@ -902,12 +910,20 @@ test('fleet management API is admin-gated, masks keys, persists atomically, and 
     assert.equal(listBody.agents[0].access, 'read');
     assert.equal(JSON.stringify(listBody).includes('supersecret'), false);
 
-    const fleet = await fetch(`${origin}/api/fleet`, {
-      headers: { Authorization: `Bearer ${adminToken}` }
-    });
-    assert.equal(fleet.status, 200);
-    const fleetBody = await fleet.json();
+    let fleetBody = null;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const fleet = await fetch(`${origin}/api/fleet`, {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      assert.equal(fleet.status, 200);
+      fleetBody = await fleet.json();
+      if (fleetBody.agents.find(a => a.name === 'Remote')?.activity === 'masked [redacted] in activity text') break;
+      await sleep(25);
+    }
     assert.equal(fleetBody.agents.some(a => a.name === 'Remote'), true, 'hot-added agent should appear without restart');
+    const remoteRecord = fleetBody.agents.find(a => a.name === 'Remote');
+    assert.equal(remoteRecord.activity, 'masked [redacted] in activity text');
+    assert.equal(JSON.stringify(fleetBody).includes('zylos_ak_'), false);
 
     const rename = await fetch(`${origin}/api/agent/name`, {
       method: 'PUT',

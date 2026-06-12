@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agentColor } from '../src/lib/agent-color.js';
 import { FleetPoller, SseEventParser, stateToFleetRecord } from '../src/lib/fleet-poller.js';
-import { assertFleetPayloadSafe, buildFleetPayload, redactFleetPayload } from '../src/lib/fleet-payload.js';
+import { assertFleetPayloadSafe, buildFleetPayload, buildSafeFleetPayload, redactFleetPayload } from '../src/lib/fleet-payload.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -733,7 +733,7 @@ test('redactFleetPayload masks string-leaf secrets and passes the safety guard',
     remoteFleet: {
       agents: [{
         name: 'remote',
-        activity: 'saw zylos_ak_secret123 and read_api_key in output',
+        activity: 'saw zylos_ak_secret123, zylos_ak_, zylos_st_, zylos_ak_...abcd, and read_api_key in output',
         context_pct: 7,
         self: false
       }],
@@ -746,8 +746,27 @@ test('redactFleetPayload masks string-leaf secrets and passes the safety guard',
   assert.throws(() => assertFleetPayloadSafe(unsafe), /fleet_secret_leak_guard/);
   const redacted = redactFleetPayload(unsafe);
   assert.doesNotThrow(() => assertFleetPayloadSafe(redacted));
-  assert.equal(redacted.agents[1].activity, 'saw [redacted] and [redacted] in output');
+  assert.equal(redacted.agents[1].activity, 'saw [redacted], [redacted], [redacted], [redacted], and [redacted] in output');
   assert.equal(redacted.agents[1].context_pct, 7);
+});
+
+test('buildSafeFleetPayload redacts string-leaf leaks for shared HTTP and SSE payloads', () => {
+  const self = stateToFleetRecord({ name: 'local', color: agentColor('local') }, { state: 'IDLE' }, { self: true, nowMs: 0 });
+  const result = buildSafeFleetPayload({
+    selfRecord: self,
+    remoteFleet: {
+      agents: [{
+        name: 'remote',
+        activity: 'mentions zylos_ak_ prefix and masked zylos_st_...abcd',
+        self: false
+      }]
+    },
+    nowIso: '2026-06-09T00:00:00.000Z'
+  });
+
+  assert.equal(result.redacted, true);
+  assert.equal(result.payload.agents[1].activity, 'mentions [redacted] prefix and masked [redacted]');
+  assert.doesNotThrow(() => assertFleetPayloadSafe(result.payload));
 });
 
 test('redactFleetPayload leaves object-key leaks fail-closed', () => {
@@ -757,6 +776,10 @@ test('redactFleetPayload leaves object-key leaks fail-closed', () => {
 
   assert.equal(redacted.agents[0].zylos_ak_secret_key, 'value');
   assert.throws(() => assertFleetPayloadSafe(redacted), /fleet_secret_leak_guard/);
+  assert.throws(() => buildSafeFleetPayload({
+    selfRecord: { name: 'local', self: true },
+    remoteFleet: { agents: [{ name: 'remote', zylos_ak_secret_key: 'value' }] }
+  }), /fleet_secret_leak_guard/);
 });
 
 test('redactFleetPayload leaves clean payloads and non-string leaves unchanged', () => {
