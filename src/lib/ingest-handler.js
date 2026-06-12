@@ -28,6 +28,11 @@ export class IngestHandler {
     this.stateEngine = stateEngine;
     this.config = config;
     this.slowEventWarnMs = config?.observability?.slow_ingest_warn_ms ?? DEFAULT_SLOW_EVENT_WARN_MS;
+    this.queue = null;
+  }
+
+  attachQueue(queue) {
+    this.queue = queue;
   }
 
   async handle(req, res) {
@@ -65,63 +70,83 @@ export class IngestHandler {
       return;
     }
 
-    // Every step below runs synchronously on the event loop; under hook storms
-    // (#260) the per-event cost is what starves HTTP. Time it so the slow step
-    // is identifiable in logs while it happens.
-    const startedNs = process.hrtime.bigint();
+    // Decoupled path (#260): ACK as soon as the event is queued; processing
+    // runs in yielded batches off the request path. A full queue answers 503
+    // so the hook falls back to its durable spool.
+    if (this.queue) {
+      if (!this.queue.push(body)) {
+        sendJson(res, 503, { error: 'queue_full' });
+        return;
+      }
+      sendJson(res, 200, { ok: true, queued: true });
+      return;
+    }
+
+    // Inline fallback when no queue is attached (tests, minimal embeddings).
     try {
-      const sanitized = this.sanitizer.sanitizeHookPayload(hook_event_name, body);
-      const { event_type, category } = EVENT_TYPE_MAP[hook_event_name];
-
-      const event = {
-        id: crypto.randomUUID(),
-        ingest_id,
-        timestamp: body.received_at || new Date().toISOString(),
-        runtime: body.runtime || process.env.ZYLOS_RUNTIME || 'claude',
-        session_id: sanitized.session_id,
-        event_type,
-        category,
-        summary: sanitized.summary,
-        duration_ms: sanitized.duration_ms,
-        metadata: sanitized.metadata,
-        source: 'hook',
-        confidence: 'actual'
-      };
-
-      const { inserted } = this.store.insertEvent(event);
-
-      if (event.runtime === 'codex' && sanitized.metadata?.transcript_path && sanitized.session_id) {
-        this.store.upsertCodexRolloutPath?.({
-          runtime: event.runtime,
-          sessionId: sanitized.session_id,
-          transcriptPath: sanitized.metadata.transcript_path,
-          lastEventAt: event.timestamp
-        });
-      }
-
-      if (inserted && this.stateEngine) {
-        this.stateEngine.onEvent(event);
-      }
-
-      const now = new Date().toISOString();
-      this.store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now });
-      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', {
-        last_success: now,
-        runtime: event.runtime
-      });
-
-      const elapsedMs = Number(process.hrtime.bigint() - startedNs) / 1e6;
-      if (elapsedMs >= this.slowEventWarnMs) {
-        // Payload size computed only on the slow path — keeps the per-event
-        // hot-path cost to two hrtime reads.
-        const payloadBytes = Buffer.byteLength(JSON.stringify(body));
-        process.stderr.write(`[ingest-handler] slow event: ${hook_event_name} took ${Math.round(elapsedMs)}ms (payload ${payloadBytes}B)\n`);
-      }
-
+      this.processEvent(body);
       sendJson(res, 200, { ok: true });
     } catch (err) {
       process.stderr.write(`[ingest-handler] Error: ${err.message}\n`);
       sendJson(res, 500, { error: 'internal_error' });
+    }
+  }
+
+  // Synchronous processing for one validated event body. Called inline (no
+  // queue) or from the IngestQueue drain loop. Throws on failure; the queue
+  // routes failed bodies to the spool for retry.
+  processEvent(body) {
+    const { ingest_id, hook_event_name } = body;
+    // Every step below runs synchronously on the event loop; under hook storms
+    // (#260) the per-event cost is what starves HTTP. Time it so the slow step
+    // is identifiable in logs while it happens.
+    const startedNs = process.hrtime.bigint();
+    const sanitized = this.sanitizer.sanitizeHookPayload(hook_event_name, body);
+    const { event_type, category } = EVENT_TYPE_MAP[hook_event_name];
+
+    const event = {
+      id: crypto.randomUUID(),
+      ingest_id,
+      timestamp: body.received_at || new Date().toISOString(),
+      runtime: body.runtime || process.env.ZYLOS_RUNTIME || 'claude',
+      session_id: sanitized.session_id,
+      event_type,
+      category,
+      summary: sanitized.summary,
+      duration_ms: sanitized.duration_ms,
+      metadata: sanitized.metadata,
+      source: 'hook',
+      confidence: 'actual'
+    };
+
+    const { inserted } = this.store.insertEvent(event);
+
+    if (event.runtime === 'codex' && sanitized.metadata?.transcript_path && sanitized.session_id) {
+      this.store.upsertCodexRolloutPath?.({
+        runtime: event.runtime,
+        sessionId: sanitized.session_id,
+        transcriptPath: sanitized.metadata.transcript_path,
+        lastEventAt: event.timestamp
+      });
+    }
+
+    if (inserted && this.stateEngine) {
+      this.stateEngine.onEvent(event);
+    }
+
+    const now = new Date().toISOString();
+    this.store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now });
+    this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', {
+      last_success: now,
+      runtime: event.runtime
+    });
+
+    const elapsedMs = Number(process.hrtime.bigint() - startedNs) / 1e6;
+    if (elapsedMs >= this.slowEventWarnMs) {
+      // Payload size computed only on the slow path — keeps the per-event
+      // hot-path cost to two hrtime reads.
+      const payloadBytes = Buffer.byteLength(JSON.stringify(body));
+      process.stderr.write(`[ingest-handler] slow event: ${hook_event_name} took ${Math.round(elapsedMs)}ms (payload ${payloadBytes}B)\n`);
     }
   }
 }

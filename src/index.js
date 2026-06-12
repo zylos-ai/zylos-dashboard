@@ -30,6 +30,7 @@ import { MetricResolver, rateLimitWindowExpired } from './lib/metric-resolver.js
 import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { runMetricMaintenance } from './lib/metric-maintenance.js';
 import { EventLoopMonitor } from './lib/event-loop-monitor.js';
+import { IngestQueue } from './lib/ingest-queue.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
@@ -319,6 +320,13 @@ const c4Reader = new C4Reader(config.zylosDir);
 
 // 9. Ingest handler (with state engine reference)
 const ingestHandler = new IngestHandler(store, sanitizer, stateEngine, config);
+// #260: decouple hook ACK from processing — batches drain off the request path.
+const ingestQueue = new IngestQueue({
+  process: body => ingestHandler.processEvent(body),
+  spoolPath: spoolDrainer.spoolPath,
+  maxDepth: config.observability?.ingest_queue_max
+});
+ingestHandler.attachQueue(ingestQueue);
 
 // Rate-limit metric values arrive either as a plain number or as an object
 // keyed by window (same variants the single-agent page handles).
@@ -887,6 +895,7 @@ function handleApi(req, res, pathname, url) {
       uptimeSeconds: Math.round(process.uptime()),
       phase: 'phase2a',
       event_loop: eventLoopMonitor.snapshot(),
+      ingest_queue: ingestQueue.snapshot(),
       source: sourceHealth
     });
     return true;
@@ -1594,6 +1603,8 @@ if (isMain && process.argv.includes('--smoke')) {
       if (codexRolloutCollector) codexRolloutCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();
+      const dumped = ingestQueue.dumpToSpool();
+      if (dumped) process.stderr.write(`[ingest-queue] ${dumped} unprocessed event(s) saved to spool for next start\n`);
       if (retentionTimer) clearInterval(retentionTimer);
       fleetPoller.stop();
       sse.closeAll();
