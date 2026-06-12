@@ -26,7 +26,15 @@ function setupTmpConfig(tmpDir, config) {
 function runHookIngest(zylosDir, stdin) {
   return new Promise((resolve) => {
     const child = spawn('node', [HOOK_SCRIPT], {
-      env: { ...process.env, ZYLOS_DIR: zylosDir },
+      // These tests assert the POST reached the server, so the hook's
+      // 500ms/200ms production deadlines must not race child startup on a
+      // loaded machine (same widening as the e2e backpressure test).
+      env: {
+        ...process.env,
+        ZYLOS_DIR: zylosDir,
+        ZYLOS_HOOK_EXIT_MS: '15000',
+        ZYLOS_HOOK_POST_TIMEOUT_MS: '5000'
+      },
       stdio: ['pipe', 'pipe', 'pipe']
     });
     let stdout = '';
