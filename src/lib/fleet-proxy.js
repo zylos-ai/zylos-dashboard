@@ -262,12 +262,15 @@ export class FleetProxy {
       return;
     }
 
+    // Owns the upstream fetch lifetime: aborting it is the only reliable way
+    // to release the upstream connection when a relay is torn down (#257).
+    const upstreamControl = new AbortController();
     let remoteResp;
     try {
-      remoteResp = await this._fetchUpstream(req, agent, suffix, search, token);
+      remoteResp = await this._fetchUpstream(req, agent, suffix, search, token, upstreamControl.signal);
       if (remoteResp.status === 401) {
         token = await this.poller.getSessionToken(agent.name, { force: true });
-        remoteResp = await this._fetchUpstream(req, agent, suffix, search, token);
+        remoteResp = await this._fetchUpstream(req, agent, suffix, search, token, upstreamControl.signal);
       }
     } catch (err) {
       if (err.status === 413) sendJson(res, 413, { error: 'request_body_too_large' });
@@ -313,9 +316,32 @@ export class FleetProxy {
       const guarded = guardedSseStream(guard, upstream, () => {
         process.stderr.write(`[fleet-proxy] blocked secret-bearing SSE response from ${agent.name}\n`);
       });
+      // pipe() does not propagate errors: an unhandled 'error' on any stream in
+      // this chain would crash the whole process (#257). A failed relay must
+      // only tear down its own connection; the browser's EventSource reconnects.
+      const abortRelay = (err) => {
+        if (err && err.name !== 'AbortError') {
+          process.stderr.write(`[fleet-proxy] SSE relay from ${agent.name} aborted: ${err.message || err}\n`);
+        }
+        upstreamControl.abort();
+        upstream.destroy();
+        guarded.destroy();
+        if (!res.destroyed && !res.writableEnded) res.end();
+      };
+      upstream.on('error', abortRelay);
+      guarded.on('error', abortRelay);
+      res.on('error', () => { /* client write failures surface via 'close' */ });
+      res.on('close', () => abortRelay());
       upstream.pipe(guarded).pipe(res);
     } else {
-      const buffer = Buffer.from(await remoteResp.arrayBuffer());
+      let buffer;
+      try {
+        buffer = Buffer.from(await remoteResp.arrayBuffer());
+      } catch (err) {
+        process.stderr.write(`[fleet-proxy] upstream body read from ${agent.name} ${suffix} failed: ${err.message || err}\n`);
+        sendJson(res, 502, { error: 'upstream_body_error' });
+        return;
+      }
       const text = buffer.toString('utf8');
       if (guard.contains(text)) {
         process.stderr.write(`[fleet-proxy] blocked secret-bearing response from ${agent.name} ${suffix}\n`);
@@ -334,12 +360,13 @@ export class FleetProxy {
     }
   }
 
-  async _fetchUpstream(req, agent, suffix, search, token) {
+  async _fetchUpstream(req, agent, suffix, search, token, signal) {
     const headers = stripHopByHop(req.headers);
     headers.authorization = `Bearer ${token}`;
     const options = {
       method: req.method,
-      headers
+      headers,
+      signal
     };
     if (!['GET', 'HEAD'].includes(req.method)) {
       const maxBodyBytes = req.method === 'PUT' && suffix === '/api/memory/file'

@@ -775,3 +775,110 @@ test('fleet proxy blocks reflected session token in SSE response headers', async
     await remote.close();
   }
 });
+
+test('fleet proxy survives an upstream SSE body failure without killing the server (#257)', async () => {
+  const remote = await listen((req, res) => {
+    if (req.url === '/api/stream') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      // Longer than the secret-guard tail window (128 chars) so a prefix is
+      // flushed to the client before the stream dies.
+      res.write(`data: ${'hello '.repeat(60)}\n\n`);
+      // Abruptly kill the upstream socket mid-stream — reproduces the
+      // BodyTimeoutError / "other side closed" failures from production.
+      setTimeout(() => res.socket.destroy(), 50);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const sse = await fetch(`${hub.origin}/fleet/Remote/api/stream`);
+    assert.equal(sse.status, 200);
+    let text = '';
+    try {
+      for await (const chunk of sse.body) text += Buffer.from(chunk).toString('utf8');
+    } catch {
+      // The relay may end abruptly; what matters is the process survives.
+    }
+    assert.match(text, /hello/);
+    // Without the fix the unhandled stream 'error' crashes the process before
+    // this point. The hub must keep serving requests after the failed relay.
+    const after = await fetch(`${hub.origin}/fleet/Remote/api/state`);
+    assert.equal(after.status, 200);
+    assert.deepEqual(await after.json(), { ok: true });
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy cancels the upstream SSE fetch when the client disconnects (#257)', async () => {
+  let upstreamClosed = false;
+  const remote = await listen((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    // Past the secret-guard tail window so the client read resolves.
+    res.write(`data: ${'hi '.repeat(60)}\n\n`);
+    res.on('close', () => { upstreamClosed = true; });
+    // Keep the stream open; only a downstream-driven teardown closes it.
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const controller = new AbortController();
+    const sse = await fetch(`${hub.origin}/fleet/Remote/api/stream`, { signal: controller.signal });
+    const reader = sse.body.getReader();
+    await reader.read();
+    controller.abort();
+    const deadline = Date.now() + 2000;
+    while (!upstreamClosed && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.equal(upstreamClosed, true, 'upstream SSE connection must be torn down after client disconnect');
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy maps a mid-body upstream failure on buffered responses to 502 (#257)', async () => {
+  const remote = await listen((req, res) => {
+    // Promise more bytes than we deliver, then kill the socket so the
+    // proxy-side arrayBuffer() read fails after headers were received.
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1024' });
+    res.write('{"partial":');
+    setTimeout(() => res.socket.destroy(), 25);
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/state`);
+    assert.equal(resp.status, 502);
+    assert.deepEqual(await resp.json(), { error: 'upstream_body_error' });
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
