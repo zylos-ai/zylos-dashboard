@@ -6,7 +6,7 @@ const SECRET_PATTERNS = [
 ];
 
 const VALUE_SECRET_PATTERN = /zylos_(?:ak|st)_(?:[A-Za-z0-9_-]+|\.\.\.[A-Za-z0-9_-]+)?/g;
-const SECRET_FIELD_NAME_PATTERN = /\bread_(?:api_key|session_token)\b/g;
+const SECRET_FIELD_NAME_PATTERN = /read_(?:api_key|session_token)/g;
 
 export function assertFleetPayloadSafe(payload) {
   const serialized = JSON.stringify(payload);

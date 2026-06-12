@@ -733,7 +733,7 @@ test('redactFleetPayload masks string-leaf secrets and passes the safety guard',
     remoteFleet: {
       agents: [{
         name: 'remote',
-        activity: 'saw zylos_ak_secret123, zylos_ak_, zylos_st_, zylos_ak_...abcd, and read_api_key in output',
+        activity: 'saw zylos_ak_secret123, zylos_ak_, zylos_st_, zylos_ak_...abcd, read_api_key, read_api_keys, and myread_session_token in output',
         context_pct: 7,
         self: false
       }],
@@ -746,7 +746,7 @@ test('redactFleetPayload masks string-leaf secrets and passes the safety guard',
   assert.throws(() => assertFleetPayloadSafe(unsafe), /fleet_secret_leak_guard/);
   const redacted = redactFleetPayload(unsafe);
   assert.doesNotThrow(() => assertFleetPayloadSafe(redacted));
-  assert.equal(redacted.agents[1].activity, 'saw [redacted], [redacted], [redacted], [redacted], and [redacted] in output');
+  assert.equal(redacted.agents[1].activity, 'saw [redacted], [redacted], [redacted], [redacted], [redacted], [redacted]s, and my[redacted] in output');
   assert.equal(redacted.agents[1].context_pct, 7);
 });
 
