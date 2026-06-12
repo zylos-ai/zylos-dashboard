@@ -27,7 +27,7 @@ The fleet wall currently collapses every link problem into a binary: a member is
      latency_ms,          // last successful state-fetch duration
      latency_p95_ms,      // p95 over the rolling window (last 20 samples)
      sampled_at,          // ISO time of last sample
-     quality,             // 'ok' | 'slow' | 'stale' | 'down'
+     quality,             // 'ok' | 'slow' | 'degraded' | 'stale' | 'down'
      reason               // null when ok/slow; specific failure reason otherwise
    }
    ```
@@ -36,14 +36,16 @@ The fleet wall currently collapses every link problem into a binary: a member is
 3a. **Latency sampling = dedicated health probe, NOT state-poll timing.** Plan-review finding (Jinglever P1): the poller's periodic state polls do not run on the healthy-SSE path (`start()` → one `pollOnce()` → SSE takes over; `_scheduleNext()` only runs in fallback), so a "slow but healthy, SSE-pushing" member — exactly the zylos0t case this feature exists for — would never fill the sample window. Additionally, timing mixed endpoints would blend different payload weights (`/api/state` ≈ 0.65s vs `/api/health` ≈ 0.12s on the same link, measured 2026-06-12). Therefore:
    - A dedicated probe GETs `<base_url>/api/health` with the member's read API key every `fleet.latency_probe_interval_ms` (default **30s**), independent of SSE/poll state, per member, with the existing `fleet.timeout_ms`.
    - Latency samples come **only** from this probe — one uniform metric ("health-endpoint RTT") for every member on every path.
-   - Probe failures also feed failure classification (a probe timeout on an SSE-healthy member does NOT mark the member `down` — SSE data flow wins for liveness; it only affects `link.quality`/`link.reason`).
+   - Probe failures also feed failure classification (a probe timeout on an SSE-healthy member does NOT mark the member `down` — SSE data flow wins for liveness; it maps to `link.quality = 'degraded'` per decision 3 rule 3, with the classified reason in `link.reason`).
    - Detection latency consequence (documented, accepted): 5-sample floor × 30s probe = `slow` appears within ~2.5 min of onset; 20-sample ring ≈ 10 min rolling window.
 
-3. **Quality derivation (server-side, anti-noise by construction):**
-   - `down`: current failure path (any `_setFailure`).
-   - `stale`: last successful update older than `max(3 × poll_interval_ms, 15s)` while not `down` (covers SSE-active gaps where polls are sparse — staleness is computed from data age, not poll cadence).
-   - `slow`: rolling p95 > `fleet.slow_threshold_ms` (default **1500ms**) **and** window has ≥5 samples. p95-over-window plus the sample floor is the hysteresis — single slow samples never flip the badge.
-   - `ok`: otherwise.
+3. **Quality derivation (server-side, anti-noise by construction).** Evaluated in strict precedence order — first match wins:
+   1. `down`: current failure path (any `_setFailure`). Liveness failure; existing unreachable rendering.
+   2. `stale`: last successful data update older than `max(3 × poll_interval_ms, 15s)` while not `down`. Data-age problem only — definition is NOT overloaded by probe state (plan-review round 2).
+   3. `degraded`: ≥2 **consecutive** probe failures while data flow is healthy (SSE still delivering, so neither `down` nor `stale`). `link.reason` carries the probe's classified failure (`timeout`/`conn_refused`/`bad_payload`/…). The 2-consecutive floor keeps a single transient probe blip (30s cadence) from flashing the badge; detection cost ≤60s. Any probe success resets the counter.
+   4. `slow`: rolling p95 > `fleet.slow_threshold_ms` (default **1500ms**) **and** window has ≥5 samples. p95-over-window plus the sample floor is the hysteresis — single slow samples never flip the badge.
+   5. `ok`: otherwise.
+   - Semantics map to four distinct operator responses: `down` = liveness failure, `stale` = data too old, `degraded` = member alive but health endpoint unreachable/broken, `slow` = link RTT high.
    - Default 1500ms rationale: ~60% of the 2500ms default timeout; would have correctly flagged the zylos0t CF path (1.7–2.0s) while leaving Jinglever (90–230ms) clean.
 4. **Failure classification** in `_pollAgent`/`_ensureToken`/state-fetch/probe:
    - `AbortError` → `timeout`
@@ -51,7 +53,7 @@ The fleet wall currently collapses every link problem into a binary: a member is
    - HTTP 2xx but body is not **minimally valid** → `bad_payload`. Minimal valid shape, defined here (plan-review finding): body parses as JSON, is a plain object (not array/null), and `state` is a non-empty string. `stateToFleetRecord()` defaulting missing state to `UNKNOWN` must NOT swallow these — shape validation happens before record construction. Covers: empty body (the Caddy vhost case), non-JSON, `{}`, `[]`, `null`, and structurally-valid-but-semantically-empty objects like `{"ok":true}`.
    - 401/403 → `auth_failed`; 404 on token → `version_unsupported` (both unchanged)
    - anything else → `unreachable`
-5. **Tile UI:** small latency chip (e.g. `1.8s`) shown when quality is `slow`/`stale`; subdued/desaturated tile styling for `stale`; existing unreachable rendering for `down` but tooltip now shows the specific reason. No layout reflow for `ok` members (chip hidden). i18n EN/ZH for new labels; unknown reasons fall back to raw text.
+5. **Tile UI:** small latency chip (e.g. `1.8s`) shown when quality is `slow`/`stale`; `degraded` shows a warning chip (no latency number — there is no current sample) with the reason in the tooltip; subdued/desaturated tile styling for `stale`; existing unreachable rendering for `down` but tooltip now shows the specific reason. No layout reflow for `ok` members (chip hidden). i18n EN/ZH for new labels (incl. `degraded`); unknown reasons fall back to raw text.
 6. **Config:** `fleet.slow_threshold_ms` (default 1500), `fleet.latency_probe_interval_ms` (default 30000). No enable/disable switch — one tiny health GET per member per 30s is negligible, same default-on boundary Howard confirmed for #262.
 
 ## Development Checklist
@@ -67,13 +69,14 @@ The fleet wall currently collapses every link problem into a binary: a member is
 - [ ] Config plumbing: `fleet.slow_threshold_ms` with default.
 - [ ] Frontend `app.js`: latency chip + tooltip (reason via i18n with raw fallback); `stale` styling class.
 - [ ] `style.css`: chip + stale styles; bump `?v=N` cache-buster (update BOTH test files that pin it: `frontend-behavior` + `memory-markdown`).
-- [ ] i18n EN/ZH strings for: slow, stale, link latency, timeout, conn_refused, bad_payload.
+- [ ] i18n EN/ZH strings for: slow, degraded, stale, link latency, timeout, conn_refused, bad_payload.
 
 ## Test Checklist
 
 - [ ] Latency recording: fake fetch with controlled clock → window fills, p95 computed correctly, ring buffer caps at 20.
 - [ ] **Probe-path proof (plan-review finding): with SSE healthy and continuously delivering `fleet_state` (no fallback polling), the probe alone fills ≥5 samples and triggers `slow` for a slow member.**
-- [ ] Probe failure on an SSE-healthy member degrades `link.quality` only — member liveness/state untouched.
+- [ ] Probe failure on an SSE-healthy member: 1 failure → quality unchanged; 2 consecutive → `degraded` with classified reason; next success → resets to `ok`/`slow`; member `state`/liveness untouched throughout.
+- [ ] Quality precedence: member that is simultaneously probe-failing AND data-stale → `stale`; failing AND `_setFailure` → `down` (first-match-wins ordering proven by tests).
 - [ ] Quality derivation: ok→slow at threshold with ≥5 samples (and NOT before 5 samples); slow→ok recovery; stale from data age with fake `now`; down on failure.
 - [ ] Failure classification: one test per reason (AbortError, ECONNREFUSED via `cause`, 401, 404-token, 500).
 - [ ] `bad_payload` matrix: 200 + empty body (Caddy vhost regression — must be `bad_payload`, not generic `unreachable`), 200 + non-JSON, 200 + `{}`, 200 + `[]`, 200 + `null`, 200 + `{"ok":true}` (structurally valid JSON, semantically empty).
@@ -94,6 +97,7 @@ The fleet wall currently collapses every link problem into a binary: a member is
 - [ ] Slow member shows latency chip + `slow` tooltip **under the real healthy-SSE path** (member connected via SSE, probe doing the sampling; simulate slowness via a delay proxy in front of a member or a lowered threshold); fast member shows no chip.
 - [ ] Wedged upstream (200-accepting but hanging > timeout) shows `down` with reason `timeout`.
 - [ ] Empty-200 upstream shows `down` with reason `bad_payload` (regression: was generic `unreachable`).
+- [ ] Probe blocked while SSE healthy (e.g. firewall the health path only): tile keeps live state, shows `degraded` warning chip with reason after 2 probe cycles.
 - [ ] Auth failure still renders as before (`auth_failed`).
 - [ ] Browser screenshots: wall with mixed ok/slow/down members — sent to Howard.
 - [ ] No regressions: full `npm test` green, `npm run check` green, existing tile rendering identical for `ok` members.
