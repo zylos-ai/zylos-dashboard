@@ -4,9 +4,12 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawn } from 'node:child_process';
 import { IngestQueue } from '../src/lib/ingest-queue.js';
 import { IngestHandler } from '../src/lib/ingest-handler.js';
 import { SpoolDrainer } from '../src/lib/spool-drainer.js';
+
+const HOOK_SCRIPT = path.resolve('src/lib/hook-ingest.cjs');
 
 function blockFor(ms) {
   const until = Date.now() + ms;
@@ -189,6 +192,59 @@ test('shutdown dump round-trips through the real SpoolDrainer with ingest_id ded
   assert.equal(store.inserts.size, 4);
 
   fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('backpressure end-to-end: real hook spools on 503 and the drainer replays it (#260)', async () => {
+  // Full chain with the production pieces: hook-ingest.cjs posts → handler
+  // with a full queue answers 503 → hook appends to its spool → SpoolDrainer
+  // replays into the store. No stubs on the durability path.
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-queue-e2e-'));
+  const dataDir = path.join(zylosDir, 'components', 'dashboard');
+  fs.mkdirSync(path.join(dataDir, 'spool'), { recursive: true });
+
+  const fullQueue = new IngestQueue({ process: () => {}, maxDepth: 0 });
+  const handler = makeHandler(fullQueue);
+
+  await withServer({ '/api/ingest': (req, res) => handler.handle(req, res) }, async base => {
+    const { port } = new URL(base);
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ port: Number(port) }));
+
+    const hook = await new Promise(resolve => {
+      const child = spawn('node', [HOOK_SCRIPT], {
+        env: { ...process.env, ZYLOS_DIR: zylosDir },
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      child.on('close', code => resolve({ code }));
+      child.stdin.write(JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        session_id: 'e2e-session',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello' }
+      }));
+      child.stdin.end();
+    });
+    assert.equal(hook.code, 0);
+  });
+
+  assert.equal(fullQueue.snapshot().dropped_total, 1, 'handler must have refused the push');
+
+  const store = dedupStore();
+  const sanitizer = {
+    sanitizeHookPayload: (_name, body) => ({
+      session_id: body.session_id, summary: 's', duration_ms: 1, metadata: '{}'
+    })
+  };
+  const drainer = new SpoolDrainer(store, sanitizer, { dataDir });
+  const spooled = fs.readFileSync(drainer.spoolPath, 'utf8').split('\n').filter(Boolean);
+  assert.equal(spooled.length, 1, '503 must land exactly one record in the hook spool');
+  assert.equal(JSON.parse(spooled[0]).hook_event_name, 'PostToolUse');
+
+  const result = drainer.drainToDb();
+  assert.equal(result.processed, 1);
+  assert.equal(result.errors, 0);
+  assert.equal(store.inserts.size, 1);
+
+  fs.rmSync(zylosDir, { recursive: true, force: true });
 });
 
 test('processing failure routes the event to the spool for replay (#260)', async () => {
