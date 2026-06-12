@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-12
+
+### Added
+- **Event-loop delay observability** — the dashboard measures its own event-loop delay and surfaces slow-ingest warnings in logs and `/api/health`, making producer-side wedging diagnosable instead of silent (#260, #262)
+- **Ingest queue** — hook event ACK is decoupled from event processing, so hook storms no longer wedge the event loop; queue depth and processing counters exposed in `/api/health` (#260, #264)
+- **Fleet slow-member observability** — per-member link latency probe and connection quality levels (`ok`/`slow`/`degraded`/`stale`/`down`, strict priority) with granular failure reasons, so a slow remote is distinguishable from a dead one (#263, #266)
+- Fable models in the Actions modal Claude model list — `fable[1m]` and `claude-fable-5[1m]` with `xhigh` effort support (#267, #268)
+
+### Fixed
+- **Fleet poller self-heals** — SSE connect attempts get a hard deadline (wedged handshakes can no longer freeze a member's polling forever), a watchdog revives dead or wedged recovery loops, fallback polling bridges SSE outages, and hard-down members show OFFLINE with advancing freshness instead of silently freezing; fleet payload redaction unified across the SSE and HTTP surfaces via a shared helper (#265, #270)
+- Codex rollout ingestion moved off the startup path with bounded per-pass reads; the readiness listener starts before initialization; oversized rollout lines no longer stall the ingestion cursor (#254)
+- Fleet proxy strips `Content-Encoding` from upstream responses — remote detail pages no longer hang when a fronting CDN compresses payloads the proxy already decoded (#255, #256)
+- Fleet SSE relay failures no longer crash the dashboard process (#258)
+- Subagent list height is capped with internal scrolling, and scroll position survives re-renders (#259, #261)
+
+### Changed
+- Acceptance test suite (`ACCEPTANCE=1`) now runs write-path tests against an ephemeral sandbox instance instead of the deployed dashboard — running it leaves zero synthetic rows in production data; deployed-box checks are read-only and skip when artifacts are absent (#269, #271)
+
 ## [0.3.3] - 2026-06-12
 
 ### Fixed
