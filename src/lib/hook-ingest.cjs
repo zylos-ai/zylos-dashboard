@@ -3,7 +3,12 @@
 // No imports from src/. Only Node built-ins. Must exit within 500ms.
 'use strict';
 
-setTimeout(() => process.exit(0), 500);
+// Deadlines are env-overridable so tests on loaded machines can widen them;
+// production hooks always run with the defaults.
+const EXIT_DEADLINE_MS = Number(process.env.ZYLOS_HOOK_EXIT_MS) || 500;
+const POST_TIMEOUT_MS = Number(process.env.ZYLOS_HOOK_POST_TIMEOUT_MS) || 200;
+
+setTimeout(() => process.exit(0), EXIT_DEADLINE_MS);
 
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
@@ -97,7 +102,7 @@ function readStdin() {
 async function postToServer(body) {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 200);
+    const timeout = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
 
     const headers = { 'content-type': 'application/json' };
     if (INGEST_TOKEN) headers.authorization = `Bearer ${INGEST_TOKEN}`;

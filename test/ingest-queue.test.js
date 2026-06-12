@@ -211,7 +211,15 @@ test('backpressure end-to-end: real hook spools on 503 and the drainer replays i
 
     const hook = await new Promise(resolve => {
       const child = spawn('node', [HOOK_SCRIPT], {
-        env: { ...process.env, ZYLOS_DIR: zylosDir },
+        // Widen the hook's suicide timer and POST abort so a loaded test
+        // machine can't pre-empt the POST→503→spool chain this test exists
+        // to prove (the 500ms/200ms production defaults raced node startup).
+        env: {
+          ...process.env,
+          ZYLOS_DIR: zylosDir,
+          ZYLOS_HOOK_EXIT_MS: '15000',
+          ZYLOS_HOOK_POST_TIMEOUT_MS: '5000'
+        },
         stdio: ['pipe', 'pipe', 'pipe']
       });
       child.on('close', code => resolve({ code }));
