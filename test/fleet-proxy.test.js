@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import zlib from 'node:zlib';
 import test from 'node:test';
 import { publicDir } from '../src/lib/config.js';
 import { FleetProxy } from '../src/lib/fleet-proxy.js';
@@ -144,6 +145,44 @@ test('fleet proxy injects session token for API and keeps token out of client re
     assert.match(body, /"ok":true/);
     assert.equal(body.includes('zylos_st_secret'), false);
     assert.equal(body.includes('zylos_ak_secret'), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy strips content-encoding from compressed upstream responses (#255)', async () => {
+  // A Cloudflare-fronted producer compresses JSON. undici fetch inside the
+  // proxy auto-decompresses the body, so the forwarded response must not
+  // carry the upstream content-encoding header — browsers would otherwise
+  // try to decode plain bytes and fail every remote data request.
+  let upstreamAcceptEncoding;
+  const remote = await listen((req, res) => {
+    upstreamAcceptEncoding = req.headers['accept-encoding'];
+    res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+    res.end(zlib.gzipSync(JSON.stringify({ state: 'IDLE', context_pct: 33 })));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const resp = await fetch(`${hub.origin}/fleet/Remote/api/state`, {
+      headers: { 'accept-encoding': 'gzip, deflate, br' }
+    });
+    assert.equal(resp.status, 200);
+    assert.equal(resp.headers.get('content-encoding'), null);
+    const body = await resp.json();
+    assert.equal(body.state, 'IDLE');
+    assert.equal(body.context_pct, 33);
+    // The browser's accept-encoding must not be forwarded verbatim — undici
+    // negotiates its own so that auto-decompression stays deterministic.
+    assert.notEqual(upstreamAcceptEncoding, 'gzip, deflate, br');
   } finally {
     await hub.close();
     await remote.close();

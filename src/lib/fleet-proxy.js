@@ -33,7 +33,14 @@ function stripHopByHop(headers) {
     'upgrade',
     'authorization',
     'cookie',
-    'set-cookie'
+    'set-cookie',
+    // undici fetch decompresses upstream bodies; forwarding the upstream
+    // content-encoding (e.g. gzip added by Cloudflare in front of a producer)
+    // would make browsers decode plain bytes and fail (#255). Stripping
+    // accept-encoding from forwarded requests keeps undici's own negotiation
+    // (and therefore its auto-decompression) deterministic.
+    'accept-encoding',
+    'content-encoding'
   ]);
   for (const [key, value] of Object.entries(headers || {})) {
     if (!blocked.has(key.toLowerCase()) && value !== undefined) result[key] = value;
