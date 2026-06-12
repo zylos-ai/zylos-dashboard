@@ -492,9 +492,10 @@ export class FleetPoller {
   }
 
   getFleet() {
+    const agents = this.agents.map(agent => this._recordWithLink(agent)).filter(Boolean);
     return {
-      agents: this.agents.map(agent => this._recordWithLink(agent)).filter(Boolean),
-      count: this.records.size,
+      agents,
+      count: agents.length,
       updated_at: nowIso(this.now())
     };
   }
@@ -597,7 +598,7 @@ export class FleetPoller {
       reason: null
     };
 
-    if (Number(record.pulse_rate) === 0 || FAILURE_REASONS.has(record.health_reason)) {
+    if (record.pulse_rate === 0 || FAILURE_REASONS.has(record.health_reason)) {
       return { ...base, quality: 'down', reason: record.health_reason || 'unreachable' };
     }
 
@@ -738,7 +739,8 @@ export class FleetPoller {
       let resp = await this._fetchHealth(agent, `Bearer ${agent.read_api_key}`);
       if (!this._isCurrentAgent(agent, generation)) return;
       if (resp.status === 401 || resp.status === 403) {
-        const token = await this._ensureToken(agent);
+        this.tokens.delete(agent.name);
+        const token = await this._ensureToken(agent, { force: true });
         if (!this._isCurrentAgent(agent, generation)) return;
         resp = await this._fetchHealth(agent, `Bearer ${token}`);
       }

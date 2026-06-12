@@ -95,6 +95,18 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
   assert.equal(fleet.agents[0].self, false, 'external records must not be flagged self');
 });
 
+test('fleet poller reports initial not-polled records without down link quality', () => {
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: async () => jsonResponse({ state: 'IDLE' }), now: () => 0 });
+
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.health_reason, 'not_polled');
+  assert.equal(record.pulse_rate, null);
+  assert.equal(record.link.quality, 'ok');
+  assert.equal(record.link.reason, null);
+});
+
 test('fleet poller captures token exchange scope as agent access', async () => {
   const fetchImpl = async (url) => {
     if (url.endsWith('/api/auth/token')) {
@@ -368,6 +380,45 @@ test('fleet poller health probe falls back to session token when read key is rej
   assert.equal(record.link.quality, 'ok');
   assert.ok(calls.some(call => call.url.endsWith('/api/auth/token')));
   assert.ok(calls.some(call => call.url.endsWith('/api/health') && call.authorization === 'Bearer zylos_st_probe'));
+});
+
+test('fleet poller health probe refreshes cached token after direct-key auth rejection', async () => {
+  let now = 0;
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, authorization: options.headers?.Authorization });
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_fresh', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/health') && options.headers.Authorization === 'Bearer zylos_ak_secret') {
+      return jsonResponse({ error: 'direct key rejected' }, 401);
+    }
+    if (url.endsWith('/api/health') && options.headers.Authorization === 'Bearer zylos_st_fresh') {
+      now += 15;
+      return jsonResponse({ ok: true });
+    }
+    if (url.endsWith('/api/health') && options.headers.Authorization === 'Bearer zylos_st_stale') {
+      throw new Error('stale token should not be reused');
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => now });
+  const agent = poller.agents[0];
+  poller.tokens.set('Remote', {
+    token: 'zylos_st_stale',
+    expiresAtMs: 120000,
+    scope: 'read'
+  });
+  poller._setSuccess(agent, { state: 'IDLE' });
+
+  await poller._probeAgentLatency(agent);
+  const healthAuth = calls
+    .filter(call => call.url.endsWith('/api/health'))
+    .map(call => call.authorization);
+  assert.deepEqual(healthAuth, ['Bearer zylos_ak_secret', 'Bearer zylos_st_fresh']);
+  assert.equal(poller.getFleet().agents[0].link.quality, 'ok');
 });
 
 test('fleet poller degrades after two consecutive probe failures and resets on success', async () => {
