@@ -77,17 +77,21 @@ function api(endpoint) {
   return JSON.parse(execSync(`curl -sf ${BASE}${endpoint}`, { encoding: 'utf8' }));
 }
 
-function injectHookEvent(payload) {
+function injectRawStdin(raw) {
   const child = spawn('node', [HOOK_SCRIPT], {
     env: { ...process.env, ZYLOS_DIR: SANDBOX_ZYLOS_DIR },
     stdio: ['pipe', 'pipe', 'pipe']
   });
-  child.stdin.write(JSON.stringify(payload));
+  if (raw !== '') child.stdin.write(raw);
   child.stdin.end();
   return new Promise((resolve) => {
     child.on('close', (code) => resolve(code));
     setTimeout(() => resolve(-1), 3000);
   });
+}
+
+function injectHookEvent(payload) {
+  return injectRawStdin(JSON.stringify(payload));
 }
 
 // --- AC-5: Hook latency + exit behavior ---
@@ -103,6 +107,14 @@ test('AC-5: hook-ingest.cjs always exits 0', async (t) => {
     const code = await injectHookEvent(payload);
     assert.equal(code, 0, `hook exited ${code} for ${JSON.stringify(payload)}`);
   }
+
+  await t.test('empty stdin', async () => {
+    assert.equal(await injectRawStdin(''), 0);
+  });
+
+  await t.test('invalid JSON', async () => {
+    assert.equal(await injectRawStdin('not json at all{{{'), 0);
+  });
 });
 
 test('AC-5: hook-ingest.cjs latency under 50ms (p95)', async () => {
