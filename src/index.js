@@ -193,8 +193,15 @@ function readClaudeSettings() {
   } catch { return {}; }
 }
 
+// Installed versions are cached at module load, refreshed by the periodic
+// timer below and after upgrade actions. They must NOT be re-read here:
+// buildRuntimeInfo runs on every state broadcast (i.e. every ingested hook
+// event), and the three `--version` execFileSync spawns cost ~200ms+ — the
+// dominant per-event hotspot behind the #260 event-loop wedge.
+const INSTALLED_VERSIONS_REFRESH_MS = 10 * 60 * 1000;
+setInterval(readInstalledVersions, INSTALLED_VERSIONS_REFRESH_MS).unref();
+
 function buildRuntimeInfo() {
-  readInstalledVersions();
   const slInfo = statuslineCollector?.getRuntimeInfo();
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
