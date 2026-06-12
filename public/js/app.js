@@ -2744,6 +2744,9 @@ function createFleetManageModal() {
           </div>
         </div>
         <small class="fleet-help">${esc(t('fleet_manage.base_url_hint'))}</small>
+        <div class="action-row">
+          <button class="action-btn action-btn-sm" id="api-key-purge-revoked" type="button" hidden>${esc(t('fleet_manage.purge_revoked'))}</button>
+        </div>
         <div class="fleet-agent-list" id="api-key-list"></div>
       </section>
       <section class="manage-section">
@@ -2782,6 +2785,7 @@ function createFleetManageModal() {
   overlay.querySelector('#api-key-create').addEventListener('click', createApiKey);
   overlay.querySelector('#api-key-scope').addEventListener('change', updateApiKeyScopeWarning);
   overlay.querySelector('#api-base-url-copy').addEventListener('click', copyDashboardBaseUrl);
+  overlay.querySelector('#api-key-purge-revoked').addEventListener('click', purgeRevokedApiKeys);
   return overlay;
 }
 
@@ -2823,7 +2827,10 @@ function setFleetAddBusy(isBusy) {
 
 function setApiKeyBusy(isBusy) {
   fleetManageModal?.querySelector('#api-key-create')?.toggleAttribute('disabled', isBusy);
+  fleetManageModal?.querySelector('#api-key-purge-revoked')?.toggleAttribute('disabled', isBusy);
   fleetManageModal?.querySelectorAll('.api-key-revoke').forEach(btn => btn.toggleAttribute('disabled', isBusy));
+  fleetManageModal?.querySelectorAll('.api-key-rotate').forEach(btn => btn.toggleAttribute('disabled', isBusy));
+  fleetManageModal?.querySelectorAll('.api-key-delete').forEach(btn => btn.toggleAttribute('disabled', isBusy));
 }
 
 function fleetFormValues() {
@@ -2892,6 +2899,9 @@ function renderFleetManage(data, draft = null) {
 function renderApiKeys(data) {
   const list = fleetManageModal.querySelector('#api-key-list');
   const keys = data?.keys || [];
+  const hasRevoked = keys.some(key => (key.status || (key.revoked_at ? 'revoked' : 'active')) === 'revoked');
+  const purgeBtn = fleetManageModal.querySelector('#api-key-purge-revoked');
+  if (purgeBtn) purgeBtn.hidden = !hasRevoked;
   if (!keys.length) {
     list.innerHTML = `<p class="empty-state">${esc(t('fleet_manage.keys_empty'))}</p>`;
     return;
@@ -2906,8 +2916,14 @@ function renderApiKeys(data) {
         <span>${esc(key.scope || 'read')} · ${esc(t(`fleet_manage.key_${status}`))}</span>
         <small>${esc(t('fleet_manage.key_created', { date: key.created_at || '-' }))} · ${esc(t('fleet_manage.key_last_used', { date: key.last_used_at || t('value.none') }))}</small>
       </div>
-      ${status === 'active' ? `<button class="settings-remove-btn api-key-revoke" type="button" title="${esc(t('fleet_manage.revoke_key'))}">&times;</button>` : ''}`;
+      <div class="api-key-actions">
+        ${status === 'active' ? `<button class="action-btn action-btn-sm api-key-rotate" type="button">${esc(t('fleet_manage.rotate_key'))}</button>` : ''}
+        ${status === 'active' ? `<button class="settings-remove-btn api-key-revoke" type="button" title="${esc(t('fleet_manage.revoke_key'))}">&times;</button>` : ''}
+        ${status === 'revoked' ? `<button class="action-btn action-btn-sm api-key-delete" type="button">${esc(t('fleet_manage.delete_key'))}</button>` : ''}
+      </div>`;
+    row.querySelector('.api-key-rotate')?.addEventListener('click', () => rotateApiKey(key.name));
     row.querySelector('.api-key-revoke')?.addEventListener('click', () => revokeApiKey(key.name));
+    row.querySelector('.api-key-delete')?.addEventListener('click', () => hardDeleteApiKey(key.name));
     return row;
   }));
 }
@@ -2931,6 +2947,7 @@ function renderCreatedApiKey(createdKey) {
     <small class="fleet-help">${esc(t('fleet_manage.key_once_hint'))}</small>`;
   panel.querySelector('.api-key-copy').addEventListener('click', copyCreatedApiKey);
   panel.querySelector('.api-key-dismiss').addEventListener('click', () => renderCreatedApiKey(null));
+  panel.scrollIntoView({ block: 'nearest' });
 }
 
 async function copyCreatedApiKey() {
@@ -3080,6 +3097,26 @@ async function createApiKey() {
   }
 }
 
+async function rotateApiKey(name) {
+  const pendingKeyName = fleetManageModal?._createdKey?.name;
+  if (pendingKeyName && !window.confirm(t('fleet_manage.replace_created_key_confirm', { name: pendingKeyName }))) return;
+  if (!window.confirm(t('fleet_manage.rotate_confirm', { name }))) return;
+  setApiKeyBusy(true);
+  fleetManageStatus(t('fleet_manage.rotating_key'), 'running');
+  try {
+    const resp = await fetch(api(`/api/keys/${encodeURIComponent(name)}/rotate`), { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.rotate_failed')));
+    renderApiKeys(data);
+    renderCreatedApiKey({ name: data.key?.name || name, plaintext_key: data.plaintext_key });
+    fleetManageStatus(t('fleet_manage.key_rotated_status'), 'success');
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  } finally {
+    setApiKeyBusy(false);
+  }
+}
+
 async function revokeApiKey(name) {
   if (!window.confirm(t('fleet_manage.revoke_confirm', { name }))) return;
   setApiKeyBusy(true);
@@ -3091,6 +3128,44 @@ async function revokeApiKey(name) {
     renderApiKeys(data);
     if (fleetManageModal?._createdKey?.name === name) renderCreatedApiKey(null);
     fleetManageStatus(t('fleet_manage.key_revoked_status'), 'success');
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  } finally {
+    setApiKeyBusy(false);
+  }
+}
+
+async function hardDeleteApiKey(name) {
+  if (!window.confirm(t('fleet_manage.delete_confirm', { name }))) return;
+  setApiKeyBusy(true);
+  fleetManageStatus(t('fleet_manage.deleting_key'), 'running');
+  try {
+    const resp = await fetch(api(`/api/keys/${encodeURIComponent(name)}?permanent=1`), { method: 'DELETE' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.delete_failed')));
+    renderApiKeys(data);
+    if (fleetManageModal?._createdKey?.name === name) renderCreatedApiKey(null);
+    fleetManageStatus(t('fleet_manage.key_deleted_status'), 'success');
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  } finally {
+    setApiKeyBusy(false);
+  }
+}
+
+async function purgeRevokedApiKeys() {
+  if (!window.confirm(t('fleet_manage.purge_revoked_confirm'))) return;
+  setApiKeyBusy(true);
+  fleetManageStatus(t('fleet_manage.purging_revoked'), 'running');
+  try {
+    const resp = await fetch(api('/api/keys/purge-revoked'), { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.purge_revoked_failed')));
+    renderApiKeys(data);
+    if (fleetManageModal?._createdKey?.name && !data.keys?.some(key => key.name === fleetManageModal._createdKey.name)) {
+      renderCreatedApiKey(null);
+    }
+    fleetManageStatus(t('fleet_manage.purge_revoked_status', { count: data.purged ?? 0 }), 'success');
   } catch (err) {
     fleetManageStatus(err.message, 'error');
   } finally {

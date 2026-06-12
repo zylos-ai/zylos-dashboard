@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- API keys now support a full lifecycle: revoked names can be reused, active keys can be rotated atomically with the new plaintext returned once, and revoked keys can be permanently deleted individually or purged in bulk (#273).
+
+### Fixed
+- Creating a key with an active duplicate name now returns a clean conflict response instead of falling through to a generic save failure (#273).
+
+### Upgrade notes
+- Rotating a key invalidates outstanding API sessions immediately. If a fleet consumer stores that key's plaintext in config, update the consumer config with the newly returned plaintext key after rotation (#273).
+
 ## [0.4.0] - 2026-06-12
 
 ### Added

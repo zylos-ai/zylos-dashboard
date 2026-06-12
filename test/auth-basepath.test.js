@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 import { generateApiKey, hashApiKey } from '../src/lib/auth.js';
 import { Store } from '../src/lib/store.js';
 
@@ -746,6 +747,261 @@ test('API key management is admin-gated, show-once, and revoke invalidates activ
     });
     assert.equal(secondRevoke.status, 404);
     assert.deepEqual(await secondRevoke.json(), { error: 'unknown_key' });
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
+test('API key migration v11 preserves ids, sessions, and active-name uniqueness', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-key-migration-'));
+  const dbPath = path.join(dir, 'dashboard.db');
+  const initialStore = new Store(dbPath);
+  initialStore.close();
+
+  const db = new Database(dbPath);
+  try {
+    db.exec(`
+      DELETE FROM api_sessions;
+      DELETE FROM schema_migrations WHERE version = 11;
+      DROP INDEX IF EXISTS idx_api_keys_active_name;
+      DROP TABLE api_keys;
+      CREATE TABLE api_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        key_hash TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'read',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+      INSERT INTO api_keys (id, name, key_hash, scope, created_at, revoked_at)
+      VALUES
+        (7, 'active-key', 'active-hash', 'read', '2026-01-01 00:00:00', NULL),
+        (11, 'reusable-key', 'revoked-hash', 'admin', '2026-01-02 00:00:00', '2026-01-03 00:00:00');
+      INSERT INTO api_sessions (token_hash, api_key_id, scope, created_at, expires_at)
+      VALUES
+        ('active-session', 7, 'read', 1, 9999999999999),
+        ('revoked-session', 11, 'admin', 1, 9999999999999);
+    `);
+  } finally {
+    db.close();
+  }
+
+  const store = new Store(dbPath);
+  try {
+    assert.equal(store.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 11);
+    assert.deepEqual(
+      store.db.prepare('SELECT id, name FROM api_keys ORDER BY id').all(),
+      [
+        { id: 7, name: 'active-key' },
+        { id: 11, name: 'reusable-key' }
+      ]
+    );
+    assert.equal(store.getApiSession('active-session')?.api_key_id, 7);
+    assert.equal(store.getApiSession('revoked-session')?.api_key_id, 11);
+    assert.equal(store.getApiSession('revoked-session')?.key_revoked_at, '2026-01-03 00:00:00');
+
+    store.insertApiKey({ name: 'reusable-key', keyHash: 'new-active-hash', scope: 'read' });
+    assert.equal(store.getApiKeyByName('reusable-key')?.key_hash, 'new-active-hash');
+    assert.throws(
+      () => store.insertApiKey({ name: 'reusable-key', keyHash: 'duplicate-active-hash', scope: 'read' }),
+      /UNIQUE constraint failed: api_keys\.name/
+    );
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('API key lifecycle supports name reuse, rotate, permanent delete, and revoked purge', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-key-lifecycle-'));
+  writeConfig(zylosDir, 'secret', { auth: { enabled: true, password: 'secret' } });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const seedStore = new Store(dbPath);
+    const readKey = generateApiKey();
+    const adminKey = generateApiKey();
+    seedStore.insertApiKey({ name: 'read-key', keyHash: hashApiKey(readKey), scope: 'read' });
+    seedStore.insertApiKey({ name: 'admin-key', keyHash: hashApiKey(adminKey), scope: 'admin' });
+    seedStore.close();
+
+    const readTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readKey}` }
+    });
+    const adminTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey}` }
+    });
+    const { token: readToken } = await readTokenResp.json();
+    const { token: adminToken } = await adminTokenResp.json();
+
+    async function createKey(name, scope = 'read') {
+      const resp = await fetch(`${origin}/api/keys`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ name, scope })
+      });
+      const body = await resp.json();
+      assert.equal(resp.status, 200, JSON.stringify(body));
+      assert.equal(body.key.name, name);
+      assert.match(body.plaintext_key, /^zylos_ak_/);
+      return body;
+    }
+
+    const first = await createKey('producer-read');
+    const firstTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${first.plaintext_key}` }
+    });
+    assert.equal(firstTokenResp.status, 200);
+    const { token: firstSession } = await firstTokenResp.json();
+
+    const revokeFirst = await fetch(`${origin}/api/keys/producer-read`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(revokeFirst.status, 200);
+
+    const recreated = await createKey('producer-read');
+    assert.equal(recreated.keys.filter(key => key.name === 'producer-read' && key.status === 'revoked').length, 1);
+    assert.equal(recreated.keys.filter(key => key.name === 'producer-read' && key.status === 'active').length, 1);
+    const activeTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${recreated.plaintext_key}` }
+    });
+    assert.equal(activeTokenResp.status, 200);
+    const { token: activeSessionBeforeRotate } = await activeTokenResp.json();
+
+    const duplicate = await fetch(`${origin}/api/keys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'producer-read', scope: 'read' })
+    });
+    assert.equal(duplicate.status, 400);
+    assert.deepEqual(await duplicate.json(), { error: 'duplicate_name' });
+
+    const beforeRotate = new Store(dbPath);
+    const rowBefore = beforeRotate.getApiKeyByName('producer-read');
+    beforeRotate.close();
+
+    const rotateReadScope = await fetch(`${origin}/api/keys/producer-read/rotate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readToken}` }
+    });
+    assert.equal(rotateReadScope.status, 403);
+
+    const rotate = await fetch(`${origin}/api/keys/producer-read/rotate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(rotate.status, 200);
+    const rotateBody = await rotate.json();
+    assert.equal(rotateBody.key.name, 'producer-read');
+    assert.equal(rotateBody.key.scope, rowBefore.scope);
+    assert.equal(rotateBody.key.created_at, rowBefore.created_at);
+    assert.match(rotateBody.plaintext_key, /^zylos_ak_/);
+    assert.equal(JSON.stringify(rotateBody).includes('key_hash'), false);
+
+    const oldKeyResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${recreated.plaintext_key}` }
+    });
+    assert.equal(oldKeyResp.status, 401);
+    const staleSession = await fetch(`${origin}/api/state`, {
+      headers: { Authorization: `Bearer ${activeSessionBeforeRotate}` }
+    });
+    assert.equal(staleSession.status, 401);
+    const newKeyResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${rotateBody.plaintext_key}` }
+    });
+    assert.equal(newKeyResp.status, 200);
+
+    const afterRotate = new Store(dbPath);
+    const rowAfter = afterRotate.getApiKeyByName('producer-read');
+    afterRotate.close();
+    assert.equal(rowAfter.id, rowBefore.id);
+    assert.equal(rowAfter.scope, rowBefore.scope);
+    assert.equal(rowAfter.created_at, rowBefore.created_at);
+
+    const revokedRotate = await fetch(`${origin}/api/keys/missing-key/rotate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(revokedRotate.status, 404);
+
+    await createKey('old-delete');
+    await fetch(`${origin}/api/keys/old-delete`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    await createKey('old-delete');
+    const deleteRevokedWhileActive = await fetch(`${origin}/api/keys/old-delete?permanent=1`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(deleteRevokedWhileActive.status, 200);
+    const deleteRevokedWhileActiveBody = await deleteRevokedWhileActive.json();
+    assert.equal(deleteRevokedWhileActiveBody.deleted, 1);
+    assert.equal(deleteRevokedWhileActiveBody.keys.some(key => key.name === 'old-delete' && key.status === 'active'), true);
+    assert.equal(deleteRevokedWhileActiveBody.keys.some(key => key.name === 'old-delete' && key.status === 'revoked'), false);
+    await fetch(`${origin}/api/keys/old-delete`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    await createKey('old-delete');
+    await fetch(`${origin}/api/keys/old-delete`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const hardDelete = await fetch(`${origin}/api/keys/old-delete?permanent=1`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(hardDelete.status, 200);
+    assert.equal((await hardDelete.json()).deleted, 2);
+
+    await createKey('active-delete');
+    const activeHardDelete = await fetch(`${origin}/api/keys/active-delete?permanent=1`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(activeHardDelete.status, 409);
+    assert.deepEqual(await activeHardDelete.json(), { error: 'must_revoke_first' });
+
+    await createKey('purge-revoked');
+    const deleteNamedPurge = await fetch(`${origin}/api/keys/purge-revoked`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(deleteNamedPurge.status, 200);
+    assert.equal((await deleteNamedPurge.json()).keys.some(key => key.name === 'purge-revoked' && key.status === 'revoked'), true);
+
+    const purgeReadScope = await fetch(`${origin}/api/keys/purge-revoked`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readToken}` }
+    });
+    assert.equal(purgeReadScope.status, 403);
+
+    const purge = await fetch(`${origin}/api/keys/purge-revoked`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(purge.status, 200);
+    const purgeBody = await purge.json();
+    assert.ok(purgeBody.purged >= 2);
+    assert.equal(purgeBody.keys.some(key => key.status === 'revoked'), false);
+    assert.equal(purgeBody.keys.some(key => key.name === 'active-delete' && key.status === 'active'), true);
   } finally {
     await closeServer(server);
     fs.rmSync(zylosDir, { recursive: true, force: true });

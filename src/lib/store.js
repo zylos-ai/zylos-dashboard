@@ -221,6 +221,37 @@ export class Store {
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(10);
     }
+    if (currentVersion < 11) {
+      const foreignKeys = this.db.pragma('foreign_keys', { simple: true });
+      this.db.pragma('foreign_keys = OFF');
+      try {
+        this.db.exec(`
+          DROP TABLE IF EXISTS api_keys_new;
+          CREATE TABLE api_keys_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            key_hash TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'read',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT,
+            revoked_at TEXT
+          );
+          INSERT INTO api_keys_new (id, name, key_hash, scope, created_at, last_used_at, revoked_at)
+          SELECT id, name, key_hash, scope, created_at, last_used_at, revoked_at FROM api_keys;
+          DROP TABLE api_keys;
+          ALTER TABLE api_keys_new RENAME TO api_keys;
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_active_name
+            ON api_keys(name)
+            WHERE revoked_at IS NULL;
+          UPDATE sqlite_sequence
+            SET seq = (SELECT COALESCE(MAX(id), 0) FROM api_keys)
+            WHERE name = 'api_keys';
+        `);
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(11);
+      } finally {
+        this.db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
+      }
+    }
   }
 
   _prepareStatements() {
@@ -450,7 +481,11 @@ export class Store {
     `);
 
     this._getApiKeyByName = this.db.prepare(`
-      SELECT * FROM api_keys WHERE name = ?
+      SELECT * FROM api_keys WHERE name = ? AND revoked_at IS NULL
+    `);
+
+    this._countRevokedApiKeysByName = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM api_keys WHERE name = ? AND revoked_at IS NOT NULL
     `);
 
     this._listApiKeys = this.db.prepare(`
@@ -459,6 +494,10 @@ export class Store {
 
     this._revokeApiKey = this.db.prepare(`
       UPDATE api_keys SET revoked_at = datetime('now') WHERE name = ? AND revoked_at IS NULL
+    `);
+
+    this._updateApiKeyHash = this.db.prepare(`
+      UPDATE api_keys SET key_hash = ? WHERE id = ? AND revoked_at IS NULL
     `);
 
     this._touchApiKey = this.db.prepare(`
@@ -479,6 +518,55 @@ export class Store {
     this._deleteExpiredApiSessions = this.db.prepare(`
       DELETE FROM api_sessions WHERE expires_at < ?
     `);
+
+    this._deleteApiSessionsForKey = this.db.prepare(`
+      DELETE FROM api_sessions WHERE api_key_id = ?
+    `);
+
+    this._deleteApiSessionsForRevokedName = this.db.prepare(`
+      DELETE FROM api_sessions
+      WHERE api_key_id IN (
+        SELECT id FROM api_keys WHERE name = ? AND revoked_at IS NOT NULL
+      )
+    `);
+
+    this._deleteRevokedApiKeysByName = this.db.prepare(`
+      DELETE FROM api_keys WHERE name = ? AND revoked_at IS NOT NULL
+    `);
+
+    this._deleteApiSessionsForRevokedKeys = this.db.prepare(`
+      DELETE FROM api_sessions
+      WHERE api_key_id IN (
+        SELECT id FROM api_keys WHERE revoked_at IS NOT NULL
+      )
+    `);
+
+    this._deleteRevokedApiKeys = this.db.prepare(`
+      DELETE FROM api_keys WHERE revoked_at IS NOT NULL
+    `);
+
+    this._rotateApiKeyTx = this.db.transaction((name, keyHash) => {
+      const key = this._getApiKeyByName.get(name);
+      if (!key) return null;
+      this._updateApiKeyHash.run(keyHash, key.id);
+      this._deleteApiSessionsForKey.run(key.id);
+      return this._getApiKeyByName.get(name) || null;
+    });
+
+    this._hardDeleteApiKeyTx = this.db.transaction((name) => {
+      const active = this._getApiKeyByName.get(name);
+      const revokedCount = this._countRevokedApiKeysByName.get(name)?.count || 0;
+      if (!revokedCount) return { active: !!active, deleted: 0 };
+      this._deleteApiSessionsForRevokedName.run(name);
+      const result = this._deleteRevokedApiKeysByName.run(name);
+      return { active: !!active, deleted: result.changes };
+    });
+
+    this._purgeRevokedApiKeysTx = this.db.transaction(() => {
+      this._deleteApiSessionsForRevokedKeys.run();
+      const result = this._deleteRevokedApiKeys.run();
+      return result.changes;
+    });
   }
 
   insertEvent(event) {
@@ -1164,6 +1252,18 @@ export class Store {
 
   revokeApiKey(name) {
     return this._revokeApiKey.run(name);
+  }
+
+  rotateApiKey(name, keyHash) {
+    return this._rotateApiKeyTx(name, keyHash);
+  }
+
+  hardDeleteApiKey(name) {
+    return this._hardDeleteApiKeyTx(name);
+  }
+
+  purgeRevokedApiKeys() {
+    return this._purgeRevokedApiKeysTx();
   }
 
   touchApiKey(id) {

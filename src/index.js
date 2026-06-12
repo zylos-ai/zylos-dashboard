@@ -439,6 +439,17 @@ function apiKeysPayload() {
   };
 }
 
+function apiKeyPayload(key) {
+  return {
+    name: key.name,
+    scope: key.scope,
+    created_at: key.created_at,
+    last_used_at: key.last_used_at,
+    revoked_at: key.revoked_at,
+    status: key.revoked_at ? 'revoked' : 'active'
+  };
+}
+
 function validateApiKeyName(name) {
   if (!/^[\w.-]{1,64}$/.test(name)) return 'invalid_name';
   if (store.getApiKeyByName(name)) return 'duplicate_name';
@@ -447,6 +458,11 @@ function validateApiKeyName(name) {
 
 function validateApiKeyScope(scope) {
   return scope === 'read' || scope === 'admin';
+}
+
+function isUniqueConstraintError(err) {
+  return err?.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    /UNIQUE constraint failed: api_keys\.name/.test(String(err?.message || ''));
 }
 
 function currentFleetAgents() {
@@ -730,24 +746,61 @@ async function handleApiKeys(req, res) {
     const created = store.getApiKeyByName(name);
     sendJson(res, 200, {
       ok: true,
-      key: {
-        name: created.name,
-        scope: created.scope,
-        created_at: created.created_at,
-        last_used_at: created.last_used_at,
-        revoked_at: created.revoked_at,
-        status: created.revoked_at ? 'revoked' : 'active'
-      },
+      key: apiKeyPayload(created),
       plaintext_key: key,
       ...apiKeysPayload()
     });
   } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      sendJson(res, 409, { error: 'name_taken' });
+      return;
+    }
     process.stderr.write(`[api-keys] Failed to create API key: ${err.message}\n`);
     sendJson(res, 500, { error: 'failed_to_save_key' });
   }
 }
 
-async function handleApiKeyDelete(req, res, pathname) {
+async function handleApiKeyRotate(req, res, pathname) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  const encodedName = pathname.slice('/api/keys/'.length, -'/rotate'.length);
+  let name = '';
+  try {
+    name = decodeURIComponent(encodedName);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_name' });
+    return;
+  }
+  if (!/^[\w.-]{1,64}$/.test(name)) {
+    sendJson(res, 400, { error: 'invalid_name' });
+    return;
+  }
+  const key = generateApiKey();
+  const rotated = store.rotateApiKey(name, hashApiKey(key));
+  if (!rotated) {
+    sendJson(res, 404, { error: 'unknown_key' });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    key: apiKeyPayload(rotated),
+    plaintext_key: key,
+    ...apiKeysPayload()
+  });
+}
+
+async function handleApiKeysPurge(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  const purged = store.purgeRevokedApiKeys();
+  sendJson(res, 200, { ok: true, purged, ...apiKeysPayload() });
+}
+
+async function handleApiKeyDelete(req, res, pathname, url) {
   if (req.method !== 'DELETE') {
     sendJson(res, 405, { error: 'method_not_allowed' });
     return;
@@ -758,6 +811,19 @@ async function handleApiKeyDelete(req, res, pathname) {
     name = decodeURIComponent(encodedName);
   } catch {
     sendJson(res, 400, { error: 'invalid_name' });
+    return;
+  }
+  if (url.searchParams.get('permanent') === '1') {
+    const result = store.hardDeleteApiKey(name);
+    if (result.deleted > 0) {
+      sendJson(res, 200, { ok: true, deleted: result.deleted, ...apiKeysPayload() });
+      return;
+    }
+    if (result.active) {
+      sendJson(res, 409, { error: 'must_revoke_first' });
+      return;
+    }
+    sendJson(res, 404, { error: 'unknown_key' });
     return;
   }
   const result = store.revokeApiKey(name);
@@ -1505,8 +1571,18 @@ export function createServer() {
       return;
     }
 
+    if (pathname === '/api/keys/purge-revoked' && req.method === 'POST') {
+      await handleApiKeysPurge(req, res);
+      return;
+    }
+
+    if (pathname.startsWith('/api/keys/') && pathname.endsWith('/rotate')) {
+      await handleApiKeyRotate(req, res, pathname);
+      return;
+    }
+
     if (pathname.startsWith('/api/keys/')) {
-      await handleApiKeyDelete(req, res, pathname);
+      await handleApiKeyDelete(req, res, pathname, url);
       return;
     }
 

@@ -2689,6 +2689,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .api-key-row.revoked {
   opacity: 0.62;
 }
+.api-key-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  flex: 0 0 auto;
+}
 .api-key-created {
   display: grid;
   gap: var(--space-xs);
