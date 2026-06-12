@@ -1552,6 +1552,17 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .subagent-head { margin-bottom: var(--space-xs); }
 
+/* Cap the panel and scroll inside it: with many parallel subagents the list
+   used to stretch the whole card downward (#259). The renderer updates groups
+   in place (keyed by data-agent-id), so scroll position survives re-renders. */
+#subagent-list {
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-right: 4px;
+}
+
 .subagent-badge {
   background: rgba(139, 92, 246, 0.65);
 }

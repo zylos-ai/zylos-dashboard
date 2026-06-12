@@ -719,7 +719,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
   assert.match(index, /app\.js\?v=53/);
-  assert.match(index, /style\.css\?v=39/);
+  assert.match(index, /style\.css\?v=40/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -1017,4 +1017,12 @@ test('memory tree has a collapse-all/expand-all toggle (#226)', () => {
   assert.match(app, /allCollapsed \? t\('memory\.expand_all'\) : t\('memory\.collapse_all'\)/);
   assert.match(i18nEn, /memory\.collapse_all/);
   assert.match(i18nZh, /memory\.collapse_all/);
+});
+
+test('subagent list is height-capped with internal scroll (#259)', () => {
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  const block = css.match(/#subagent-list\s*\{[^}]*\}/);
+  assert.ok(block, '#subagent-list rule must exist');
+  assert.match(block[0], /max-height:\s*\d+px/);
+  assert.match(block[0], /overflow-y:\s*auto/);
 });
