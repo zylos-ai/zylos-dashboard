@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agentColor } from '../src/lib/agent-color.js';
 import { FleetPoller, SseEventParser, stateToFleetRecord } from '../src/lib/fleet-poller.js';
-import { buildFleetPayload } from '../src/lib/fleet-payload.js';
+import { assertFleetPayloadSafe, buildFleetPayload, redactFleetPayload } from '../src/lib/fleet-payload.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -726,6 +726,48 @@ test('buildFleetPayload includes self first and rejects leaked secrets', () => {
   }), /fleet_secret_leak_guard/);
 });
 
+test('redactFleetPayload masks string-leaf secrets and passes the safety guard', () => {
+  const self = stateToFleetRecord({ name: 'local', color: agentColor('local') }, { state: 'IDLE' }, { self: true, nowMs: 0 });
+  const unsafe = buildFleetPayload({
+    selfRecord: self,
+    remoteFleet: {
+      agents: [{
+        name: 'remote',
+        activity: 'saw zylos_ak_secret123 and read_api_key in output',
+        context_pct: 7,
+        self: false
+      }],
+      count: 1,
+      updated_at: '2026-06-09T00:00:00.000Z'
+    },
+    assertSafe: false
+  });
+
+  assert.throws(() => assertFleetPayloadSafe(unsafe), /fleet_secret_leak_guard/);
+  const redacted = redactFleetPayload(unsafe);
+  assert.doesNotThrow(() => assertFleetPayloadSafe(redacted));
+  assert.equal(redacted.agents[1].activity, 'saw [redacted] and [redacted] in output');
+  assert.equal(redacted.agents[1].context_pct, 7);
+});
+
+test('redactFleetPayload leaves object-key leaks fail-closed', () => {
+  const redacted = redactFleetPayload({
+    agents: [{ name: 'remote', zylos_ak_secret_key: 'value' }]
+  });
+
+  assert.equal(redacted.agents[0].zylos_ak_secret_key, 'value');
+  assert.throws(() => assertFleetPayloadSafe(redacted), /fleet_secret_leak_guard/);
+});
+
+test('redactFleetPayload leaves clean payloads and non-string leaves unchanged', () => {
+  const clean = {
+    agents: [{ name: 'remote', context_pct: 12, nested: { ok: true, value: null } }],
+    count: 1
+  };
+
+  assert.deepEqual(redactFleetPayload(clean), clean);
+});
+
 test('SseEventParser handles events, ids, comments, CRLF, bare CR, and multi-line data', () => {
   const events = [];
   const parser = new SseEventParser((event) => events.push(event));
@@ -841,6 +883,117 @@ test('fleet poller stop aborts active SSE fetch streams', async () => {
   assert.equal(signal.aborted, true);
 });
 
+test('fleet poller SSE connect timeout clears connecting and starts recovery loops', async () => {
+  const timers = [];
+  const warnings = [];
+  const logs = [];
+  let streamSignal;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_stream', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE' });
+    if (url.endsWith('/api/stream')) {
+      streamSignal = options.signal;
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { timeout_ms: 50 }), {
+    fetch: fetchImpl,
+    now: () => 0,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+  const oldWarn = console.warn;
+  const oldLog = console.log;
+  console.warn = (msg) => warnings.push(String(msg));
+  console.log = (msg) => logs.push(String(msg));
+  try {
+    const agent = poller.agents[0];
+    poller.running = true;
+    const stream = poller._streamState(agent);
+    poller._connectSse(agent);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const deadline = timers.find(t => t.ms === 50);
+    assert.ok(deadline, 'connect deadline should be armed');
+    deadline.fn();
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(streamSignal.aborted, true);
+    assert.equal(stream.connecting, false);
+    assert.equal(stream.connectingSince, null);
+    assert.ok(stream.pollTimer, 'fallback polling should be started after connect timeout');
+    assert.ok(stream.reconnectTimer, 'reconnect should be scheduled after connect timeout');
+    assert.ok(warnings.some(line => line.includes('reason=timeout') && line.includes('retry_in_ms=1000')));
+    assert.ok(logs.some(line => line.includes('fallback polling started') && line.includes('trigger=sse-failure')));
+  } finally {
+    console.warn = oldWarn;
+    console.log = oldLog;
+  }
+});
+
+test('fleet poller stream connect deadline is cleared once headers arrive', async () => {
+  const timers = [];
+  const fetchImpl = async () => streamResponse(': connected\n\n');
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { timeout_ms: 50 }), {
+    fetch: fetchImpl,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+
+  const resp = await poller._fetchStream(poller.agents[0], 'zylos_st_stream', new AbortController().signal);
+  assert.equal(resp.status, 200);
+  assert.equal(timers[0].ms, 50);
+  assert.equal(timers[0].cleared, true);
+});
+
+test('fleet poller caller abort during connect phase still wins over connect deadline', async () => {
+  let streamSignal;
+  const fetchImpl = async (_url, options = {}) => {
+    streamSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { timeout_ms: 50 }), { fetch: fetchImpl });
+  const controller = new AbortController();
+
+  const result = poller._fetchStream(poller.agents[0], 'zylos_st_stream', controller.signal).catch(err => err);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  controller.abort();
+  const err = await result;
+
+  assert.equal(streamSignal.aborted, true);
+  assert.equal(err.name, 'AbortError');
+  assert.equal(err.reason, undefined);
+});
+
 test('fleet poller resumes fallback polling when SSE has no fleet_state and stops after recovery', async () => {
   const timers = [];
   const cleared = new Set();
@@ -875,17 +1028,121 @@ test('fleet poller resumes fallback polling when SSE has no fleet_state and stop
   const stream = poller._streamState(agent);
   const run = poller._runSse(agent, stream, new AbortController().signal).catch(err => err);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(timers[0].ms, 3000);
+  const compatibilityTimer = timers.find(timer => timer.ms === poller.pollIntervalMs);
+  assert.ok(compatibilityTimer, 'compatibility timer should be scheduled');
 
-  timers[0].fn();
+  compatibilityTimer.fn();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(stream.pollTimer, 'compatibility fallback should start polling');
 
   poller._handleSseEvent(agent, { event: 'fleet_state', data: '{"state":"BUSY"}' });
   assert.equal(stream.pollTimer, null);
-  assert.ok(cleared.has(timers[0]));
+  assert.ok(cleared.has(compatibilityTimer));
   poller.running = false;
   await run;
+});
+
+test('fleet poller watchdog revives dead records and wedged connecting state', () => {
+  let now = 0;
+  const timers = [];
+  const warnings = [];
+  const logs = [];
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Dead', base_url: 'https://dead.example.test', read_api_key: 'zylos_ak_secret' },
+    { name: 'Wedged', base_url: 'https://wedged.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { poll_interval_ms: 100, timeout_ms: 50, sse_reconnect_max_ms: 100 }), {
+    fetch: async () => jsonResponse({ state: 'IDLE' }),
+    now: () => now,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+  const oldWarn = console.warn;
+  const oldLog = console.log;
+  console.warn = (msg) => warnings.push(String(msg));
+  console.log = (msg) => logs.push(String(msg));
+  try {
+    poller.running = true;
+    now = 301;
+    poller._checkSelfHeal(poller.agents[0]);
+    const deadStream = poller._streamState(poller.agents[0]);
+    assert.ok(deadStream.pollTimer);
+    assert.ok(deadStream.reconnectTimer);
+    assert.ok(warnings.some(line => line.includes('classification=dead') && line.includes('agent=Dead')));
+
+    const wedgedStream = poller._streamState(poller.agents[1]);
+    const controller = new AbortController();
+    wedgedStream.connecting = true;
+    wedgedStream.connectingSince = 0;
+    wedgedStream.controller = controller;
+    now = 301;
+    poller._checkSelfHeal(poller.agents[1]);
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(wedgedStream.connecting, false);
+    assert.equal(wedgedStream.connectingSince, null);
+    assert.ok(wedgedStream.pollTimer);
+    assert.ok(wedgedStream.reconnectTimer);
+    assert.ok(warnings.some(line => line.includes('classification=wedged-connecting') && line.includes('agent=Wedged')));
+    assert.ok(logs.filter(line => line.includes('trigger=watchdog')).length >= 2);
+  } finally {
+    console.warn = oldWarn;
+    console.log = oldLog;
+  }
+});
+
+test('fleet poller watchdog no-ops for active, recovering, and fresh records', () => {
+  let now = 0;
+  const timers = [];
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Reading', base_url: 'https://reading.example.test', read_api_key: 'zylos_ak_secret' },
+    { name: 'Recovering', base_url: 'https://recovering.example.test', read_api_key: 'zylos_ak_secret' },
+    { name: 'Fresh', base_url: 'https://fresh.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { poll_interval_ms: 100 }), {
+    fetch: async () => jsonResponse({ state: 'IDLE' }),
+    now: () => now,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+  poller.running = true;
+  now = 301;
+  poller._streamState(poller.agents[0]).reading = true;
+  poller._streamState(poller.agents[1]).reconnectTimer = { unref() {} };
+
+  poller._checkSelfHeal(poller.agents[0]);
+  poller._checkSelfHeal(poller.agents[1]);
+  now = 100;
+  poller._checkSelfHeal(poller.agents[2]);
+
+  assert.equal(poller._streamState(poller.agents[0]).pollTimer, null);
+  assert.equal(poller._streamState(poller.agents[1]).pollTimer, null);
+  assert.equal(poller._streamState(poller.agents[2]).pollTimer, null);
+  assert.equal(timers.length, 0);
+});
+
+test('fleet poller self-heal watchdog timer is stopped cleanly', () => {
+  const timers = [];
+  const poller = new FleetPoller(makeConfig([], { poll_interval_ms: 100 }), {
+    fetch: async () => jsonResponse({ state: 'IDLE' }),
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+
+  poller.start();
+  assert.equal(poller.watchdogTimer.ms, 100);
+  poller.stop();
+  assert.equal(timers[0].cleared, true);
+  assert.equal(poller.watchdogTimer, null);
 });
 
 test('fleet poller onPoll receives safe remote fleet after poll cycle completion', async () => {

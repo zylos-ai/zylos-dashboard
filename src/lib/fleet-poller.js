@@ -248,6 +248,12 @@ function classifyHttpStatus(resp, { tokenEndpoint = false } = {}) {
   return 'unreachable';
 }
 
+function reasonError(reason) {
+  const err = new Error(reason);
+  err.reason = reason;
+  return err;
+}
+
 function sanitizeLink(link) {
   const quality = LINK_QUALITIES.has(link?.quality) ? link.quality : 'ok';
   return {
@@ -370,6 +376,7 @@ export class FleetPoller {
     this.agentGenerations = new Map();
     this.running = false;
     this.timer = null;
+    this.watchdogTimer = null;
 
     for (const agent of this.agents) {
       const color = agentColor(agent.name);
@@ -405,6 +412,7 @@ export class FleetPoller {
   start() {
     if (this.running) return;
     this.running = true;
+    this._startSelfHealWatchdog();
     if (this.agents.length === 0) return;
     for (const agent of this.agents) this._startLatencyProbe(agent);
     this.pollOnce().finally(() => {
@@ -417,6 +425,8 @@ export class FleetPoller {
     this.running = false;
     if (this.timer) this.clearTimeout(this.timer);
     this.timer = null;
+    if (this.watchdogTimer) this.clearTimeout(this.watchdogTimer);
+    this.watchdogTimer = null;
     for (const state of this.latency.values()) {
       if (state.timer) this.clearTimeout(state.timer);
     }
@@ -464,7 +474,10 @@ export class FleetPoller {
       updated_at: nowIso(this.now()),
       access: 'read'
     }));
-    if (!this.running) this.running = true;
+    if (!this.running) {
+      this.running = true;
+      this._startSelfHealWatchdog();
+    }
     this._startLatencyProbe(normalized);
     this._pollAgentAndNotify(normalized);
     this._connectSse(normalized);
@@ -554,6 +567,8 @@ export class FleetPoller {
         idleTimer: null,
         backoffMs: this.reconnectBaseMs,
         connecting: false,
+        connectingSince: null,
+        reading: false,
         seenFleetState: false
       };
       this.streams.set(agent.name, state);
@@ -770,10 +785,24 @@ export class FleetPoller {
   }
 
   _fetchStream(agent, token, signal) {
+    const deadline = new AbortController();
+    let deadlineHit = false;
+    const timer = this.setTimeout(() => {
+      deadlineHit = true;
+      deadline.abort();
+    }, this.timeoutMs);
+    timer.unref?.();
+    const signals = signal ? [signal, deadline.signal] : [deadline.signal];
+    const combinedSignal = AbortSignal.any(signals);
     return this.fetch(joinUrl(agent.base_url, '/api/stream'), {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` },
-      signal
+      signal: combinedSignal
+    }).catch((err) => {
+      if (deadlineHit && !signal?.aborted) throw reasonError('timeout');
+      throw err;
+    }).finally(() => {
+      this.clearTimeout(timer);
     });
   }
 
@@ -793,16 +822,22 @@ export class FleetPoller {
     const stream = this._streamState(agent);
     if (stream.connecting) return;
     stream.connecting = true;
+    stream.connectingSince = this.now();
     stream.controller?.abort();
     stream.controller = new AbortController();
     this._runSse(agent, stream, stream.controller.signal)
       .catch((err) => {
         if (!this.running || err?.name === 'AbortError' || !this._isCurrentAgent(agent, generation, stream)) return;
-        this._startFallbackPolling(agent);
-        this._scheduleReconnect(agent);
+        const reason = classifyError(err);
+        this._startFallbackPolling(agent, 'sse-failure');
+        const retryInMs = this._scheduleReconnect(agent);
+        console.warn(`[fleet] sse connect failed agent=${agent.name} reason=${reason} retry_in_ms=${retryInMs ?? 'none'}`);
       })
       .finally(() => {
-        if (this._isCurrentAgent(agent, generation, stream)) stream.connecting = false;
+        if (this._isCurrentAgent(agent, generation, stream)) {
+          stream.connecting = false;
+          stream.connectingSince = null;
+        }
       });
   }
 
@@ -821,26 +856,29 @@ export class FleetPoller {
     }
     if (resp.status === 401 || resp.status === 403) {
       this._setFailure(agent, 'auth_failed');
-      throw new Error('auth_failed');
+      throw reasonError('auth_failed');
     }
     if (!resp.ok || !resp.body) {
-      this._setFailure(agent, resp.status === 404 ? 'version_unsupported' : 'unreachable');
-      throw new Error('sse_unreachable');
+      const reason = resp.status === 404 ? 'version_unsupported' : 'unreachable';
+      this._setFailure(agent, reason);
+      throw reasonError(reason);
     }
 
-    this._stopFallbackPolling(agent);
+    stream.reading = true;
+    this._stopFallbackPolling(agent, 'sse-takeover');
     stream.backoffMs = this.reconnectBaseMs;
     stream.seenFleetState = false;
     await this._pollAgentAndNotify(agent);
     if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
     stream.compatibilityTimer = this.setTimeout(() => {
       const current = this.streams.get(agent.name);
-      if (this.running && current === stream && !current.seenFleetState) this._startFallbackPolling(agent);
+      if (this.running && current === stream && !current.seenFleetState) this._startFallbackPolling(agent, 'compatibility-timer');
     }, this.pollIntervalMs);
     stream.compatibilityTimer.unref?.();
     try {
       await this._readSseBody(agent, stream, resp.body, signal);
     } finally {
+      stream.reading = false;
       this._clearIdleWatchdog(stream);
     }
     if (this.running && !signal.aborted) throw new Error('sse_closed');
@@ -902,16 +940,17 @@ export class FleetPoller {
       return;
     }
     this._setSuccess(agent, state);
-    this._stopFallbackPolling(agent);
+    this._stopFallbackPolling(agent, 'sse-takeover');
     this.onPoll?.(this.getFleet());
   }
 
-  _startFallbackPolling(agent) {
+  _startFallbackPolling(agent, trigger = 'unknown') {
     if (!this.running) return;
     const generation = this._agentGeneration(agent);
     if (!this._isCurrentAgent(agent, generation)) return;
     const stream = this._streamState(agent);
     if (stream.pollTimer) return;
+    console.log(`[fleet] fallback polling started agent=${agent.name} trigger=${trigger}`);
     const run = () => {
       if (!this.running || !this._isCurrentAgent(agent, generation, stream)) return;
       this._pollAgentAndNotify(agent).finally(() => {
@@ -925,11 +964,12 @@ export class FleetPoller {
     stream.pollTimer.unref?.();
   }
 
-  _stopFallbackPolling(agent) {
+  _stopFallbackPolling(agent, trigger = 'unknown') {
     const stream = this.streams.get(agent.name);
     if (!stream?.pollTimer) return;
     this.clearTimeout(stream.pollTimer);
     stream.pollTimer = null;
+    console.log(`[fleet] fallback polling stopped agent=${agent.name} trigger=${trigger}`);
   }
 
   _scheduleReconnect(agent) {
@@ -946,6 +986,7 @@ export class FleetPoller {
       this._connectSse(agent);
     }, delay);
     stream.reconnectTimer.unref?.();
+    return delay;
   }
 
   _setFailure(agent, reason) {
@@ -990,7 +1031,7 @@ export class FleetPoller {
       stream.idleTimer = null;
       if (!this.running || !this._isCurrentAgent(agent, this._agentGeneration(agent), stream)) return;
       stream.controller?.abort();
-      this._startFallbackPolling(agent);
+      this._startFallbackPolling(agent, 'idle-watchdog');
       this._scheduleReconnect(agent);
     }, this.sseIdleTimeoutMs);
     stream.idleTimer.unref?.();
@@ -1000,5 +1041,51 @@ export class FleetPoller {
     if (!stream.idleTimer) return;
     this.clearTimeout(stream.idleTimer);
     stream.idleTimer = null;
+  }
+
+  _startSelfHealWatchdog() {
+    if (!this.running || this.watchdogTimer) return;
+    const tick = () => {
+      this.watchdogTimer = null;
+      if (!this.running) return;
+      for (const agent of this.agents) this._checkSelfHeal(agent);
+      if (!this.running) return;
+      this.watchdogTimer = this.setTimeout(tick, this.pollIntervalMs);
+      this.watchdogTimer.unref?.();
+    };
+    this.watchdogTimer = this.setTimeout(tick, this.pollIntervalMs);
+    this.watchdogTimer.unref?.();
+  }
+
+  _checkSelfHeal(agent) {
+    const generation = this._agentGeneration(agent);
+    if (!this._isCurrentAgent(agent, generation)) return;
+    const stream = this._streamState(agent);
+    if (stream.reading) return;
+
+    const nowMs = this.now();
+    const connectingSince = Number(stream.connectingSince);
+    const connectingAgeMs = stream.connecting && Number.isFinite(connectingSince) ? nowMs - connectingSince : 0;
+    const connectingBoundMs = this.timeoutMs * 2 + this.reconnectMaxMs;
+    if (stream.connecting && connectingAgeMs <= connectingBoundMs) return;
+    if (stream.connecting) {
+      stream.controller?.abort();
+      stream.connecting = false;
+      stream.connectingSince = null;
+      this._startFallbackPolling(agent, 'watchdog');
+      this._scheduleReconnect(agent);
+      console.warn(`[fleet] watchdog revived agent=${agent.name} classification=wedged-connecting frozen_ms=${Math.max(0, connectingAgeMs)}`);
+      return;
+    }
+
+    if (stream.pollTimer || stream.reconnectTimer) return;
+    const record = this.records.get(agent.name);
+    const updatedAtMs = Date.parse(record?.updated_at || '');
+    if (!Number.isFinite(updatedAtMs)) return;
+    const frozenMs = nowMs - updatedAtMs;
+    if (frozenMs <= this.pollIntervalMs * 2) return;
+    this._startFallbackPolling(agent, 'watchdog');
+    this._scheduleReconnect(agent);
+    console.warn(`[fleet] watchdog revived agent=${agent.name} classification=dead frozen_ms=${Math.max(0, frozenMs)}`);
   }
 }

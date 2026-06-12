@@ -34,7 +34,7 @@ import { IngestQueue } from './lib/ingest-queue.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
-import { buildFleetPayload } from './lib/fleet-payload.js';
+import { assertFleetPayloadSafe, buildFleetPayload, redactFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
@@ -377,11 +377,12 @@ function buildSelfFleetRecord() {
   });
 }
 
-function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet()) {
+function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet(), options = {}) {
   return buildFleetPayload({
     remoteFleet,
     selfRecord: buildSelfFleetRecord(),
-    nowIso: new Date().toISOString()
+    nowIso: new Date().toISOString(),
+    assertSafe: options.assertSafe !== false
   });
 }
 
@@ -389,6 +390,18 @@ function broadcastFleet(remoteFleet) {
   try {
     sse.broadcast('fleet', buildFullFleetPayload(remoteFleet));
   } catch (err) {
+    if (err?.code === 'fleet_secret_leak_guard') {
+      const redacted = redactFleetPayload(buildFullFleetPayload(remoteFleet, { assertSafe: false }));
+      try {
+        assertFleetPayloadSafe(redacted);
+        sse.broadcast('fleet', redacted);
+        process.stderr.write('[fleet] SSE broadcast redacted: fleet_secret_leak_guard\n');
+        return;
+      } catch {
+        process.stderr.write('[fleet] SSE broadcast skipped: fleet_secret_leak_guard (redaction insufficient)\n');
+        return;
+      }
+    }
     process.stderr.write(`[fleet] SSE broadcast skipped: ${err.message}\n`);
   }
 }

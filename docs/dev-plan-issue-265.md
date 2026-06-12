@@ -27,7 +27,7 @@ Production evidence is in #265 (frozen `updated_at`, zero TCP connections, healt
 
 ### D1: SSE connect timeout
 
-`_fetchStream` gets a headers deadline using the existing `fleet.timeout_ms` (default 8000ms) — same budget as `_fetchState`/`_ensureToken`, no new config knob. Implementation: a timer that aborts a dedicated "connect phase" signal, cleared as soon as the response (headers) arrives. **Body streaming is explicitly NOT subject to this deadline** — long-lived quiet streams are legitimate and remain covered by the existing idle watchdog (#180), which arms only after the body starts. The two watchdogs are complementary, not overlapping: connect-phase vs streaming-phase.
+`_fetchStream` gets a headers deadline using the existing `fleet.timeout_ms` (default 2500ms) — same budget as `_fetchState`/`_ensureToken`, no new config knob. Implementation: a timer that aborts a dedicated "connect phase" signal, cleared as soon as the response (headers) arrives. **Body streaming is explicitly NOT subject to this deadline** — long-lived quiet streams are legitimate and remain covered by the existing idle watchdog (#180), which arms only after the body starts. The two watchdogs are complementary, not overlapping: connect-phase vs streaming-phase.
 
 Constraint: the connect-phase abort must compose with the existing `stream.controller` signal (caller-initiated abort must still work during connect). Use `AbortSignal.any([controllerSignal, connectDeadlineSignal])` (Node 20.3+, we require Node 20+).
 
