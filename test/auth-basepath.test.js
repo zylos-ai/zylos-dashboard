@@ -814,6 +814,79 @@ test('API key migration v11 preserves ids, sessions, and active-name uniqueness'
   }
 });
 
+test('API key migration v11 rolls back failed rebuild and can retry', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-key-migration-retry-'));
+  const dbPath = path.join(dir, 'dashboard.db');
+  const initialStore = new Store(dbPath);
+  initialStore.close();
+
+  const db = new Database(dbPath);
+  try {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      DELETE FROM api_sessions;
+      DELETE FROM schema_migrations WHERE version = 11;
+      DROP INDEX IF EXISTS idx_api_keys_active_name;
+      DROP TABLE api_keys;
+      CREATE TABLE api_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        key_hash TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'read',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+      INSERT INTO api_keys (id, name, key_hash, scope, created_at, revoked_at)
+      VALUES
+        (21, 'duplicate-active', 'active-hash-a', 'read', '2026-01-01 00:00:00', NULL),
+        (22, 'duplicate-active', 'active-hash-b', 'read', '2026-01-02 00:00:00', NULL);
+    `);
+  } finally {
+    db.close();
+  }
+
+  assert.throws(
+    () => new Store(dbPath),
+    /UNIQUE constraint failed: api_keys\.name/
+  );
+
+  const inspectDb = new Database(dbPath);
+  try {
+    assert.deepEqual(
+      inspectDb.prepare('SELECT id, name, key_hash, revoked_at FROM api_keys ORDER BY id').all(),
+      [
+        { id: 21, name: 'duplicate-active', key_hash: 'active-hash-a', revoked_at: null },
+        { id: 22, name: 'duplicate-active', key_hash: 'active-hash-b', revoked_at: null }
+      ]
+    );
+    assert.equal(
+      inspectDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'api_keys_new'").get(),
+      undefined
+    );
+    assert.equal(
+      inspectDb.prepare('SELECT version FROM schema_migrations WHERE version = 11').get(),
+      undefined
+    );
+    inspectDb.prepare("UPDATE api_keys SET revoked_at = '2026-01-03 00:00:00' WHERE id = 22").run();
+  } finally {
+    inspectDb.close();
+  }
+
+  const store = new Store(dbPath);
+  try {
+    assert.equal(store.db.prepare('SELECT version FROM schema_migrations WHERE version = 11').get().version, 11);
+    assert.equal(store.getApiKeyByName('duplicate-active')?.id, 21);
+    assert.equal(
+      store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_api_keys_active_name'").get().name,
+      'idx_api_keys_active_name'
+    );
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('API key lifecycle supports name reuse, rotate, permanent delete, and revoked purge', async () => {
   const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-key-lifecycle-'));
   writeConfig(zylosDir, 'secret', { auth: { enabled: true, password: 'secret' } });
@@ -939,6 +1012,29 @@ test('API key lifecycle supports name reuse, rotate, permanent delete, and revok
       headers: { Authorization: `Bearer ${adminToken}` }
     });
     assert.equal(revokedRotate.status, 404);
+
+    const namedRotate = await createKey('rotate');
+    const revokeNamedRotate = await fetch(`${origin}/api/keys/rotate`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(revokeNamedRotate.status, 200);
+    assert.equal((await revokeNamedRotate.json()).keys.some(key => key.name === 'rotate' && key.status === 'revoked'), true);
+    const recreatedNamedRotate = await createKey('rotate');
+    const rotateNamedRotate = await fetch(`${origin}/api/keys/rotate/rotate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(rotateNamedRotate.status, 200);
+    const rotateNamedRotateBody = await rotateNamedRotate.json();
+    assert.equal(rotateNamedRotateBody.key.name, 'rotate');
+    assert.match(rotateNamedRotateBody.plaintext_key, /^zylos_ak_/);
+    const oldNamedRotateResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${recreatedNamedRotate.plaintext_key}` }
+    });
+    assert.equal(oldNamedRotateResp.status, 401);
+    assert.notEqual(namedRotate.plaintext_key, recreatedNamedRotate.plaintext_key);
 
     await createKey('old-delete');
     await fetch(`${origin}/api/keys/old-delete`, {

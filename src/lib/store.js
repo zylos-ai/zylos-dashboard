@@ -225,29 +225,31 @@ export class Store {
       const foreignKeys = this.db.pragma('foreign_keys', { simple: true });
       this.db.pragma('foreign_keys = OFF');
       try {
-        this.db.exec(`
-          DROP TABLE IF EXISTS api_keys_new;
-          CREATE TABLE api_keys_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            key_hash TEXT NOT NULL,
-            scope TEXT NOT NULL DEFAULT 'read',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            last_used_at TEXT,
-            revoked_at TEXT
-          );
-          INSERT INTO api_keys_new (id, name, key_hash, scope, created_at, last_used_at, revoked_at)
-          SELECT id, name, key_hash, scope, created_at, last_used_at, revoked_at FROM api_keys;
-          DROP TABLE api_keys;
-          ALTER TABLE api_keys_new RENAME TO api_keys;
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_active_name
-            ON api_keys(name)
-            WHERE revoked_at IS NULL;
-          UPDATE sqlite_sequence
-            SET seq = (SELECT COALESCE(MAX(id), 0) FROM api_keys)
-            WHERE name = 'api_keys';
-        `);
-        this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(11);
+        this.db.transaction(() => {
+          this.db.exec(`
+            DROP TABLE IF EXISTS api_keys_new;
+            CREATE TABLE api_keys_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              key_hash TEXT NOT NULL,
+              scope TEXT NOT NULL DEFAULT 'read',
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              last_used_at TEXT,
+              revoked_at TEXT
+            );
+            INSERT INTO api_keys_new (id, name, key_hash, scope, created_at, last_used_at, revoked_at)
+            SELECT id, name, key_hash, scope, created_at, last_used_at, revoked_at FROM api_keys;
+            DROP TABLE api_keys;
+            ALTER TABLE api_keys_new RENAME TO api_keys;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_active_name
+              ON api_keys(name)
+              WHERE revoked_at IS NULL;
+            UPDATE sqlite_sequence
+              SET seq = (SELECT COALESCE(MAX(id), 0) FROM api_keys)
+              WHERE name = 'api_keys';
+          `);
+          this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(11);
+        })();
       } finally {
         this.db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
       }

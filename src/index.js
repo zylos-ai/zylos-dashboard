@@ -1576,7 +1576,7 @@ export function createServer() {
       return;
     }
 
-    if (pathname.startsWith('/api/keys/') && pathname.endsWith('/rotate')) {
+    if (/^\/api\/keys\/[^/]+\/rotate$/.test(pathname)) {
       await handleApiKeyRotate(req, res, pathname);
       return;
     }
