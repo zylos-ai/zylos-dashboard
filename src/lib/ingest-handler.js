@@ -69,7 +69,6 @@ export class IngestHandler {
     // (#260) the per-event cost is what starves HTTP. Time it so the slow step
     // is identifiable in logs while it happens.
     const startedNs = process.hrtime.bigint();
-    const payloadBytes = Buffer.byteLength(JSON.stringify(body));
     try {
       const sanitized = this.sanitizer.sanitizeHookPayload(hook_event_name, body);
       const { event_type, category } = EVENT_TYPE_MAP[hook_event_name];
@@ -113,6 +112,9 @@ export class IngestHandler {
 
       const elapsedMs = Number(process.hrtime.bigint() - startedNs) / 1e6;
       if (elapsedMs >= this.slowEventWarnMs) {
+        // Payload size computed only on the slow path — keeps the per-event
+        // hot-path cost to two hrtime reads.
+        const payloadBytes = Buffer.byteLength(JSON.stringify(body));
         process.stderr.write(`[ingest-handler] slow event: ${hook_event_name} took ${Math.round(elapsedMs)}ms (payload ${payloadBytes}B)\n`);
       }
 
