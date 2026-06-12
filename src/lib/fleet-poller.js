@@ -12,6 +12,13 @@ const DEFAULT_JITTER_MS = 500;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 const DEFAULT_RECONNECT_BASE_MS = 1000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
+const DEFAULT_SLOW_THRESHOLD_MS = 1500;
+const DEFAULT_LATENCY_PROBE_INTERVAL_MS = 30_000;
+const LATENCY_SAMPLE_LIMIT = 20;
+const DEGRADED_PROBE_FAILURES = 2;
+const CONNECTION_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH']);
+const FAILURE_REASONS = new Set(['timeout', 'conn_refused', 'bad_payload', 'auth_failed', 'version_unsupported', 'unreachable']);
+const LINK_QUALITIES = new Set(['ok', 'slow', 'degraded', 'stale', 'down']);
 
 function nowIso(nowMs = Date.now()) {
   return new Date(nowMs).toISOString();
@@ -122,6 +129,11 @@ function numberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function stringOrNull(value) {
+  const text = String(value || '').trim();
+  return text || null;
+}
+
 function memPct(systemMetrics) {
   const explicit = numberOrNull(systemMetrics?.mem_pct ?? systemMetrics?.mem_used_pct);
   if (explicit != null) return explicit;
@@ -178,6 +190,75 @@ function deriveActivityFeed(state) {
   return feed;
 }
 
+function percentile95(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+  return sorted[index] ?? null;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateStatePayload(value) {
+  if (!isPlainObject(value) || typeof value.state !== 'string' || value.state.trim() === '') {
+    const err = new Error('bad_payload');
+    err.reason = 'bad_payload';
+    throw err;
+  }
+  return value;
+}
+
+function validateHealthPayload(value) {
+  if (!isPlainObject(value)) {
+    const err = new Error('bad_payload');
+    err.reason = 'bad_payload';
+    throw err;
+  }
+  return value;
+}
+
+async function readJsonOrBadPayload(resp, validate = value => value) {
+  let body;
+  try {
+    body = await resp.json();
+  } catch {
+    const err = new Error('bad_payload');
+    err.reason = 'bad_payload';
+    throw err;
+  }
+  return validate(body);
+}
+
+function classifyError(err) {
+  if (err?.reason) return err.reason;
+  if (err?.name === 'AbortError') return 'timeout';
+  const code = err?.cause?.code || err?.code;
+  if (CONNECTION_ERROR_CODES.has(code)) return 'conn_refused';
+  if (Array.isArray(err?.cause?.errors) && err.cause.errors.some(item => CONNECTION_ERROR_CODES.has(item?.code))) {
+    return 'conn_refused';
+  }
+  return 'unreachable';
+}
+
+function classifyHttpStatus(resp, { tokenEndpoint = false } = {}) {
+  if (resp.status === 401 || resp.status === 403) return 'auth_failed';
+  if (tokenEndpoint && resp.status === 404) return 'version_unsupported';
+  return 'unreachable';
+}
+
+function sanitizeLink(link) {
+  const quality = LINK_QUALITIES.has(link?.quality) ? link.quality : 'ok';
+  return {
+    latency_ms: numberOrNull(link?.latency_ms),
+    latency_p95_ms: numberOrNull(link?.latency_p95_ms),
+    sampled_at: stringOrNull(link?.sampled_at),
+    quality,
+    reason: stringOrNull(link?.reason)
+  };
+}
+
 function sanitizeRecord(record) {
   return {
     name: record.name,
@@ -204,6 +285,7 @@ function sanitizeRecord(record) {
     last_seen: record.last_seen,
     pulse_rate: record.pulse_rate,
     health_reason: record.health_reason,
+    link: sanitizeLink(record.link),
     updated_at: record.updated_at,
     base_url: record.base_url,
     self: record.self === true,
@@ -257,6 +339,7 @@ export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {
     last_seen: nowIso(nowMs),
     pulse_rate: pulseRate,
     health_reason: healthReason,
+    link: sanitizeLink(opts.link),
     updated_at: nowIso(nowMs),
     self,
     access: opts.access
@@ -271,6 +354,8 @@ export class FleetPoller {
     this.timeoutMs = toNumber(fleet.timeout_ms, DEFAULT_TIMEOUT_MS);
     this.sseIdleTimeoutMs = toNumber(fleet.sse_idle_timeout_ms, DEFAULT_SSE_IDLE_TIMEOUT_MS);
     this.jitterMs = toNumber(fleet.jitter_ms, DEFAULT_JITTER_MS);
+    this.slowThresholdMs = toNumber(fleet.slow_threshold_ms, DEFAULT_SLOW_THRESHOLD_MS);
+    this.latencyProbeIntervalMs = toNumber(fleet.latency_probe_interval_ms, DEFAULT_LATENCY_PROBE_INTERVAL_MS);
     this.reconnectBaseMs = toNumber(fleet.sse_reconnect_base_ms, DEFAULT_RECONNECT_BASE_MS);
     this.reconnectMaxMs = toNumber(fleet.sse_reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     this.fetch = options.fetch || globalThis.fetch;
@@ -281,6 +366,7 @@ export class FleetPoller {
     this.records = new Map();
     this.tokens = new Map();
     this.streams = new Map();
+    this.latency = new Map();
     this.agentGenerations = new Map();
     this.running = false;
     this.timer = null;
@@ -320,6 +406,7 @@ export class FleetPoller {
     if (this.running) return;
     this.running = true;
     if (this.agents.length === 0) return;
+    for (const agent of this.agents) this._startLatencyProbe(agent);
     this.pollOnce().finally(() => {
       if (!this.running) return;
       for (const agent of this.agents) this._connectSse(agent);
@@ -330,6 +417,10 @@ export class FleetPoller {
     this.running = false;
     if (this.timer) this.clearTimeout(this.timer);
     this.timer = null;
+    for (const state of this.latency.values()) {
+      if (state.timer) this.clearTimeout(state.timer);
+    }
+    this.latency.clear();
     for (const stream of this.streams.values()) {
       if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
       if (stream.pollTimer) this.clearTimeout(stream.pollTimer);
@@ -374,6 +465,7 @@ export class FleetPoller {
       access: 'read'
     }));
     if (!this.running) this.running = true;
+    this._startLatencyProbe(normalized);
     this._pollAgentAndNotify(normalized);
     this._connectSse(normalized);
     this.onPoll?.(this.getFleet());
@@ -391,6 +483,9 @@ export class FleetPoller {
       stream.controller?.abort();
     }
     this.streams.delete(name);
+    const latency = this.latency.get(name);
+    if (latency?.timer) this.clearTimeout(latency.timer);
+    this.latency.delete(name);
     this.tokens.delete(name);
     this.records.delete(name);
     this.onPoll?.(this.getFleet());
@@ -398,7 +493,7 @@ export class FleetPoller {
 
   getFleet() {
     return {
-      agents: Array.from(this.records.values()).map(sanitizeRecord),
+      agents: this.agents.map(agent => this._recordWithLink(agent)).filter(Boolean),
       count: this.records.size,
       updated_at: nowIso(this.now())
     };
@@ -465,6 +560,64 @@ export class FleetPoller {
     return state;
   }
 
+  _latencyState(agent) {
+    let state = this.latency.get(agent.name);
+    if (!state) {
+      state = {
+        samples: [],
+        consecutiveFailures: 0,
+        failureReason: null,
+        timer: null
+      };
+      this.latency.set(agent.name, state);
+    }
+    return state;
+  }
+
+  _recordWithLink(agent) {
+    const record = this.records.get(agent.name);
+    if (!record) return null;
+    return sanitizeRecord({
+      ...record,
+      link: this._deriveLink(agent, record)
+    });
+  }
+
+  _deriveLink(agent, record = {}) {
+    const state = this.latency.get(agent.name);
+    const samples = state?.samples || [];
+    const lastSample = samples.at(-1) || null;
+    const latencies = samples.map(sample => sample.latencyMs);
+    const p95 = percentile95(latencies);
+    const base = {
+      latency_ms: lastSample?.latencyMs ?? null,
+      latency_p95_ms: p95,
+      sampled_at: lastSample ? nowIso(lastSample.sampledAtMs) : null,
+      quality: 'ok',
+      reason: null
+    };
+
+    if (Number(record.pulse_rate) === 0 || FAILURE_REASONS.has(record.health_reason)) {
+      return { ...base, quality: 'down', reason: record.health_reason || 'unreachable' };
+    }
+
+    const lastSeenMs = Date.parse(record.last_seen || '');
+    const staleAfterMs = Math.max(this.pollIntervalMs * 3, 15_000);
+    if (Number.isFinite(lastSeenMs) && this.now() - lastSeenMs > staleAfterMs) {
+      return { ...base, quality: 'stale', reason: 'stale' };
+    }
+
+    if ((state?.consecutiveFailures || 0) >= DEGRADED_PROBE_FAILURES) {
+      return { ...base, quality: 'degraded', reason: state.failureReason || 'unreachable' };
+    }
+
+    if (samples.length >= 5 && p95 != null && p95 > this.slowThresholdMs) {
+      return { ...base, quality: 'slow', reason: null };
+    }
+
+    return base;
+  }
+
   async _ensureToken(agent, { force = false } = {}) {
     const generation = this._agentGeneration(agent);
     const cached = this.tokens.get(agent.name);
@@ -473,31 +626,25 @@ export class FleetPoller {
       return cached.token;
     }
 
-    const resp = await fetchWithTimeout(this.fetch, joinUrl(agent.base_url, '/api/auth/token'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${agent.read_api_key}` }
-    }, this.timeoutMs);
+    let resp;
+    try {
+      resp = await fetchWithTimeout(this.fetch, joinUrl(agent.base_url, '/api/auth/token'), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${agent.read_api_key}` }
+      }, this.timeoutMs);
+    } catch (err) {
+      err.reason = classifyError(err);
+      throw err;
+    }
 
-    if (resp.status === 404) {
-      const err = new Error('version_unsupported');
-      err.reason = 'version_unsupported';
-      err.status = 404;
-      throw err;
-    }
-    if (resp.status === 401 || resp.status === 403) {
-      const err = new Error('auth_failed');
-      err.reason = 'auth_failed';
-      err.status = resp.status;
-      throw err;
-    }
     if (!resp.ok) {
-      const err = new Error('unreachable');
-      err.reason = 'unreachable';
+      const err = new Error(classifyHttpStatus(resp, { tokenEndpoint: true }));
+      err.reason = classifyHttpStatus(resp, { tokenEndpoint: true });
       err.status = resp.status;
       throw err;
     }
 
-    const body = await resp.json();
+    const body = await readJsonOrBadPayload(resp);
     if (!body?.token) {
       const err = new Error('auth_failed');
       err.reason = 'auth_failed';
@@ -534,15 +681,15 @@ export class FleetPoller {
         return;
       }
       if (!resp.ok) {
-        this._setFailure(agent, 'unreachable');
+        this._setFailure(agent, classifyHttpStatus(resp));
         return;
       }
-      const state = await resp.json();
+      const state = await readJsonOrBadPayload(resp, validateStatePayload);
       if (!this._isCurrentAgent(agent, generation)) return;
       this._setSuccess(agent, state);
     } catch (err) {
       if (!this._isCurrentAgent(agent, generation)) return;
-      this._setFailure(agent, err.reason || 'unreachable');
+      this._setFailure(agent, classifyError(err));
     }
   }
 
@@ -556,6 +703,68 @@ export class FleetPoller {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` }
     }, this.timeoutMs);
+  }
+
+  _fetchHealth(agent, authorization) {
+    return fetchWithTimeout(this.fetch, joinUrl(agent.base_url, '/api/health'), {
+      method: 'GET',
+      headers: { Authorization: authorization }
+    }, this.timeoutMs);
+  }
+
+  _startLatencyProbe(agent) {
+    if (!this.running || !this._isCurrentAgent(agent)) return;
+    const generation = this._agentGeneration(agent);
+    const state = this._latencyState(agent);
+    if (state.timer) return;
+    const run = () => {
+      if (!this.running || !this._isCurrentAgent(agent, generation)) return;
+      state.timer = null;
+      this._probeAgentLatency(agent).finally(() => {
+        if (!this.running || !this._isCurrentAgent(agent, generation)) return;
+        state.timer = this.setTimeout(run, this.latencyProbeIntervalMs);
+        state.timer.unref?.();
+      });
+    };
+    state.timer = this.setTimeout(run, 0);
+    state.timer.unref?.();
+  }
+
+  async _probeAgentLatency(agent) {
+    const generation = this._agentGeneration(agent);
+    const state = this._latencyState(agent);
+    const startedAtMs = this.now();
+    try {
+      let resp = await this._fetchHealth(agent, `Bearer ${agent.read_api_key}`);
+      if (!this._isCurrentAgent(agent, generation)) return;
+      if (resp.status === 401 || resp.status === 403) {
+        const token = await this._ensureToken(agent);
+        if (!this._isCurrentAgent(agent, generation)) return;
+        resp = await this._fetchHealth(agent, `Bearer ${token}`);
+      }
+      if (!resp.ok) {
+        const err = new Error(classifyHttpStatus(resp));
+        err.reason = classifyHttpStatus(resp);
+        throw err;
+      }
+      await readJsonOrBadPayload(resp, validateHealthPayload);
+      if (!this._isCurrentAgent(agent, generation)) return;
+      const sampledAtMs = this.now();
+      state.samples.push({
+        latencyMs: Math.max(0, sampledAtMs - startedAtMs),
+        sampledAtMs
+      });
+      if (state.samples.length > LATENCY_SAMPLE_LIMIT) {
+        state.samples.splice(0, state.samples.length - LATENCY_SAMPLE_LIMIT);
+      }
+      state.consecutiveFailures = 0;
+      state.failureReason = null;
+    } catch (err) {
+      if (!this._isCurrentAgent(agent, generation)) return;
+      state.consecutiveFailures += 1;
+      state.failureReason = classifyError(err);
+    }
+    this.onPoll?.(this.getFleet());
   }
 
   _fetchStream(agent, token, signal) {
@@ -682,6 +891,11 @@ export class FleetPoller {
     let state;
     try {
       state = JSON.parse(event.data || '{}');
+    } catch {
+      return;
+    }
+    try {
+      validateStatePayload(state);
     } catch {
       return;
     }

@@ -11,6 +11,13 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+function textResponse(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'text/plain' }
+  });
+}
+
 function makeConfig(agents, fleet = {}) {
   return {
     fleet: {
@@ -280,6 +287,223 @@ test('fleet poller marks agent OFFLINE on poll failure, recovers on success (#18
   fail = false;
   await poller.pollOnce();
   assert.equal(poller.getFleet().agents[0].state, 'IDLE');
+});
+
+test('fleet poller records health-probe latency, p95, and caps the window at 20 samples', async () => {
+  let now = 0;
+  const durations = Array.from({ length: 21 }, (_v, i) => i + 1);
+  const fetchImpl = async (url, options = {}) => {
+    assert.match(url, /\/api\/health$/);
+    assert.equal(options.headers.Authorization, 'Bearer zylos_ak_secret');
+    now += durations.shift();
+    return jsonResponse({ ok: true });
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { slow_threshold_ms: 999 }), { fetch: fetchImpl, now: () => now });
+  const agent = poller.agents[0];
+  poller._setSuccess(agent, { state: 'IDLE' });
+
+  for (let i = 0; i < 21; i += 1) await poller._probeAgentLatency(agent);
+  const link = poller.getFleet().agents[0].link;
+  assert.equal(link.latency_ms, 21);
+  assert.equal(link.latency_p95_ms, 20);
+  assert.equal(link.quality, 'ok');
+});
+
+test('fleet poller health probe triggers slow while SSE remains healthy without fallback polling', async () => {
+  let now = 0;
+  let stateFetches = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/health')) {
+      now += 120;
+      return jsonResponse({ ok: true });
+    }
+    if (url.endsWith('/api/state')) {
+      stateFetches += 1;
+      return jsonResponse({ state: 'IDLE' });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ], { slow_threshold_ms: 50 }), { fetch: fetchImpl, now: () => now });
+  const agent = poller.agents[0];
+  poller._handleSseEvent(agent, { event: 'fleet_state', data: '{"state":"BUSY"}' });
+
+  for (let i = 0; i < 5; i += 1) await poller._probeAgentLatency(agent);
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.state, 'BUSY');
+  assert.equal(record.link.quality, 'slow');
+  assert.equal(record.link.latency_p95_ms, 120);
+  assert.equal(stateFetches, 0, 'probe path must not depend on fallback state polling');
+});
+
+test('fleet poller health probe falls back to session token when read key is rejected', async () => {
+  let now = 0;
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, authorization: options.headers?.Authorization });
+    if (url.endsWith('/api/health') && options.headers.Authorization === 'Bearer zylos_ak_secret') {
+      return jsonResponse({ error: 'direct key rejected' }, 401);
+    }
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_probe', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/health') && options.headers.Authorization === 'Bearer zylos_st_probe') {
+      now += 25;
+      return jsonResponse({ ok: true });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => now });
+  const agent = poller.agents[0];
+  poller._setSuccess(agent, { state: 'IDLE' });
+
+  await poller._probeAgentLatency(agent);
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.link.latency_ms, 25);
+  assert.equal(record.link.quality, 'ok');
+  assert.ok(calls.some(call => call.url.endsWith('/api/auth/token')));
+  assert.ok(calls.some(call => call.url.endsWith('/api/health') && call.authorization === 'Bearer zylos_st_probe'));
+});
+
+test('fleet poller degrades after two consecutive probe failures and resets on success', async () => {
+  let now = 0;
+  const outcomes = ['timeout', 'timeout', 'ok'];
+  const fetchImpl = async (url) => {
+    assert.match(url, /\/api\/health$/);
+    const outcome = outcomes.shift();
+    if (outcome === 'ok') {
+      now += 10;
+      return jsonResponse({ ok: true });
+    }
+    const err = new Error('timed out');
+    err.name = 'AbortError';
+    throw err;
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => now });
+  const agent = poller.agents[0];
+  poller._setSuccess(agent, { state: 'IDLE' });
+
+  await poller._probeAgentLatency(agent);
+  let record = poller.getFleet().agents[0];
+  assert.equal(record.state, 'IDLE');
+  assert.equal(record.link.quality, 'ok');
+
+  await poller._probeAgentLatency(agent);
+  record = poller.getFleet().agents[0];
+  assert.equal(record.state, 'IDLE');
+  assert.equal(record.pulse_rate, 1);
+  assert.equal(record.link.quality, 'degraded');
+  assert.equal(record.link.reason, 'timeout');
+
+  await poller._probeAgentLatency(agent);
+  record = poller.getFleet().agents[0];
+  assert.equal(record.link.quality, 'ok');
+  assert.equal(record.link.reason, null);
+});
+
+test('fleet poller quality precedence keeps stale and down ahead of degraded', async () => {
+  let now = 0;
+  const fetchImpl = async () => {
+    const err = new Error('connection refused');
+    err.cause = { code: 'ECONNREFUSED' };
+    throw err;
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => now });
+  const agent = poller.agents[0];
+  poller._setSuccess(agent, { state: 'IDLE' });
+  now = 20_000;
+
+  await poller._probeAgentLatency(agent);
+  await poller._probeAgentLatency(agent);
+  let record = poller.getFleet().agents[0];
+  assert.equal(record.link.quality, 'stale');
+  assert.equal(record.link.reason, 'stale');
+
+  poller._setFailure(agent, 'timeout');
+  record = poller.getFleet().agents[0];
+  assert.equal(record.link.quality, 'down');
+  assert.equal(record.link.reason, 'timeout');
+});
+
+test('fleet poller classifies granular state fetch failures', async () => {
+  const cases = [
+    { name: 'Timeout', throwError: Object.assign(new Error('timeout'), { name: 'AbortError' }), reason: 'timeout' },
+    { name: 'Refused', throwError: Object.assign(new Error('refused'), { cause: { code: 'ECONNREFUSED' } }), reason: 'conn_refused' },
+    { name: 'Aggregate', throwError: Object.assign(new Error('refused'), { cause: { errors: [{ code: 'ECONNREFUSED' }] } }), reason: 'conn_refused' },
+    { name: 'Auth', status: 401, reason: 'auth_failed' },
+    { name: 'Server', status: 500, reason: 'unreachable' }
+  ];
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) return jsonResponse({ token: 'zylos_st_ok', expires_at: new Date(120000).toISOString() });
+    const item = cases.find(testCase => url.includes(testCase.name.toLowerCase()));
+    if (item.throwError) throw item.throwError;
+    return jsonResponse({ error: 'failed' }, item.status);
+  };
+  const poller = new FleetPoller(makeConfig(cases.map(item => ({
+    name: item.name,
+    base_url: `https://${item.name.toLowerCase()}.example.test`,
+    read_api_key: 'zylos_ak_secret'
+  }))), { fetch: fetchImpl, now: () => 0 });
+
+  await poller.pollOnce();
+  const byName = Object.fromEntries(poller.getFleet().agents.map(a => [a.name, a]));
+  for (const item of cases) {
+    assert.equal(byName[item.name].health_reason, item.reason);
+    assert.equal(byName[item.name].link.quality, 'down');
+  }
+});
+
+test('fleet poller maps token 404 to version_unsupported', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) return jsonResponse({ error: 'not_found' }, 404);
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Old', base_url: 'https://old.example.test', read_api_key: 'zylos_ak_old' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  await poller.pollOnce();
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.health_reason, 'version_unsupported');
+  assert.equal(record.link.quality, 'down');
+});
+
+test('fleet poller classifies 2xx invalid state payloads as bad_payload', async () => {
+  const bodies = [
+    { name: 'Empty', response: () => textResponse('', 200) },
+    { name: 'Text', response: () => textResponse('not-json', 200) },
+    { name: 'Object', response: () => jsonResponse({}) },
+    { name: 'Array', response: () => jsonResponse([]) },
+    { name: 'Null', response: () => jsonResponse(null) },
+    { name: 'OkOnly', response: () => jsonResponse({ ok: true }) }
+  ];
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) return jsonResponse({ token: 'zylos_st_ok', expires_at: new Date(120000).toISOString() });
+    const item = bodies.find(testCase => url.includes(testCase.name.toLowerCase()));
+    if (item) return item.response();
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig(bodies.map(item => ({
+    name: item.name,
+    base_url: `https://${item.name.toLowerCase()}.example.test`,
+    read_api_key: 'zylos_ak_secret'
+  }))), { fetch: fetchImpl, now: () => 0 });
+
+  await poller.pollOnce();
+  for (const record of poller.getFleet().agents) {
+    assert.equal(record.health_reason, 'bad_payload', `${record.name} should fail shape validation`);
+    assert.equal(record.link.quality, 'down');
+    assert.equal(record.link.reason, 'bad_payload');
+  }
 });
 
 test('fleet poller idle watchdog aborts half-open SSE and starts fallback polling (#180)', async () => {

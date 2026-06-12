@@ -227,6 +227,17 @@ function agentFleetLabels() {
     unreachable: t('agent_fleet.unreachable'),
     versionUnsupported: t('agent_fleet.version_unsupported'),
     authFailed: t('agent_fleet.auth_failed'),
+    slow: t('agent_fleet.slow'),
+    degraded: t('agent_fleet.degraded'),
+    stale: t('agent_fleet.stale'),
+    linkLatency: t('agent_fleet.link_latency'),
+    linkDegraded: t('agent_fleet.link_degraded'),
+    reasonLabels: {
+      timeout: t('agent_fleet.timeout'),
+      conn_refused: t('agent_fleet.conn_refused'),
+      bad_payload: t('agent_fleet.bad_payload'),
+      stale: t('agent_fleet.stale_data')
+    },
     noActivity: t('agent_fleet.no_activity'),
     context: t('label.context'),
     contextChipTitle: t('agent_fleet.context_chip_title'),

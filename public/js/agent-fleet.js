@@ -6,7 +6,8 @@ export const MASCOT_BY_MOOD = {
   offline: 'offline.png'
 };
 
-const REASON_BADGE_REASONS = new Set(['unreachable', 'auth_failed', 'version_unsupported', 'offline', 'stuck']);
+const REASON_BADGE_REASONS = new Set(['unreachable', 'auth_failed', 'version_unsupported', 'timeout', 'conn_refused', 'bad_payload', 'offline', 'stuck']);
+const LINK_CHIP_QUALITIES = new Set(['slow', 'degraded', 'stale']);
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -44,6 +45,11 @@ function labelText(value, fallback = '--') {
   return text || fallback;
 }
 
+function reasonLabel(reason, labels) {
+  const key = String(reason || '').toLowerCase();
+  return labels.reasonLabels?.[key] || labelText(reason, labels.unreachable);
+}
+
 export function stateMood(agent) {
   const state = String(agent?.state || 'UNKNOWN').toUpperCase();
   const reason = String(agent?.health_reason || '').toLowerCase();
@@ -74,6 +80,7 @@ function stateLabel(agent, labels, mood = stateMood(agent)) {
   if (reason === 'version_unsupported') return labels.versionUnsupported;
   if (reason === 'unreachable') return labels.unreachable;
   if (reason === 'auth_failed') return labels.authFailed;
+  if (labels.reasonLabels?.[reason]) return labels.reasonLabels[reason];
   if (mood === 'busy') return labels.busy;
   if (mood === 'thinking') return labels.thinking;
   if (mood === 'stuck') return labels.stuck;
@@ -119,6 +126,30 @@ function barLevel(pct) {
   if (pct > 75) return 'danger';
   if (pct >= 50) return 'warning';
   return 'ok';
+}
+
+function latencyLabel(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}s`;
+  return `${Math.round(n)}ms`;
+}
+
+function buildLinkChip(link, labels) {
+  const quality = String(link?.quality || 'ok').toLowerCase();
+  if (!LINK_CHIP_QUALITIES.has(quality)) return null;
+  const latency = latencyLabel(link?.latency_ms);
+  const p95 = latencyLabel(link?.latency_p95_ms);
+  const reason = reasonLabel(link?.reason, labels);
+  const label = quality === 'degraded'
+    ? labels.linkDegraded
+    : (latency || labels[quality] || quality);
+  const titleParts = [labels.linkLatency];
+  if (quality === 'slow') titleParts.push(`${labels.slow}${p95 ? ` p95 ${p95}` : ''}`);
+  else if (quality === 'stale') titleParts.push(labels.stale);
+  else titleParts.push(`${labels.degraded}: ${reason}`);
+  if (latency && quality !== 'degraded') titleParts.push(latency);
+  return { quality, label, title: titleParts.filter(Boolean).join(' · ') };
 }
 
 function miniRing(name, value, labels) {
@@ -187,6 +218,17 @@ export function defaultAgentFleetLabels() {
     unreachable: 'Unreachable',
     versionUnsupported: 'Version unsupported',
     authFailed: 'Auth failed',
+    slow: 'Slow',
+    degraded: 'Degraded',
+    stale: 'Stale',
+    linkLatency: 'Link latency',
+    linkDegraded: 'Link warning',
+    reasonLabels: {
+      timeout: 'Timeout',
+      conn_refused: 'Connection refused',
+      bad_payload: 'Bad payload',
+      stale: 'Stale data'
+    },
     noActivity: 'Standing by',
     context: 'Context',
     contextChipTitle: 'Context usage / auto new-session threshold',
@@ -222,6 +264,8 @@ export function buildAgentFleetView(fleet, options = {}) {
     const contextPct = pctValue(agent.context_pct);
     const threshold = pctValue(agent.new_session_threshold);
     const activity = compactText(agent.activity, labels.noActivity);
+    const link = agent.link && typeof agent.link === 'object' ? agent.link : null;
+    const linkChip = buildLinkChip(link, labels);
     return {
       name: String(agent.name || ''),
       mood,
@@ -235,6 +279,8 @@ export function buildAgentFleetView(fleet, options = {}) {
       contextLevel: barLevel(contextPct),
       threshold,
       overThreshold: contextPct != null && threshold != null && contextPct >= threshold,
+      linkQuality: String(link?.quality || 'ok').toLowerCase(),
+      linkChip,
       model: labelText(agent.model),
       effort: labelText(agent.effort),
       activityFeed,
@@ -296,12 +342,15 @@ function renderTile(tile, labels) {
   const thresholdLabel = tile.threshold == null ? '--' : `${tile.threshold.toFixed(0)}%`;
   const showReason = REASON_BADGE_REASONS.has(String(tile.reason || '').toLowerCase());
   const reason = showReason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
+  const linkChip = tile.linkChip
+    ? `<span class="agent-link-chip link-${escapeHtml(tile.linkChip.quality)}" title="${escapeHtml(tile.linkChip.title)}">${escapeHtml(tile.linkChip.label)}</span>`
+    : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
   const feedHtml = activityFeedRows(tile, labels);
-  return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''} context-${escapeHtml(tile.contextLevel)}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};">
+  return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''} context-${escapeHtml(tile.contextLevel)}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''}${tile.linkQuality !== 'ok' ? ` data-link-quality="${escapeHtml(tile.linkQuality)}"` : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
-      <span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span>
+      <span class="agent-tile-badges">${linkChip}<span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span></span>
     </div>
     <div class="agent-runtime-line">
       <span>${escapeHtml(labels.model)}</span>

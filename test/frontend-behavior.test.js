@@ -363,6 +363,36 @@ test('fleet tile renders mini ring with centered value and label below', () => {
   assert.match(html, /class="fleet-mini-ring-dial"><span>8%<\/span><\/span>\s*<small>CPU<\/small>/);
 });
 
+test('fleet tile renders link quality chips and granular failure reasons', () => {
+  const html = renderAgentFleetHtml({
+    agents: [
+      {
+        name: 'slow',
+        state: 'IDLE',
+        link: { quality: 'slow', latency_ms: 1840, latency_p95_ms: 1900, sampled_at: '2026-06-12T00:00:00.000Z', reason: null }
+      },
+      {
+        name: 'degraded',
+        state: 'IDLE',
+        link: { quality: 'degraded', latency_ms: null, latency_p95_ms: null, sampled_at: null, reason: 'timeout' }
+      },
+      {
+        name: 'bad',
+        state: 'OFFLINE',
+        pulse_rate: 0,
+        health_reason: 'bad_payload',
+        link: { quality: 'down', latency_ms: null, latency_p95_ms: null, sampled_at: null, reason: 'bad_payload' }
+      }
+    ]
+  });
+
+  assert.match(html, /agent-link-chip link-slow[^>]*>1\.8s</);
+  assert.match(html, /agent-link-chip link-degraded[^>]*>Link warning</);
+  assert.match(html, /title="Link latency · Degraded: Timeout"/);
+  assert.match(html, /class="agent-fleet-reason">Bad payload<\/span>/);
+  assert.doesNotMatch(html, /agent-link-chip link-ok/);
+});
+
 test('fleet tile always renders 5h/7d rate rows, with -- when unreported', () => {
   const html = renderAgentFleetHtml({
     agents: [{ name: 'a', state: 'IDLE', rate_limit_pct: 13, rate_limit_7d_pct: null }]
@@ -719,7 +749,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
   assert.match(index, /app\.js\?v=53/);
-  assert.match(index, /style\.css\?v=40/);
+  assert.match(index, /style\.css\?v=41/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);

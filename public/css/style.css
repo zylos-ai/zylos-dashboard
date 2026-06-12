@@ -799,6 +799,14 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .agent-tile-head {
   justify-content: space-between;
 }
+.agent-tile-badges {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
 .agent-name {
   min-width: 0;
   flex: 1;
@@ -819,6 +827,24 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .agent-state.mood-thinking { color: var(--state-busy); }
 .agent-state.mood-stuck    { color: var(--state-stuck); }
 .agent-state.mood-offline  { color: var(--state-offline); }
+.agent-link-chip {
+  flex: none;
+  max-width: 84px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--link-color, var(--text-muted)) 44%, var(--border));
+  background: color-mix(in srgb, var(--link-color, var(--text-muted)) 12%, transparent);
+  color: var(--link-color, var(--text-dim));
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-link-chip.link-slow { --link-color: #f59e0b; }
+.agent-link-chip.link-degraded { --link-color: #d97706; }
+.agent-link-chip.link-stale { --link-color: #64748b; }
 .agent-runtime-line {
   justify-content: space-between;
   color: var(--text-muted);
@@ -1077,6 +1103,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .agent-tile.is-self {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border-focus));
+}
+.agent-tile[data-link-quality="stale"] {
+  filter: saturate(0.72);
 }
 .agent-tile.is-offline {
   filter: grayscale(0.7);

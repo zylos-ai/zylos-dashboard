@@ -24,7 +24,7 @@ The fleet wall currently collapses every link problem into a binary: a member is
 2. **Record shape** (additive fields, all nullable, passed through `sanitizeRecord`):
    ```
    link: {
-     latency_ms,          // last successful state-fetch duration
+     latency_ms,          // last successful health-probe duration
      latency_p95_ms,      // p95 over the rolling window (last 20 samples)
      sampled_at,          // ISO time of last sample
      quality,             // 'ok' | 'slow' | 'degraded' | 'stale' | 'down'
