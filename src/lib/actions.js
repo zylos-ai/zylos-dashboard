@@ -296,7 +296,7 @@ async function switchModel(reqId, body, config, zylosDir) {
 }
 
 function effortsForModel(model) {
-  if (/^(opus|claude-opus-4-[89]|claude-opus-4-[1-9]\d)/.test(model)) {
+  if (/^(fable|claude-fable-|opus|claude-opus-4-[89]|claude-opus-4-[1-9]\d)/.test(model)) {
     return ['low', 'medium', 'high', 'xhigh'];
   }
   if (/^(haiku|claude-haiku-)/.test(model)) {
@@ -475,11 +475,15 @@ export function getActionsMeta(config, runtimeInfo) {
   const codexModels = runtime === 'codex' ? readCodexModels() : [];
 
   const claudeModels = [
+    { id: 'fable', display_name: 'Fable (latest)' },
+    { id: 'fable[1m]', display_name: 'Fable [1M] (latest)' },
     { id: 'opus', display_name: 'Opus (latest)' },
     { id: 'opus[1m]', display_name: 'Opus [1M] (latest)' },
     { id: 'sonnet', display_name: 'Sonnet (latest)' },
     { id: 'sonnet[1m]', display_name: 'Sonnet [1M] (latest)' },
     { id: 'haiku', display_name: 'Haiku (latest)' },
+    { id: 'claude-fable-5' },
+    { id: 'claude-fable-5[1m]' },
     { id: 'claude-opus-4-8' },
     { id: 'claude-opus-4-8[1m]' },
     { id: 'claude-opus-4-7' },

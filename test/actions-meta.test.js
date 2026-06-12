@@ -107,6 +107,10 @@ test('Claude model list includes defaults with display names and specific versio
   );
 
   const ids = meta.models.map(m => m.id);
+  assert.ok(ids.includes('fable'), 'default fable alias');
+  assert.ok(ids.includes('fable[1m]'), 'default fable 1M alias');
+  assert.ok(ids.includes('claude-fable-5'), 'specific fable 5');
+  assert.ok(ids.includes('claude-fable-5[1m]'), 'specific fable 5 1M');
   assert.ok(ids.includes('opus'), 'default opus alias');
   assert.ok(ids.includes('opus[1m]'), 'default opus 1M alias');
   assert.ok(ids.includes('sonnet'), 'default sonnet alias');
@@ -117,16 +121,21 @@ test('Claude model list includes defaults with display names and specific versio
 
   const opusDefault = meta.models.find(m => m.id === 'opus');
   assert.ok(opusDefault.display_name, 'opus has display_name');
+  assert.ok(meta.models.find(m => m.id === 'fable').display_name, 'fable has display_name');
   assert.ok(!meta.models.find(m => m.id === 'claude-opus-4-8').display_name, 'specific version has no display_name');
 });
 
-test('Claude effort mappings: xhigh for Opus 4.8+/aliases, none for Haiku', () => {
+test('Claude effort mappings: xhigh for Fable/Opus 4.8+/aliases, none for Haiku', () => {
   const meta = getActionsMeta(
     { runtime: 'claude', zylosDir: '/tmp/zylos-dashboard-missing' },
     {}
   );
 
   const e = meta.efforts_by_model;
+  assert.deepStrictEqual(e['fable'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['fable[1m]'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['claude-fable-5'], ['low', 'medium', 'high', 'xhigh']);
+  assert.deepStrictEqual(e['claude-fable-5[1m]'], ['low', 'medium', 'high', 'xhigh']);
   assert.deepStrictEqual(e['opus'], ['low', 'medium', 'high', 'xhigh']);
   assert.deepStrictEqual(e['opus[1m]'], ['low', 'medium', 'high', 'xhigh']);
   assert.deepStrictEqual(e['claude-opus-4-8'], ['low', 'medium', 'high', 'xhigh']);
