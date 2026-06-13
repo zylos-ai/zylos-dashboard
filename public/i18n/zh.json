@@ -375,7 +375,7 @@
   "fleet_manage.rotating_key": "正在轮换密钥...",
   "fleet_manage.key_rotated_status": "密钥已轮换",
   "fleet_manage.rotate_failed": "轮换失败",
-  "fleet_manage.revoke_key": "吊销密钥",
+  "fleet_manage.revoke_key": "吊销",
   "fleet_manage.revoke_confirm": "吊销 API 密钥 {name}？由该密钥换取的会话会立即失效。",
   "fleet_manage.revoking_key": "正在吊销密钥...",
   "fleet_manage.key_revoked_status": "密钥已吊销",

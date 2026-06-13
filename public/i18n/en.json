@@ -375,7 +375,7 @@
   "fleet_manage.rotating_key": "Rotating key...",
   "fleet_manage.key_rotated_status": "Key rotated",
   "fleet_manage.rotate_failed": "Rotate failed",
-  "fleet_manage.revoke_key": "Revoke key",
+  "fleet_manage.revoke_key": "Revoke",
   "fleet_manage.revoke_confirm": "Revoke API key {name}? Existing sessions from this key will stop working immediately.",
   "fleet_manage.revoking_key": "Revoking key...",
   "fleet_manage.key_revoked_status": "Key revoked",

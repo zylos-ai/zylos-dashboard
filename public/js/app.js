@@ -2918,7 +2918,7 @@ function renderApiKeys(data) {
       </div>
       <div class="api-key-actions">
         ${status === 'active' ? `<button class="action-btn action-btn-sm api-key-rotate" type="button">${esc(t('fleet_manage.rotate_key'))}</button>` : ''}
-        ${status === 'active' ? `<button class="settings-remove-btn api-key-revoke" type="button" title="${esc(t('fleet_manage.revoke_key'))}">&times;</button>` : ''}
+        ${status === 'active' ? `<button class="action-btn action-btn-sm api-key-revoke" type="button">${esc(t('fleet_manage.revoke_key'))}</button>` : ''}
         ${status === 'revoked' ? `<button class="action-btn action-btn-sm api-key-delete" type="button">${esc(t('fleet_manage.delete_key'))}</button>` : ''}
       </div>`;
     row.querySelector('.api-key-rotate')?.addEventListener('click', () => rotateApiKey(key.name));
