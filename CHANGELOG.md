@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-13
+
+### Added
+- **CLI key lifecycle commands** (#276): `api-key.js` now supports `rotate <name>` (new secret, sessions invalidated atomically), `delete <name>` (permanently remove revoked keys by name), and `purge-revoked` (remove all revoked keys). CLI refactored to use Store class for the same transactional guarantees as the HTTP API.
+
+### Fixed
+- `generate` command no longer blocks name reuse after revoke — was checking all rows including revoked, now relies on the partial unique index.
+
 ## [0.5.0] - 2026-06-13
 
 ### Added

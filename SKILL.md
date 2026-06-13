@@ -1,6 +1,6 @@
 ---
 name: dashboard
-version: 0.5.0
+version: 0.5.1
 description: Read-only Zylos observability dashboard for agent state, costs, tools, communication, scheduler, and PM2 service health. Full features on Claude runtime. PM2, system health, communication, and scheduler monitoring on all runtimes.
 type: capability
 
