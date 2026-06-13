@@ -2696,7 +2696,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   gap: var(--space-xs);
   flex: 0 0 auto;
 }
-.api-key-icon-btn {
+.action-btn.api-key-icon-btn {
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
@@ -2705,7 +2705,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   align-items: center;
   justify-content: center;
 }
-.api-key-icon-btn svg {
+.action-btn.api-key-icon-btn svg {
   width: 15px;
   height: 15px;
 }

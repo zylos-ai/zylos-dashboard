@@ -877,8 +877,8 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(css, /\.fleet-help\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
   assert.match(css, /\.api-key-created/);
   assert.match(css, /\.api-key-actions/);
-  assert.match(css, /\.api-key-icon-btn/);
-  assert.match(css, /\.api-key-icon-btn svg/);
+  assert.match(css, /\.action-btn\.api-key-icon-btn/);
+  assert.match(css, /\.action-btn\.api-key-icon-btn svg/);
   assert.match(css, /\.api-key-admin-warning/);
 
   for (const pack of [en, zh]) {
