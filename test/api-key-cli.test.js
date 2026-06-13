@@ -159,3 +159,16 @@ test('no command shows usage with all commands', () => {
   assert.match(out, /delete/);
   assert.match(out, /purge-revoked/);
 });
+
+test('no command shows usage even without a database', () => {
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'api-key-nodb-'));
+  const out = run(path.join(emptyDir, 'dashboard.db'));
+  assert.match(out, /Usage:/);
+  assert.match(out, /rotate/);
+});
+
+test('missing arg shows command usage without requiring database', () => {
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'api-key-nodb-'));
+  const err = runFail(path.join(emptyDir, 'dashboard.db'), 'generate');
+  assert.match(err, /Usage: api-key\.js generate/);
+});
