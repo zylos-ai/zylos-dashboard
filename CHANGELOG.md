@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-13
+
 ### Added
 - API keys now support a full lifecycle: revoked names can be reused, active keys can be rotated atomically with the new plaintext returned once, and revoked keys can be permanently deleted individually or purged in bulk (#273).
 
