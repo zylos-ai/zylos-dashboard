@@ -1343,6 +1343,12 @@ const MEMORY_FOLD_ICON =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/></svg>';
 const MEMORY_UNFOLD_ICON =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>';
+const API_KEY_ROTATE_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.74-5.95L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.74 5.95L3 16"/><path d="M3 21v-5h5"/></svg>';
+const API_KEY_REVOKE_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>';
+const API_KEY_DELETE_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
 
 function collectMemoryDirPaths(node, out = []) {
   if (!node) return out;
@@ -2910,6 +2916,9 @@ function renderApiKeys(data) {
     const row = document.createElement('div');
     row.className = `fleet-agent-row api-key-row ${key.status === 'revoked' ? 'revoked' : ''}`.trim();
     const status = key.status || (key.revoked_at ? 'revoked' : 'active');
+    const rotateLabel = esc(t('fleet_manage.rotate_key'));
+    const revokeLabel = esc(t('fleet_manage.revoke_key'));
+    const deleteLabel = esc(t('fleet_manage.delete_key'));
     row.innerHTML = `
       <div class="fleet-agent-meta">
         <strong>${esc(key.name)}</strong>
@@ -2917,9 +2926,9 @@ function renderApiKeys(data) {
         <small>${esc(t('fleet_manage.key_created', { date: key.created_at || '-' }))} · ${esc(t('fleet_manage.key_last_used', { date: key.last_used_at || t('value.none') }))}</small>
       </div>
       <div class="api-key-actions">
-        ${status === 'active' ? `<button class="action-btn action-btn-sm api-key-rotate" type="button">${esc(t('fleet_manage.rotate_key'))}</button>` : ''}
-        ${status === 'active' ? `<button class="action-btn action-btn-sm api-key-revoke" type="button">${esc(t('fleet_manage.revoke_key'))}</button>` : ''}
-        ${status === 'revoked' ? `<button class="action-btn action-btn-sm api-key-delete" type="button">${esc(t('fleet_manage.delete_key'))}</button>` : ''}
+        ${status === 'active' ? `<button class="action-btn api-key-icon-btn api-key-rotate" type="button" title="${rotateLabel}" aria-label="${rotateLabel}">${API_KEY_ROTATE_ICON}</button>` : ''}
+        ${status === 'active' ? `<button class="action-btn api-key-icon-btn api-key-revoke" type="button" title="${revokeLabel}" aria-label="${revokeLabel}">${API_KEY_REVOKE_ICON}</button>` : ''}
+        ${status === 'revoked' ? `<button class="action-btn api-key-icon-btn api-key-delete" type="button" title="${deleteLabel}" aria-label="${deleteLabel}">${API_KEY_DELETE_ICON}</button>` : ''}
       </div>`;
     row.querySelector('.api-key-rotate')?.addEventListener('click', () => rotateApiKey(key.name));
     row.querySelector('.api-key-revoke')?.addEventListener('click', () => revokeApiKey(key.name));

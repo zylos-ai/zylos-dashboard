@@ -2696,8 +2696,18 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   gap: var(--space-xs);
   flex: 0 0 auto;
 }
-.api-key-actions .action-btn-sm {
-  min-width: 68px;
+.api-key-icon-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.api-key-icon-btn svg {
+  width: 15px;
+  height: 15px;
 }
 .api-key-created {
   display: grid;

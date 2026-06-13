@@ -748,8 +748,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=55/);
-  assert.match(index, /style\.css\?v=43/);
+  assert.match(index, /app\.js\?v=56/);
+  assert.match(index, /style\.css\?v=44/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -816,7 +816,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=55/);
+  assert.match(index, /app\.js\?v=56/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -852,6 +852,12 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(app, /function rotateApiKey\(name\)/);
   assert.match(app, /function hardDeleteApiKey\(name\)/);
   assert.match(app, /function purgeRevokedApiKeys\(\)/);
+  assert.match(app, /class="action-btn api-key-icon-btn api-key-rotate" type="button" title="\$\{rotateLabel\}" aria-label="\$\{rotateLabel\}"/);
+  assert.match(app, /class="action-btn api-key-icon-btn api-key-revoke" type="button" title="\$\{revokeLabel\}" aria-label="\$\{revokeLabel\}"/);
+  assert.match(app, /class="action-btn api-key-icon-btn api-key-delete" type="button" title="\$\{deleteLabel\}" aria-label="\$\{deleteLabel\}"/);
+  assert.match(app, /API_KEY_ROTATE_ICON/);
+  assert.match(app, /API_KEY_REVOKE_ICON/);
+  assert.match(app, /API_KEY_DELETE_ICON/);
   assert.match(app, /replace_created_key_confirm/);
   assert.match(app, /if \(pendingKeyName && !window\.confirm/);
   assert.match(app, /if \(fleetManageModal\?\._createdKey\?\.name === name\) renderCreatedApiKey\(null\);/);
@@ -871,7 +877,8 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(css, /\.fleet-help\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
   assert.match(css, /\.api-key-created/);
   assert.match(css, /\.api-key-actions/);
-  assert.match(css, /\.api-key-actions \.action-btn-sm/);
+  assert.match(css, /\.api-key-icon-btn/);
+  assert.match(css, /\.api-key-icon-btn svg/);
   assert.match(css, /\.api-key-admin-warning/);
 
   for (const pack of [en, zh]) {
