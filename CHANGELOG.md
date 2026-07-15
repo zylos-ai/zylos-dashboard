@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-15
+
+### Security
+- **Sanitize PM2 data in /api/system**: the endpoint returned raw PM2 process objects including full `pm2_env` with internal filesystem paths, proxy URLs, usernames, and system details. Now whitelists only safe fields (pid, name, status, cpu, memory, uptime, restarts, version). (#287)
+
 ## [0.5.3] - 2026-07-04
 
 ### Fixed
