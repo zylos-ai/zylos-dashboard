@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 
@@ -35,6 +36,16 @@ function scenario() {
       source TEXT NOT NULL,
       confidence TEXT NOT NULL DEFAULT 'actual'
     );
+    -- A non-usage table, because the usage rows are not the only thing a restore
+    -- carries. The checks this script performs on contents look at usage rows and
+    -- their cost total, so anything living outside that view is exactly what can
+    -- ride in unnoticed: auth sessions, API keys, runtime state. Tests that only
+    -- ever inject usage rows cannot see that class of failure at all.
+    CREATE TABLE auth_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash TEXT NOT NULL
+    );
+    INSERT INTO auth_sessions (token_hash) VALUES ('original-session-token');
   `);
   const insert = db.prepare(`
     INSERT INTO metric_points (timestamp, metric_name, metric_value, dimensions, source)
@@ -52,6 +63,47 @@ function rowMarkers(dbPath) {
     .map((r) => JSON.parse(r.dimensions).marker);
   db.close();
   return markers;
+}
+
+/** The non-usage content: invisible to the row-count and cost checks. */
+function tokenHashes(dbPath) {
+  const db = new Database(dbPath, { readonly: true });
+  const hashes = db.prepare('SELECT token_hash FROM auth_sessions ORDER BY id').all().map((r) => r.token_hash);
+  db.close();
+  return hashes;
+}
+
+const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+/** The frozen artifact's hash, as the script reported it before stopping anything. */
+function reportedArtifactHash(stdout) {
+  const m = stdout.match(/artifact sha256\s*: ([0-9a-f]{64})/);
+  assert.ok(m, 'the script must report the hash of the artifact it froze');
+  return m[1];
+}
+
+/**
+ * A real SQLite -wal that would add `marker` to `source`'s table if it were ever
+ * replayed, built without touching `source`'s own main file. Returned as a path to
+ * the sidecar, ready to be dropped beside some other copy of that database.
+ */
+function walThatAddsARow(source, marker) {
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wal-probe-'));
+  const probe = path.join(probeDir, 'probe.db');
+  fs.copyFileSync(source, probe);
+  const pristine = fs.readFileSync(source);
+
+  const p = new Database(probe);
+  p.pragma('journal_mode = WAL');
+  p.prepare(`INSERT INTO metric_points (timestamp, metric_name, metric_value, dimensions, source)
+             VALUES (?, 'usage_event', 1, ?, 'jsonl_usage')`)
+    .run('2026-07-01T13:00:00.000Z', JSON.stringify({ marker, cost: 5 }));
+  const injected = path.join(probeDir, 'injected-wal');
+  fs.copyFileSync(`${probe}-wal`, injected); // copied while still open, so uncheckpointed
+  assert.deepEqual(fs.readFileSync(source), pristine,
+    'building the probe must leave the source main file untouched, or this is not the case being tested');
+  p.close();
+  return injected;
 }
 
 /**
@@ -271,6 +323,12 @@ test('--dry-run reports the stale WAL and changes nothing', async () => {
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /DRY RUN/);
   assert.deepEqual(fs.readFileSync(dbPath), before, 'dry run must not touch the database');
+
+  // A dry run does build the artifact — that is most of what it is checking — so it
+  // has to clean it up. Leaving one behind would deposit a full copy of the
+  // database beside the live one on every preview.
+  const leftovers = fs.readdirSync(path.dirname(dbPath)).filter((f) => f.includes('.incoming-'));
+  assert.deepEqual(leftovers, [], 'a dry run must not leave its artifact behind');
 });
 
 test('refuses a corrupt backup instead of destroying the live database with it', async () => {
@@ -336,15 +394,27 @@ test('--assume-stopped does not touch the service manager at all', async () => {
     '--assume-stopped must not invoke pm2 — not to stop, and not to restart');
 });
 
-test('NEGATIVE CONTROL: verification fails when the backup changed after it was inspected, and the service is left down', async () => {
+// --- Provenance: inspection and use are the same logical moment ---------------
+// The mechanism under test is that the backup is read exactly once, before the
+// stop, and frozen into a self-contained artifact that is what later gets renamed
+// into place. The three controls below each mutate the source backup during the
+// stop window — main file, its -wal, and a table the content checks do not look at
+// — and assert the same thing every time: it makes no difference to the result.
+//
+// That is a stronger claim than "the change is detected", and a different one. A
+// detection can be evaded; these say the mutation cannot reach the live database
+// at all, because nothing reads the source again after it has been frozen.
+
+test('POSITIVE CONTROL: replacing the source backup during the stop window changes nothing', async () => {
   const { dir, dbPath, backupPath, db, insert } = scenario();
   await db.backup(backupPath);
   insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
   db.close();
 
-  // A different backup with the SAME usage row count and the SAME cost total, so
-  // the row/cost comparison alone cannot tell it apart — only comparing against
-  // the bytes that were actually inspected catches this.
+  // A different database with the SAME usage row count and the SAME cost total, so
+  // no content check could tell it from the approved one. Under the previous
+  // ordering this was caught by re-hashing the source; now it is not caught,
+  // because it is not a threat: the source is never read again.
   const tampered = path.join(dir, 'tampered.db');
   const t = new Database(tampered);
   t.exec(`
@@ -354,6 +424,8 @@ test('NEGATIVE CONTROL: verification fails when the backup changed after it was 
       metric_value REAL NOT NULL, dimensions TEXT, source TEXT NOT NULL,
       confidence TEXT NOT NULL DEFAULT 'actual'
     );
+    CREATE TABLE auth_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL);
+    INSERT INTO auth_sessions (token_hash) VALUES ('attacker-session-token');
   `);
   t.prepare(`INSERT INTO metric_points (timestamp, metric_name, metric_value, dimensions, source)
              VALUES (?, 'usage_event', 1, ?, 'jsonl_usage')`)
@@ -365,29 +437,156 @@ test('NEGATIVE CONTROL: verification fails when the backup changed after it was 
     SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
   ], { encoding: 'utf8', env: pm2.env });
 
-  assert.notEqual(res.status, 0, 'a swapped-out backup must not exit 0');
-  assert.match(res.stderr, /BACKUP CHANGED AFTER INSPECTION/);
-  assert.match(res.stderr, /inspected: [0-9a-f]{64}/);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(rowMarkers(dbPath), ['in-backup'],
+    'the restored state must be the inspected one, not whatever replaced the source');
+  assert.deepEqual(tokenHashes(dbPath), ['original-session-token'],
+    'and not the replacement content in a table the checks never look at');
+  assert.equal(sha256(dbPath), reportedArtifactHash(res.stdout),
+    'the file on disk must be byte-identical to the artifact that was verified');
+  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard', 'start zylos-dashboard'],
+    'a restore that was never in doubt completes normally');
+});
 
-  // The tampered file has the same row count and cost as the approved one, so
-  // only comparing against the bytes that were actually inspected catches it.
-  // The re-check now happens before the live database is touched, so unlike the
-  // previous behaviour nothing is restored first and then found wanting.
+test('POSITIVE CONTROL: a -wal appearing beside the source backup during the stop window changes nothing', async () => {
+  // Main-file bytes identical, contents different — the case a hash can never see.
+  // The previous ordering had to catch this with a logical comparison after
+  // reopening the source. Now the source is not reopened, so there is nothing to
+  // catch: the injected sidecar is never in the path of anything.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const injectedWal = walThatAddsARow(backupPath, 'wal-injected');
+  const pm2 = fakePm2({ onStop: `cp "${injectedWal}" "${backupPath}-wal"` });
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], { encoding: 'utf8', env: pm2.env });
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(rowMarkers(dbPath), ['in-backup'],
+    'the row that only ever existed in the injected -wal must not appear');
+  assert.equal(sha256(dbPath), reportedArtifactHash(res.stdout));
+  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard', 'start zylos-dashboard']);
+
+  fs.rmSync(`${backupPath}-wal`, { force: true });
+});
+
+test('POSITIVE CONTROL: a WAL-only change to a NON-USAGE table during the stop window changes nothing', async () => {
+  // This is the exploit the previous ordering actually admitted, and the only one
+  // of the three that no check in the script would have flagged. The injected
+  // commit lands in the backup's -wal, so the main file's bytes are unchanged and
+  // the hash matches; it touches auth_sessions rather than metric_points, so the
+  // usage row count and cost total are unchanged too. Both checks pass and
+  // never-inspected content is restored.
+  //
+  // Note what makes this control discriminating rather than decorative: the
+  // injection site is deliberately outside everything the script compares. A
+  // control that injects a usage row proves nothing about this class — it would be
+  // caught by the row count for reasons that have nothing to do with provenance.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const pristineMainBytes = fs.readFileSync(backupPath);
+
+  // A -wal that rewrites the session token in place: same table, same row count,
+  // same everything the script looks at.
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-probe-'));
+  const probe = path.join(probeDir, 'probe.db');
+  fs.copyFileSync(backupPath, probe);
+  const p = new Database(probe);
+  p.pragma('journal_mode = WAL');
+  p.prepare('UPDATE auth_sessions SET token_hash = ?').run('attacker-session-token');
+  const injectedWal = path.join(probeDir, 'injected-wal');
+  fs.copyFileSync(`${probe}-wal`, injectedWal);
+  assert.deepEqual(fs.readFileSync(probe), pristineMainBytes,
+    'the probe must leave the main file untouched, or this is not the case being tested');
+  p.close();
+
+  const pm2 = fakePm2({ onStop: `cp "${injectedWal}" "${backupPath}-wal"` });
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], { encoding: 'utf8', env: pm2.env });
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(tokenHashes(dbPath), ['original-session-token'],
+    'the rewritten token must NOT be what the restore installed — this is the exploit itself');
+  assert.deepEqual(rowMarkers(dbPath), ['in-backup'],
+    'and the usage rows are the inspected ones, as they were in the exploit too');
+  assert.equal(sha256(dbPath), reportedArtifactHash(res.stdout),
+    'the swapped-in bytes are the verified artifact, so no injection site exists at all');
+
+  fs.rmSync(`${backupPath}-wal`, { force: true });
+});
+
+test('a -wal appearing beside the FROZEN ARTIFACT is discarded unread rather than consumed', async () => {
+  // The artifact is the one file the restore does consume, so it is worth asserting
+  // that it is consumed as a single file and nothing else travels with it. The
+  // script removes any sidecar that turns up beside it, unread, and says so.
+  //
+  // Honest about the strength of this: an artifact written by VACUUM INTO is not in
+  // WAL mode, so SQLite would ignore such a sidecar anyway. What is asserted here
+  // is that the code does not carry it along and does not reopen the artifact to
+  // find out — which is what keeps that from becoming load-bearing later.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const injectedWal = walThatAddsARow(backupPath, 'artifact-wal-injected');
+  const pm2 = fakePm2({
+    onStop: `for f in "${dbPath}".incoming-*; do [ -e "$f" ] && cp "${injectedWal}" "$f-wal"; done`
+  });
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], { encoding: 'utf8', env: pm2.env });
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /discarded unread -wal that appeared beside the frozen artifact/,
+    'the sidecar must be reported, so its existence is never silent');
+  assert.deepEqual(rowMarkers(dbPath), ['in-backup'], 'and its row must not appear');
+  assert.equal(sha256(dbPath), reportedArtifactHash(res.stdout));
+  assert.ok(!fs.existsSync(`${dbPath}-wal`) || fs.statSync(`${dbPath}-wal`).size === 0,
+    'nor may it arrive beside the live database under its new name');
+});
+
+test('NEGATIVE CONTROL: the frozen artifact being altered after inspection is caught, and the service is left down', async () => {
+  // The re-hash before the swap covers the one file that is actually used. Nothing
+  // legitimate writes to it, so this asserts the check is live rather than dead
+  // code — and that failing it costs the live database nothing.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const pm2 = fakePm2({
+    onStop: `for f in "${dbPath}".incoming-*; do [ -e "$f" ] && printf 'tampered' >> "$f"; done`
+  });
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], { encoding: 'utf8', env: pm2.env });
+
+  assert.notEqual(res.status, 0, 'an altered artifact must not be restored');
+  assert.match(res.stderr, /FROZEN ARTIFACT CHANGED AFTER INSPECTION/);
+  assert.match(res.stderr, /inspected: [0-9a-f]{64}/);
   assert.match(res.stderr, /was NOT touched/);
   assert.deepEqual(rowMarkers(dbPath), ['in-backup', 'after-backup'],
     'the live database must be left exactly as it was');
 
-  // Fail-safe: stopped, never started again with a restore that did not complete.
-  const calls = pm2Calls(pm2.log);
-  assert.deepEqual(calls, ['stop zylos-dashboard'],
+  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard'],
     'the service must be stopped and then NOT started while the restore is unresolved');
   assert.match(res.stderr, /still stopped and was deliberately NOT started/);
 
-  // And the way back is named and intact.
   const aside = res.stdout.match(/pre-restore copy: (\S+)/);
   assert.ok(aside, 'the failure path must still name the pre-restore copy');
   assert.deepEqual(markersOfMainFileAlone(aside[1]), ['in-backup', 'after-backup'],
     'the pre-restore copy still holds the full original state, on its own');
+
+  const leftovers = fs.readdirSync(path.dirname(dbPath)).filter((f) => f.includes('.incoming-'));
+  assert.deepEqual(leftovers, [], 'the untrustworthy artifact must not be left lying around');
 });
 
 test('a read-only database file is replaced rather than written through', async () => {
@@ -415,90 +614,46 @@ test('a read-only database file is replaced rather than written through', async 
     'a completed restore stops and then starts the service');
 });
 
-test('NEGATIVE CONTROL: a backup whose WAL changed is caught even though its main file bytes did not', async () => {
-  // The limit of the SHA-256 check, made explicit. The hash covers the main file
-  // only, so a backup whose newest rows arrive in its -wal has the same hash and
-  // different contents. Nothing about comparing bytes can see that, which is why
-  // the replacement is also compared logically against the survey taken at the
-  // start — and why that comparison happens before anything is swapped in.
+test('NEGATIVE CONTROL: an unusable backup is refused before the service is even stopped', async () => {
+  // What this covers, precisely: the failure of the step that builds the
+  // replacement — not the initial read, and not a later comparison. Its
+  // predecessor claimed that branch and never reached it, because a re-hash of the
+  // source intercepted the tampered file first and the run died with a different
+  // message. Asserting the specific failure point is what keeps a test honest
+  // about which branch it exercises.
+  //
+  // The stop hook that test used to rely on is gone with the re-hash: since the
+  // backup is now read before anything is stopped, a broken file must be handed
+  // over directly to reach this branch at all.
   const { dir, dbPath, backupPath, db, insert } = scenario();
   await db.backup(backupPath);
   insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
   db.close();
 
-  const pristineMainBytes = fs.readFileSync(backupPath);
-
-  // Build a -wal for the backup that adds a row, while leaving the backup's own
-  // main file byte-for-byte unchanged.
-  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wal-probe-'));
-  const probe = path.join(probeDir, 'probe.db');
-  fs.copyFileSync(backupPath, probe);
-  const p = new Database(probe);
-  p.pragma('journal_mode = WAL');
-  p.prepare(`INSERT INTO metric_points (timestamp, metric_name, metric_value, dimensions, source)
-             VALUES (?, 'usage_event', 1, ?, 'jsonl_usage')`)
-    .run('2026-07-01T13:00:00.000Z', JSON.stringify({ marker: 'wal-injected', cost: 5 }));
-  const injectedWal = path.join(probeDir, 'injected-wal');
-  fs.copyFileSync(`${probe}-wal`, injectedWal); // copied while still open, so uncheckpointed
-  assert.deepEqual(fs.readFileSync(probe), pristineMainBytes,
-    'the probe must leave the main file untouched, or this is not the case being tested');
-  p.close();
-
-  const pm2 = fakePm2({ onStop: `cp "${injectedWal}" "${backupPath}-wal"` });
-  const res = spawnSync(process.execPath, [
-    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
-  ], { encoding: 'utf8', env: pm2.env });
-
-  // The hash check must NOT be what catches this — the bytes it compares match.
-  assert.doesNotMatch(res.stderr, /BACKUP CHANGED AFTER INSPECTION/,
-    'the main-file hash cannot see a WAL-only change; it must not be credited with catching this');
-  assert.notEqual(res.status, 0, 'a backup whose contents changed must not be restored silently');
-  assert.match(res.stderr, /RESTORE VERIFICATION FAILED/);
-  assert.match(res.stderr, /backup     : 1 usage rows/);
-  assert.match(res.stderr, /replacement: 2 usage rows/);
-
-  assert.match(res.stderr, /was NOT touched/);
-  assert.deepEqual(rowMarkers(dbPath), ['in-backup', 'after-backup'],
-    'the live database must be untouched, since nothing was swapped in');
-  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard'],
-    'and the service must be left down rather than started on an unverified restore');
-
-  fs.rmSync(`${backupPath}-wal`, { force: true });
-  assert.ok(dir);
-});
-
-test('NEGATIVE CONTROL: an unusable backup leaves the live database untouched and the service down', async () => {
-  // The replacement is built and checked before anything is swapped, so a backup
-  // that cannot produce a usable database must cost the live one nothing at all.
-  const { dir, dbPath, backupPath, db, insert } = scenario();
-  await db.backup(backupPath);
-  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
-  db.close();
-
-  // A file that passes the opening survey and then loses its table, so building
-  // the replacement is what fails rather than the initial inspection. Swapped in
-  // on `stop`, like the tamper case, and truncated so it is no longer a database.
+  // Truncated: a SQLite header, then nothing. Opening it succeeds; reading it out
+  // does not, so VACUUM INTO is what fails.
   const broken = path.join(dir, 'broken.db');
   fs.writeFileSync(broken, fs.readFileSync(backupPath).subarray(0, 512));
 
-  const pm2 = fakePm2({ tamperFrom: broken, tamperTo: backupPath });
+  const pm2 = fakePm2();
   const res = spawnSync(process.execPath, [
-    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+    SCRIPT, '--db', dbPath, '--backup', broken, '--service', 'zylos-dashboard'
   ], { encoding: 'utf8', env: pm2.env });
 
   assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /Could not build a replacement database from the backup/,
+    'the failure must be the materialize step, which is the branch this test is for');
   assert.match(res.stderr, /was NOT touched/);
   assert.deepEqual(rowMarkers(dbPath), ['in-backup', 'after-backup'],
     'the live database must be exactly as it was before the attempt');
-  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard'],
-    'an incomplete restore must not be followed by a start');
 
-  const aside = res.stdout.match(/pre-restore copy: (\S+)/);
-  assert.ok(aside, 'the failure path must still name the pre-restore copy');
-  assert.match(res.stderr, /A copy of it is also at:/);
-  assert.deepEqual(markersOfMainFileAlone(aside[1]), ['in-backup', 'after-backup']);
+  // Stronger than the fail-safe it replaces: the backup is checked before the stop,
+  // so an unusable one does not even cost downtime.
+  assert.deepEqual(pm2Calls(pm2.log), [],
+    'an unusable backup must be refused without stopping the service at all');
+  assert.match(res.stderr, /Nothing was stopped/);
 
-  // No half-built replacement is left lying beside the database.
+  // No half-built artifact is left lying beside the database.
   const leftovers = fs.readdirSync(path.dirname(dbPath)).filter((f) => f.includes('.incoming-'));
   assert.deepEqual(leftovers, [], 'a failed attempt must not leave an .incoming- file behind');
 });

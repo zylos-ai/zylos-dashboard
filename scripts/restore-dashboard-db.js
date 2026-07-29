@@ -18,23 +18,40 @@
  * single-file database with any WAL content already materialized into it, so the
  * result cannot be torn and carries no sidecar of its own.
  *
+ * The second thing that matters is *when*. Inspecting a backup and then using it
+ * are only meaningful together if they are the same logical moment — otherwise
+ * whatever is checked is not what gets restored. Re-reading the backup after the
+ * service is stopped cannot give that: a stop hook committing one row into the
+ * backup's -wal leaves the main file's bytes identical and, if the row is not a
+ * usage row, leaves the row count and cost total identical too. Every check
+ * passes and never-inspected content is restored.
+ *
+ * So the backup is read exactly once, BEFORE anything is stopped, and what is
+ * read is frozen on the spot into a self-contained file — the "frozen artifact".
+ * That artifact is what gets surveyed, hashed, and later renamed into place. The
+ * source backup is never opened again, so nothing that happens to it afterwards
+ * can reach the live database, and because the artifact is self-contained no
+ * sidecar appearing beside it can alter its logical contents either. "It changed
+ * between inspection and use" stops being a thing to guard against and becomes
+ * impossible by construction.
+ *
  * A correct restore then has to do all of this, in order:
  *
- *   1. stop every process holding the database (the dashboard service)
- *   2. set the current database aside, as a self-contained file
- *   3. materialize the backup into a replacement, and verify it
- *   4. swap the replacement in, discarding the stale sidecars
+ *   1. freeze the backup into a self-contained artifact, and verify THAT
+ *   2. stop every process holding the database (the dashboard service)
+ *   3. set the current database aside, as a self-contained file
+ *   4. swap the very same artifact in, discarding the stale sidecars
  *   5. start the service again
  *
- * Steps 2-4 are what this script guarantees. Step 1 is not something a script
- * can safely assume, so it must be either performed here (--service) or
+ * Steps 1, 3 and 4 are what this script guarantees. Step 2 is not something a
+ * script can safely assume, so it must be either performed here (--service) or
  * explicitly asserted by the caller (--assume-stopped). There is deliberately
  * no default: silence must never be read as "the service was stopped".
  *
- * Note the ordering of 3 and 4: the replacement is verified while the live
- * database is still untouched, so a backup that turns out to be unusable costs
- * nothing at all. Only a replacement that already passed its checks is swapped
- * in, and the swap itself is a rename.
+ * Note that step 1 precedes step 2: a backup that turns out to be unusable is
+ * rejected before the service is even stopped, so it costs nothing at all — not
+ * even downtime. And the swap in step 4 is a rename of the file that was already
+ * verified, not a fresh read of anything.
  *
  *   node scripts/restore-dashboard-db.js --backup <file> --service zylos-dashboard
  *   node scripts/restore-dashboard-db.js --backup <file> --assume-stopped
@@ -82,16 +99,15 @@ const shm = `${dbPath}-shm`;
 const sizeOf = (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
 
 /**
- * SHA-256 of the file's bytes. Taken of the backup BEFORE anything is stopped or
- * moved, and taken again immediately before the backup is used, so that anything
- * altering it mid-run (another operator, a sync job, a stop hook) is caught while
- * the live database is still untouched.
+ * SHA-256 of the file's bytes.
  *
- * Note what this does NOT do: it says nothing about whether a file is a complete
- * database. Two databases can have identical main-file bytes and differ entirely
- * in their -wal sidecars, so a matching hash is evidence about provenance only.
- * Completeness is what `materialize` establishes, and logical state is what
- * `survey` checks.
+ * This is only a provenance guarantee for a file that is self-contained. On a
+ * WAL-mode database it is close to worthless: two databases with identical main
+ * files can differ entirely in their -wal sidecars, so the hash matches while the
+ * contents do not. That is why it is taken of the frozen artifact — which has no
+ * sidecar and cannot acquire one that means anything — and not of the source
+ * backup, whose bytes this script stops caring about the moment the artifact
+ * exists.
  */
 function fileHash(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -139,11 +155,58 @@ console.log(`backup   : ${backupPath}`);
 console.log(`wal      : ${sizeOf(wal)} bytes${sizeOf(wal) > 0 ? '  <-- holds state the main file does not' : ''}`);
 console.log(`shm      : ${sizeOf(shm)} bytes`);
 
-const backupSurvey = survey(backupPath);
-const backupHash = fileHash(backupPath);
-console.log(`\nbackup contents  : ${backupSurvey.rows} usage rows, cost $${backupSurvey.cost}, integrity ${backupSurvey.integrity}`);
-console.log(`backup sha256    : ${backupHash}`);
-if (backupSurvey.integrity !== 'ok') die('Backup fails integrity_check. Refusing to restore from it.');
+// 1. Freeze the backup into a self-contained artifact, and verify THAT.
+//
+// This is the only time the backup is read. Everything downstream refers to the
+// artifact, so the source file can be replaced, appended to, or deleted after
+// this point without any of it reaching the live database.
+//
+// It happens before the service is stopped, which means a backup that cannot
+// produce a usable database is rejected at no cost — not even downtime. The
+// artifact lands beside the live database so the eventual swap is a rename within
+// one filesystem.
+const artifact = `${dbPath}.incoming-${process.pid}`;
+const discardArtifact = () => {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.rmSync(`${artifact}${suffix}`, { force: true }); } catch { /* nothing to add */ }
+  }
+};
+try {
+  if (fs.existsSync(artifact)) discardArtifact();
+  materialize(backupPath, artifact);
+} catch (err) {
+  discardArtifact();
+  die([
+    `Could not build a replacement database from the backup: ${err.message}`,
+    `${dbPath} was NOT touched and is still the pre-restore database.`,
+    'Nothing was stopped: the backup is checked before the service is touched.'
+  ].join('\n'));
+}
+
+// Survey first, then hash — both with the artifact's SQLite connection already
+// closed, so the bytes that are hashed are the bytes that were surveyed. Hashing
+// a file while a connection to it is open would hash a moving target.
+let artifactSurvey;
+try {
+  artifactSurvey = survey(artifact);
+} catch (err) {
+  discardArtifact();
+  die([
+    `The replacement built from the backup could not be read: ${err.message}`,
+    `${dbPath} was NOT touched and is still the pre-restore database.`,
+    'Nothing was stopped: the backup is checked before the service is touched.'
+  ].join('\n'));
+}
+const artifactHash = fileHash(artifact);
+
+console.log(`\nbackup contents  : ${artifactSurvey.rows} usage rows, cost $${artifactSurvey.cost}, integrity ${artifactSurvey.integrity}`);
+console.log(`frozen artifact  : ${artifact}`);
+console.log(`artifact sha256  : ${artifactHash}`);
+console.log(`source sha256    : ${fileHash(backupPath)}  (recorded for the audit trail; the source is never read again)`);
+if (artifactSurvey.integrity !== 'ok') {
+  discardArtifact();
+  die('Backup fails integrity_check. Refusing to restore from it.');
+}
 
 let liveSurvey = null;
 try {
@@ -154,11 +217,12 @@ try {
 }
 
 if (dryRun) {
+  discardArtifact();
   console.log('\nDRY RUN — nothing stopped, moved, or written.');
   process.exit(0);
 }
 
-// 1. stop whatever holds the database
+// 2. stop whatever holds the database
 if (service) {
   console.log(`\nstopping ${service} ...`);
   const stop = spawnSync('pm2', ['stop', service], { encoding: 'utf8' });
@@ -172,7 +236,7 @@ if (service) {
 
 const leftStopped = () => (service ? `${service} is still stopped and was deliberately NOT started.` : '');
 
-// 2. Keep the pre-restore state recoverable: a failed restore must not be a
+// 3. Keep the pre-restore state recoverable: a failed restore must not be a
 // one-way door either.
 //
 // This copy goes through SQLite, so it is a single self-contained file. That
@@ -197,6 +261,7 @@ try {
     }
     asideIsRawCopy = true;
   } catch (copyErr) {
+    discardArtifact();
     die([
       `Could not set aside the current database: ${copyErr.message}`,
       `(reading it through SQLite also failed: ${err.message})`,
@@ -209,70 +274,32 @@ console.log(asideIsRawCopy
   ? `pre-restore copy: ${aside} (RAW copy — the live database was unreadable through SQLite, so its -wal/-shm were copied too and must be kept beside it)`
   : `pre-restore copy: ${aside} (self-contained single file, so restoring from it needs nothing else)`);
 
-// The backup is about to be used. Re-check it against the bytes that were
-// inspected and approved above, while the live database is still intact.
-const backupHashNow = fileHash(backupPath);
-if (backupHashNow !== backupHash) {
+// 4. Swap the artifact in.
+//
+// Deliberately NOT done here: reopening the artifact, materializing it a second
+// time, or reading anything that has appeared beside it. Any of those would split
+// inspection and use back into two moments and reintroduce exactly the gap this
+// ordering closes. The only things that happen to the artifact from here on are a
+// re-hash of its bytes and a rename of that same file.
+const artifactHashNow = fileHash(artifact);
+if (artifactHashNow !== artifactHash) {
+  // Nothing legitimate rewrites this file — it was created moments ago under a
+  // pid-specific name — so a changed hash means something is writing where it
+  // must not, and the artifact can no longer be trusted as the thing that was
+  // verified. Discard it rather than leave a plausible-looking file behind.
+  discardArtifact();
   die([
-    'BACKUP CHANGED AFTER INSPECTION — refusing to restore from it.',
-    `inspected: ${backupHash}`,
-    `now      : ${backupHashNow}`,
+    'FROZEN ARTIFACT CHANGED AFTER INSPECTION — refusing to restore from it.',
+    `inspected: ${artifactHash}`,
+    `now      : ${artifactHashNow}`,
     'The database was NOT touched; the file on disk is still the pre-restore one.',
     `A copy of it is also at: ${aside}`,
     leftStopped()
   ].filter(Boolean).join('\n'));
 }
 
-// 3. Materialize the backup into a replacement and verify it BEFORE the live
-// database is disturbed, so an unusable backup costs nothing.
-const incoming = `${dbPath}.incoming-${process.pid}`;
-const discardIncoming = () => { try { fs.rmSync(incoming, { force: true }); } catch { /* nothing to add */ } };
-try {
-  if (fs.existsSync(incoming)) fs.rmSync(incoming, { force: true, recursive: true });
-  materialize(backupPath, incoming);
-} catch (err) {
-  discardIncoming();
-  die([
-    `Could not build a replacement database from the backup: ${err.message}`,
-    `${dbPath} was NOT touched and is still the pre-restore database.`,
-    `A copy of it is also at: ${aside}`,
-    leftStopped()
-  ].filter(Boolean).join('\n'));
-}
-
-let candidate;
-try {
-  candidate = survey(incoming);
-} catch (err) {
-  // Guarded deliberately: an unreadable replacement must produce the fail-safe
-  // message below, not an uncaught stack trace that skips it.
-  discardIncoming();
-  die([
-    `The replacement built from the backup could not be read: ${err.message}`,
-    `${dbPath} was NOT touched and is still the pre-restore database.`,
-    `A copy of it is also at: ${aside}`,
-    leftStopped()
-  ].filter(Boolean).join('\n'));
-}
-
-const matches = candidate.integrity === 'ok' &&
-  candidate.rows === backupSurvey.rows &&
-  candidate.cost === backupSurvey.cost;
-if (!matches) {
-  discardIncoming();
-  die([
-    'RESTORE VERIFICATION FAILED — the replacement does not match the backup.',
-    `backup     : ${backupSurvey.rows} usage rows, cost $${backupSurvey.cost}, integrity ${backupSurvey.integrity}`,
-    `replacement: ${candidate.rows} usage rows, cost $${candidate.cost}, integrity ${candidate.integrity}`,
-    `${dbPath} was NOT touched and is still the pre-restore database.`,
-    `A copy of it is also at: ${aside}`,
-    leftStopped()
-  ].filter(Boolean).join('\n'));
-}
-console.log(`replacement built: ${candidate.rows} usage rows, cost $${candidate.cost}, integrity ${candidate.integrity}`);
-
-// 4. Swap it in. The stale sidecars go with the database they belonged to —
-// leaving either of them beside the new file is the silent-failure case.
+// The stale sidecars go with the database they belonged to — leaving either of
+// them beside the new file is the silent-failure case.
 try {
   for (const [p, label] of [[wal, 'wal'], [shm, 'shm']]) {
     if (fs.existsSync(p)) {
@@ -280,17 +307,26 @@ try {
       console.log(`removed stale ${label}`);
     }
   }
-  fs.renameSync(incoming, dbPath);
+  // Anything that turned up beside the artifact is not part of it and is not
+  // going anywhere near the live database. Only the main file is renamed; these
+  // are removed unread, and noted so that their existence is not silent.
+  for (const suffix of ['-wal', '-shm']) {
+    if (fs.existsSync(`${artifact}${suffix}`)) {
+      console.log(`discarded unread ${suffix} that appeared beside the frozen artifact`);
+      fs.rmSync(`${artifact}${suffix}`, { force: true });
+    }
+  }
+  fs.renameSync(artifact, dbPath);
 } catch (err) {
   die([
     `Could not swap the verified replacement into place: ${err.message}`,
     `The stale sidecars may already be gone, so ${dbPath} must not be served as-is.`,
     `Restore the pre-restore copy from: ${aside}`,
-    `The verified replacement, if it still exists, is at: ${incoming}`,
+    `The verified replacement, if it still exists, is at: ${artifact}`,
     leftStopped()
   ].filter(Boolean).join('\n'));
 }
-console.log('replacement swapped into place');
+console.log('frozen artifact swapped into place');
 
 let after;
 try {
@@ -304,10 +340,10 @@ try {
 }
 
 const staleWal = sizeOf(wal) > 0;
-if (after.integrity !== 'ok' || after.rows !== candidate.rows || after.cost !== candidate.cost || staleWal) {
+if (after.integrity !== 'ok' || after.rows !== artifactSurvey.rows || after.cost !== artifactSurvey.cost || staleWal) {
   die([
     'RESTORE VERIFICATION FAILED after the swap — the database on disk is not what was verified.',
-    `expected: ${candidate.rows} usage rows, cost $${candidate.cost}`,
+    `expected: ${artifactSurvey.rows} usage rows, cost $${artifactSurvey.cost}`,
     `found   : ${after.rows} usage rows, cost $${after.cost}, integrity ${after.integrity}`,
     staleWal ? `and a non-empty ${wal} is beside it, which will be replayed on the next open` : '',
     `Restore the pre-restore copy from: ${aside}`,
@@ -321,10 +357,12 @@ console.log([
   '\nverified:',
   '  - the database was built by SQLite from the backup, so any state that was in',
   `    the backup's -wal is materialized into the single file now on disk`,
-  '  - the backup was byte-identical (sha256) to the one inspected at the start,',
-  '    checked again immediately before it was used',
+  '  - the file on disk IS the artifact that was surveyed before the service was',
+  `    stopped, byte-identical (sha256 ${artifactHash.slice(0, 12)}...), swapped in by rename;`,
+  '    the source backup was read once and never opened again, so nothing that',
+  '    happened to it afterwards could reach this database',
   '  - it opens cleanly and passes integrity_check',
-  `  - it reports the same ${after.rows} usage rows and cost $${after.cost} as that backup`,
+  `  - it reports the same ${after.rows} usage rows and cost $${after.cost} as that artifact`,
   '  - no replayable -wal remains beside it',
   `  - the pre-restore database is at ${aside}${asideIsRawCopy ? ' (raw copy — keep its sidecars beside it)' : ' as a self-contained file'}`,
   'not proven: that the backup itself held the state you wanted, or that nothing',
