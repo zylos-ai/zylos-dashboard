@@ -191,6 +191,39 @@ test('--annotate-legacy-keys marks legacy fallback rows without rewriting their 
   assert.equal(d.dedup_key, dims.dedup_key, 'the v1 key itself is preserved verbatim');
 });
 
+test('the script never advertises a bare cp as the rollback, and documents no phantom guard', () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  // The reviewed head printed `cp "<backup>" "<db>"`, which cannot restore a
+  // WAL-mode database and fails silently while looking like it worked.
+  assert.doesNotMatch(source, /cp "\$\{backupPath\}"/, 'no bare-cp restore instruction');
+  assert.match(source, /restore-dashboard-db\.js/, 'points at the restore script instead');
+  // The header once claimed a "backup exists or --no-backup-check" guard that
+  // was never implemented. Either implement it or stop claiming it. The flag is
+  // still named in the header, but only to record that it never existed, so
+  // assert on the promise rather than on the mention.
+  assert.doesNotMatch(source, /refuses to run unless a backup exists/, 'no phantom guard promised');
+  assert.doesNotMatch(source, /has\('--no-backup-check'\)/, 'and none implemented either');
+  assert.match(source, /never implemented/, 'the removal is recorded rather than left ambiguous');
+});
+
+test('an unannotated legacy row is reported as a required follow-up, not an optional extra', () => {
+  const dir = tmp();
+  const { db, dbPath } = makeDb(dir);
+  insertUsage(db, {
+    ts: '2026-07-01T10:00:00.000Z', session: 's1',
+    dims: { model: 'claude-opus-5', cost: 1.5, dedup_basis: 'token_identity', dedup_key: 'k' }
+  });
+  db.close();
+
+  const res = run(dbPath, path.join(dir, 'projects'));
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /REQUIRED step, not an optional extra/);
+  // The survivor count must not be presented as the whole story: it equals the
+  // group count, so quoting it alone hides the deleted rows.
+  assert.match(res.stdout, /surviving rows here/);
+  assert.match(res.stdout, /rows originally touched/);
+});
+
 test('legacy rows are reported as retained and not precisely repairable in a dry run', () => {
   const dir = tmp();
   const { db, dbPath } = makeDb(dir);

@@ -36,8 +36,18 @@
  *   node scripts/recompute-usage-dedup.js --annotate-legacy-keys --apply
  *   node scripts/recompute-usage-dedup.js --db /path/to/dashboard.db
  *
- * With --apply the script refuses to run unless a backup exists or
- * --no-backup-check is passed; it also takes its own backup first.
+ * With --apply the script takes its own online backup immediately before the
+ * write and aborts without changing anything if that backup fails. It does NOT
+ * additionally require a pre-existing backup: an earlier header claimed a
+ * "backup exists or --no-backup-check" guard that was never implemented, and
+ * documenting a safety check that does not exist is worse than not having one.
+ * The flag is gone rather than added, because the script's own pre-write backup
+ * is what a rollback actually needs.
+ *
+ * Rolling back is NOT `cp backup dashboard.db`. The database runs in WAL mode,
+ * so a bare copy leaves the stale -wal on disk to be replayed and the rollback
+ * silently does not happen. Use scripts/restore-dashboard-db.js, and see
+ * docs/usage-repair-runbook.md for the full procedure.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -224,7 +234,13 @@ console.log('  request identity, and token shape is not an identity.');
 if (legacyRows.length > 0) {
   console.log('');
   console.log(`--- rows collapsed by the removed token-identity fallback (key v${LEGACY_KEY_VERSION}) ---`);
-  console.log(`  rows           : ${legacyRows.length}  cost $${legacyCost.toFixed(2)}`);
+  // Two different quantities get confused easily, so both are printed. The
+  // surviving count equals the group count (one row kept per group), which is
+  // exactly why quoting it alone reads as if the deleted rows never existed.
+  console.log(`  surviving rows here    : ${legacyRows.length}  (one per token-identity group)  cost $${legacyCost.toFixed(2)}`);
+  console.log('  rows originally touched: not derivable from this database — the deleted');
+  console.log('                           rows are gone. Read it from the pre-fallback');
+  console.log('                           backup if the disposition needs the real figure.');
   console.log(`  without a version marker: ${legacyUnversioned}`);
   console.log('  disposition    : RETAINED as-is. Their true requestIds are permanently');
   console.log('                   unknowable, so they are neither re-merged nor split.');
@@ -232,8 +248,13 @@ if (legacyRows.length > 0) {
   console.log('                   many distinct requests happened to share a token tuple.');
   if (ANNOTATE_LEGACY) {
     console.log(`  to annotate    : ${legacyUpdates.length} row(s) will get dedup_key_version=${LEGACY_KEY_VERSION}, precisely_repairable=false`);
-  } else {
-    console.log('  pass --annotate-legacy-keys to stamp the version and repairability marker');
+  } else if (legacyUnversioned > 0) {
+    console.log('');
+    console.log(`  ** ${legacyUnversioned} row(s) carry a v${LEGACY_KEY_VERSION} key with no version marker. **`);
+    console.log('  Annotating them is a REQUIRED step, not an optional extra: unmarked v1');
+    console.log('  keys will be silently reinterpreted by any later code that changes the');
+    console.log('  key rules. Re-run with --annotate-legacy-keys --apply.');
+    console.log('  See docs/usage-repair-runbook.md.');
   }
 }
 
@@ -278,7 +299,14 @@ db.backup(backupPath).then(() => {
   if (legacyUpdates.length > 0) {
     console.log(`Annotated ${legacyUpdates.length} legacy token-identity row(s) as key v${LEGACY_KEY_VERSION}, precisely_repairable=false.`);
   }
-  console.log(`Restore with:  cp "${backupPath}" "${dbPath}"`);
+  // NOT `cp backup dashboard.db`. This database is in WAL mode, so a bare copy
+  // leaves the stale -wal to be replayed and the rollback silently does not
+  // take effect while appearing to succeed.
+  console.log('\nTo roll this back:');
+  console.log(`  node scripts/restore-dashboard-db.js --backup "${backupPath}" --service zylos-dashboard`);
+  console.log('That stops the service, clears the stale -wal/-shm, restores, and verifies');
+  console.log('the result against the backup. A bare cp does NOT work under WAL mode.');
+  console.log('Full procedure: docs/usage-repair-runbook.md');
   db.close();
 }).catch((err) => {
   console.error(`backup FAILED, nothing was changed: ${err.message}`);
