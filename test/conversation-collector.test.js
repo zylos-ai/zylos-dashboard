@@ -109,14 +109,18 @@ function usageMetrics(store) {
   return store.metrics.filter(m => m.metric_name === 'usage_event');
 }
 
-function makeCollector(store, tmpDir, sessionId = 'test-session-123', getSessionId = null) {
+function makeCollector(store, tmpDir, sessionId = 'test-session-123', getSessionId = null, configOverrides = {}) {
   const config = {
     zylosDir: tmpDir,
     homeDir: tmpDir,
     modelPrices: {
       'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
-      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
-    }
+      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
+      // Standard price, matching the shipped table: cacheCreation is the
+      // 1-hour rate, so the 5-minute rate must come out as 3 * 1.25 = 3.75.
+      'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
+    },
+    ...configOverrides
   };
   const stateEngine = { getCurrentSessionId: getSessionId || (() => sessionId) };
   const collector = new ConversationCollector(store, config, { stateEngine });
@@ -712,6 +716,183 @@ test('cache rate formula: cache_read / (input + cache_read + cache_creation)', (
   const cacheMetric = usageMetrics(store)[0];
   // cache_read / (input + cache_read + cache_creation) = 8000 / (1000 + 8000 + 1000) = 0.8
   assert.ok(Math.abs(cacheMetric.dimensions.cache_hit_rate - 0.8) < 0.0001);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+// --- Cache-write TTL pricing -------------------------------------------------
+// A cache write costs 1.25x input at a 5-minute TTL and 2x at 1 hour. The
+// collector used to multiply the flat cache_creation total by the single
+// `cacheCreation` price (the 1-hour rate), billing every 5-minute write at
+// 2 / 1.25 = 1.6x contract. These cases pin each TTL to its own rate and pin
+// the split into `dimensions`, without which the cost cannot be re-derived.
+
+// One request whose cache write is entirely one TTL class. `usage.cache_creation`
+// is the nested breakdown the transcript actually carries; the flat total is
+// kept alongside it, exactly as Claude Code writes both.
+function makeTtlUsage(breakdown, extra = {}) {
+  const flat = Object.values(breakdown).reduce((a, b) => a + (b || 0), 0);
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: flat,
+    cache_creation: breakdown,
+    ...extra
+  };
+}
+
+function collectTtlRow(usage, { configOverrides } = {}) {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(
+    store, tmpDir, 'test-session-123', null, configOverrides
+  );
+  fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-ttl', {
+    model: 'claude-sonnet-5', usage
+  }) + '\n');
+  collector.collect();
+  const rows = usageMetrics(store);
+  fs.rmSync(tmpDir, { recursive: true });
+  return rows[0];
+}
+
+test('5-minute cache writes bill at 1.25x input, not the 1-hour rate', () => {
+  const row = collectTtlRow(makeTtlUsage({
+    ephemeral_5m_input_tokens: 1_000_000,
+    ephemeral_1h_input_tokens: 0
+  }));
+
+  // 1M pure 5m tokens on Sonnet 5 (input 3): contract is 3 * 1.25 = $3.75.
+  assert.ok(Math.abs(row.dimensions.cost - 3.75) < 1e-9,
+    `expected $3.75, got ${row.dimensions.cost}`);
+  // Negative control: the pre-fix formula (1M * cacheCreation 6) gave $6.
+  assert.ok(Math.abs(row.dimensions.cost - 6) > 1e-9,
+    'still billing 5-minute writes at the 1-hour rate');
+
+  // The split must survive into dimensions or this row can never be re-costed.
+  assert.equal(row.dimensions.cache_creation, 1_000_000);
+  assert.equal(row.dimensions.cache_creation_5m, 1_000_000);
+  assert.equal(row.dimensions.cache_creation_1h, 0);
+});
+
+test('1-hour cache writes still bill at 2x input', () => {
+  const row = collectTtlRow(makeTtlUsage({
+    ephemeral_5m_input_tokens: 0,
+    ephemeral_1h_input_tokens: 1_000_000
+  }));
+
+  // Unchanged by the fix: 1M * 3 * 2 = $6. Guards against "correcting" the
+  // rate that was already right.
+  assert.ok(Math.abs(row.dimensions.cost - 6) < 1e-9,
+    `expected $6.00, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.cache_creation_5m, 0);
+  assert.equal(row.dimensions.cache_creation_1h, 1_000_000);
+});
+
+test('mixed-TTL cache writes bill each portion at its own rate', () => {
+  const row = collectTtlRow(makeTtlUsage({
+    ephemeral_5m_input_tokens: 400_000,
+    ephemeral_1h_input_tokens: 600_000
+  }));
+
+  // 400k * 3 * 1.25 + 600k * 3 * 2 = 1.50 + 3.60 = $5.10.
+  assert.ok(Math.abs(row.dimensions.cost - 5.10) < 1e-9,
+    `expected $5.10, got ${row.dimensions.cost}`);
+  // The flat total alone would have priced the same row at $6.00 — the two
+  // must not coincide, or the test would pass without the split being read.
+  assert.ok(Math.abs(row.dimensions.cost - 6) > 1e-9);
+
+  assert.equal(row.dimensions.cache_creation, 1_000_000);
+  assert.equal(row.dimensions.cache_creation_5m, 400_000);
+  assert.equal(row.dimensions.cache_creation_1h, 600_000);
+});
+
+test('fast mode multiplies TTL-aware cache-write cost', () => {
+  const row = collectTtlRow(
+    makeTtlUsage({ ephemeral_5m_input_tokens: 400_000, ephemeral_1h_input_tokens: 600_000 },
+      { speed: 'fast' }),
+    { configOverrides: { fastModeMultiplier: 4 } }
+  );
+
+  // Same tokens as above at 4x: 5.10 * 4 = $20.40. Pins that the fast-mode
+  // path still applies after the cache-write term stopped being a single
+  // price lookup.
+  assert.ok(Math.abs(row.dimensions.cost - 20.40) < 1e-9,
+    `expected $20.40, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.speed, 'fast');
+  assert.equal(row.dimensions.cache_creation_5m, 400_000);
+  assert.equal(row.dimensions.cache_creation_1h, 600_000);
+});
+
+test('a cache write with no TTL breakdown keeps the 1-hour rate and is marked unknown', () => {
+  // Older transcripts (and any future line that omits the nested object) carry
+  // only the flat total. The TTL is genuinely unknowable there, so pricing must
+  // not change and the row must not claim a split it does not have — a later
+  // recompute has to be able to tell "no 5m tokens" from "TTL unrecorded".
+  const row = collectTtlRow({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 1_000_000
+  });
+
+  assert.ok(Math.abs(row.dimensions.cost - 6) < 1e-9,
+    `expected the unchanged $6.00, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.cache_creation, 1_000_000);
+  assert.equal('cache_creation_5m' in row.dimensions, false);
+  assert.equal('cache_creation_1h' in row.dimensions, false);
+});
+
+test('an unrecognised TTL class is billed, not dropped', () => {
+  // If a new TTL is added upstream, its tokens are still in the flat total but
+  // in no known bucket. They must keep costing money (at the highest known
+  // write rate) rather than silently falling out of the bill.
+  const row = collectTtlRow({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 1_000_000,
+    cache_creation: {
+      ephemeral_5m_input_tokens: 400_000,
+      ephemeral_1h_input_tokens: 0,
+      ephemeral_12h_input_tokens: 600_000
+    }
+  });
+
+  // 400k at 1.25x + 600k unknown at the 1-hour 2x = 1.50 + 3.60 = $5.10.
+  assert.ok(Math.abs(row.dimensions.cost - 5.10) < 1e-9,
+    `expected $5.10, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.cache_creation_unknown_ttl, 600_000);
+});
+
+test('the TTL split survives the per-content-block upsert', () => {
+  // One response is written as several lines that each repeat the whole usage
+  // object; the collector merges them into one row. The split must not be lost
+  // or halved by that merge.
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  const usage = makeTtlUsage({
+    ephemeral_5m_input_tokens: 400_000,
+    ephemeral_1h_input_tokens: 600_000
+  });
+  const lines = makeResponseLines('req-ttl-1', [
+    { type: 'thinking', thinking: 'considering' },
+    { type: 'text', text: 'answer' },
+    { type: 'tool_use', id: 'tu1', name: 'Read', input: {} }
+  ], { usage, model: 'claude-sonnet-5' });
+
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const rows = usageMetrics(store);
+  assert.equal(rows.length, 1, 'three content-block lines are one billable request');
+  assert.equal(rows[0].dimensions.cache_creation_5m, 400_000);
+  assert.equal(rows[0].dimensions.cache_creation_1h, 600_000);
+  assert.ok(Math.abs(rows[0].dimensions.cost - 5.10) < 1e-9,
+    `expected $5.10 charged once, got ${rows[0].dimensions.cost}`);
 
   fs.rmSync(tmpDir, { recursive: true });
 });

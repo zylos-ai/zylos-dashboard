@@ -4,8 +4,11 @@ import path from 'node:path';
 import { validateFleetRegistry } from './fleet-registry.js';
 
 export const DEFAULT_CLAUDE_MODEL_PRICES = {
-  // cacheCreation follows this table's 2x-input convention, verified against
-  // costs Claude Code itself recorded in transcript JSONL (exact match).
+  // cacheCreation is the 1-HOUR cache-write rate (2x input). 5-minute writes
+  // cost 1.25x input and are NOT tabulated here — the collector derives them
+  // from `input` per TTL (see CACHE_WRITE_INPUT_MULTIPLIER in
+  // collectors/conversation-collector.js), so changing an input price below
+  // moves both TTL rates with it. cacheRead is 0.1x input.
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1.00, cacheCreation: 20 },
   'claude-opus-5': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
   'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },

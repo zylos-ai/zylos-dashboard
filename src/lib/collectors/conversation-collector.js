@@ -7,6 +7,17 @@ import { Sanitizer } from '../sanitizer.js';
 const PER_MTOK = 1_000_000;
 const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 
+// What a cache write costs, as a multiple of the model's own input price:
+// 5-minute TTL is 1.25x input, 1-hour TTL is 2x. Derived from `input` instead
+// of tabulated per model on purpose — a per-model 5m column would drift out of
+// step the next time an input price changes, which is exactly how the single
+// `cacheCreation` column came to bill every write at the 1-hour rate. Cache
+// *reads* are unrelated (0.1x input) and keep their own `cacheRead` column.
+const CACHE_WRITE_INPUT_MULTIPLIER = {
+  ephemeral_5m_input_tokens: 1.25,
+  ephemeral_1h_input_tokens: 2
+};
+
 export class ConversationCollector {
   constructor(store, config, { stateEngine } = {}) {
     this.store = store;
@@ -146,13 +157,52 @@ export class ConversationCollector {
     return null;
   }
 
+  // Cache writes are billed by the TTL that was requested, so a single
+  // cache_creation figure cannot be priced correctly. The transcript records
+  // both a flat total and a nested per-TTL breakdown; prefer the breakdown.
+  // Without one the TTL is not knowable from the line, so the write keeps the
+  // pre-split 1-hour treatment rather than being guessed at.
+  static _cacheCreationTokensByTtl(usage) {
+    const flat = usage.cache_creation_input_tokens || 0;
+    const breakdown = usage.cache_creation;
+    if (!breakdown || typeof breakdown !== 'object') return { untyped: flat };
+
+    const byTtl = {};
+    let typed = 0;
+    for (const key of Object.keys(CACHE_WRITE_INPUT_MULTIPLIER)) {
+      const tokens = breakdown[key] || 0;
+      if (tokens > 0) byTtl[key] = tokens;
+      typed += tokens;
+    }
+    // A TTL class this build does not know about must not silently drop off the
+    // bill. Charge the remainder at the 1-hour rate — the most expensive of the
+    // known writes — so an unrecognised TTL over-reports rather than under.
+    const untyped = flat - typed;
+    if (untyped > 0) byTtl.untyped = untyped;
+    return byTtl;
+  }
+
+  // Returns price-weighted tokens (per MTOK, un-scaled) so the caller keeps
+  // ownership of the fast-mode multiplier and the PER_MTOK division.
+  _cacheCreationRate(usage, price) {
+    const byTtl = ConversationCollector._cacheCreationTokensByTtl(usage);
+    let weighted = 0;
+    for (const [ttl, tokens] of Object.entries(byTtl)) {
+      const inputMultiple = CACHE_WRITE_INPUT_MULTIPLIER[ttl];
+      weighted += inputMultiple != null && price.input != null
+        ? tokens * price.input * inputMultiple
+        : tokens * (price.cacheCreation || 0);
+    }
+    return weighted;
+  }
+
   _calculateCost(usage, price, speed) {
     if (!price) return null;
     const multiplier = speed === 'fast' ? (fastModeMultiplierForRuntime(this.config, 'claude') || 6) : 1;
     const input = (usage.input_tokens || 0) * price.input * multiplier / PER_MTOK;
     const output = (usage.output_tokens || 0) * price.output * multiplier / PER_MTOK;
     const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead * multiplier / PER_MTOK;
-    const cacheCreation = (usage.cache_creation_input_tokens || 0) * price.cacheCreation * multiplier / PER_MTOK;
+    const cacheCreation = this._cacheCreationRate(usage, price) * multiplier / PER_MTOK;
     return input + output + cacheRead + cacheCreation;
   }
 
@@ -336,6 +386,20 @@ export class ConversationCollector {
     const key = requestKey || uuid;
     if (!key) return 0;
 
+    // Persist the TTL split, not just the flat total: it is the only record of
+    // how a cache write was priced, and it cannot be reconstructed from the
+    // total afterwards. Written as explicit zeros whenever the transcript
+    // carried a breakdown, so a missing field means "TTL unknown for this row"
+    // rather than "zero 5-minute tokens" — a later recompute must be able to
+    // tell those apart instead of assuming one.
+    const ttlDims = {};
+    if (usage.cache_creation && typeof usage.cache_creation === 'object') {
+      const byTtl = ConversationCollector._cacheCreationTokensByTtl(usage);
+      ttlDims.cache_creation_5m = byTtl.ephemeral_5m_input_tokens || 0;
+      ttlDims.cache_creation_1h = byTtl.ephemeral_1h_input_tokens || 0;
+      if (byTtl.untyped) ttlDims.cache_creation_unknown_ttl = byTtl.untyped;
+    }
+
     const dims = {
       input: inputTokens,
       total_input: totalInput,
@@ -344,6 +408,7 @@ export class ConversationCollector {
       cache_read: cacheRead,
       cache_creation: cacheCreation,
       runtime_semantics: 'claude_split_cache',
+      ...ttlDims,
       model,
       speed,
       request_id: key,
