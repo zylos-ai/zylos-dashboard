@@ -22,7 +22,8 @@ Two consequences drive everything below:
   same reasoning that makes `cp backup dashboard.db` unsafe makes `cp
   dashboard.db somewhere.bak` unsafe: the copy silently omits whatever is still
   in the `-wal`, and reads correctly right up until it is moved away from its
-  sidecars. Every copy must go through SQLite instead.
+  sidecars. So copies go through SQLite instead — with one deliberate exception,
+  the raw fallback described under *two custody contracts* below.
 
 So a restore must build the replacement through SQLite and *verify it before
 stopping anything*, then stop the service, set the current database aside, swap
@@ -147,17 +148,32 @@ node scripts/restore-dashboard-db.js \
   --service zylos-dashboard
 ```
 
-Every file it produces or consumes goes through SQLite itself (`VACUUM INTO`),
-never through a byte copy. That is the whole point: a WAL-mode database is a main
-file *plus* a `-wal` that may hold committed rows the main file does not, so a
-byte copy of one is a torn fragment, while a file SQLite writes out has that
-state materialized into it and carries no sidecar of its own.
+The backup, and the replacement built from it, go through SQLite itself (`VACUUM
+INTO`) rather than through a byte copy. That is the whole point: a WAL-mode
+database is a main file *plus* a `-wal` that may hold committed rows the main file
+does not, so a byte copy of one is a torn fragment, while a file SQLite writes out
+has that state materialized into it and carries no sidecar of its own.
+
+### Two custody contracts — know which one you are holding
+
+Read this before the procedure, not after. The files this produces are **not**
+interchangeable, and the difference decides whether a later rollback works:
+
+| | **Self-contained single file** | **RAW main + sidecars** |
+|---|---|---|
+| Produced by | SQLite (`VACUUM INTO`) — the replacement, and the pre-restore copy in the normal case | `fs.copyFileSync` — the pre-restore copy **only** when the live database cannot be read through SQLite at all |
+| Restore with | `--backup <that file>` | `--backup <main file>`, with its `-wal`/`-shm` still beside it |
+| Moving it | Safe on its own | **Must move all three together** |
+| If sidecars are lost | Nothing is lost | Everything the `-wal` held is **silently** gone |
+
+The script prints which one it produced on its `pre-restore copy:` line, and labels
+the second `RAW copy`. That label is the authoritative answer — do not infer it.
 
 It will:
 
 1. read the backup **once**, through SQLite, and freeze what it read into a
    self-contained file beside the database — the **frozen artifact**. This is the
-   only time the backup is read
+   only read of the backup there is — it is not read again for any purpose
 2. survey and hash **the artifact** (connection already closed), and refuse to
    proceed unless it passes `integrity_check`. All of this happens **before
    anything is stopped**, so an unusable backup costs nothing — not even downtime
@@ -187,7 +203,7 @@ checks pass and never-inspected content is restored.
 Freezing the backup into a self-contained artifact before the stop closes this by
 construction rather than by detection:
 
-- the source backup is never opened again, so nothing done to it afterwards can
+- the source backup is never used as restore content again, so nothing done to it afterwards can
   reach the live database;
 - the artifact has no sidecar and cannot acquire a meaningful one, so hashing it
   is a real provenance statement rather than a statement about one of two files;
@@ -233,12 +249,14 @@ than the check earns:
   database after the check; verification is a point-in-time statement, which is
   why the service is only started afterwards.
 
-The hash is of the artifact, not of the source backup. On a WAL-mode database a
-main-file hash is close to worthless — two databases with identical main files can
-differ entirely in their sidecars — so it only becomes a provenance guarantee once
-it is taken of a file that has no sidecar. The source backup's hash is printed for
-the audit trail and deliberately never re-checked: after the artifact exists,
-nothing about the source can affect the outcome.
+The hash is of the artifact, and the source backup is not hashed at all. On a
+WAL-mode database a main-file hash is close to worthless — two databases with
+identical main files can differ entirely in their sidecars — so it only becomes a
+provenance guarantee once it is taken of a file that has no sidecar. Recording the
+source's hash as a weaker second "audit" figure was deliberately dropped: it would
+mean reading the source again for a record that can mislead about what the artifact
+holds. The source is opened once, to build the artifact, and after that nothing
+about it can affect the outcome.
 
 Preview without touching anything:
 

@@ -358,7 +358,7 @@ test('refuses a corrupt backup instead of destroying the live database with it',
  * also what it never did. Optionally swaps the backup out from under the script
  * on `stop`, to simulate the backup changing after it was inspected.
  */
-function fakePm2({ tamperFrom, tamperTo, onStop } = {}) {
+function fakePm2({ tamperFrom, tamperTo, onStop, stopExit } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-pm2-'));
   const log = path.join(dir, 'pm2-invocations.log');
   const bin = path.join(dir, 'pm2');
@@ -367,6 +367,7 @@ function fakePm2({ tamperFrom, tamperTo, onStop } = {}) {
     `echo "$@" >> "${log}"`,
     ...(tamperFrom ? [`if [ "$1" = "stop" ]; then cp "${tamperFrom}" "${tamperTo}"; fi`] : []),
     ...(onStop ? [`if [ "$1" = "stop" ]; then ${onStop}; fi`] : []),
+    ...(stopExit ? [`if [ "$1" = "stop" ]; then exit ${stopExit}; fi`] : []),
     'exit 0'
   ].join('\n') + '\n');
   fs.chmodSync(bin, 0o755);
@@ -395,7 +396,8 @@ test('--assume-stopped does not touch the service manager at all', async () => {
 });
 
 // --- Provenance: inspection and use are the same logical moment ---------------
-// The mechanism under test is that the backup is read exactly once, before the
+// The mechanism under test is that the backup is opened through SQLite exactly
+// once, before the
 // stop, and frozen into a self-contained artifact that is what later gets renamed
 // into place. The three controls below each mutate the source backup during the
 // stop window — main file, its -wal, and a table the content checks do not look at
@@ -414,7 +416,7 @@ test('POSITIVE CONTROL: replacing the source backup during the stop window chang
   // A different database with the SAME usage row count and the SAME cost total, so
   // no content check could tell it from the approved one. Under the previous
   // ordering this was caught by re-hashing the source; now it is not caught,
-  // because it is not a threat: the source is never read again.
+  // because it is not a threat: the source is never used as restore content again.
   const tampered = path.join(dir, 'tampered.db');
   const t = new Database(tampered);
   t.exec(`
@@ -587,6 +589,83 @@ test('NEGATIVE CONTROL: the frozen artifact being altered after inspection is ca
 
   const leftovers = fs.readdirSync(path.dirname(dbPath)).filter((f) => f.includes('.incoming-'));
   assert.deepEqual(leftovers, [], 'the untrustworthy artifact must not be left lying around');
+});
+
+test('NEGATIVE CONTROL: a failed service stop leaves no artifact behind, and says so truthfully', async () => {
+  // The artifact is built before the stop, so every stop-failure exit has to clean
+  // it up. Without that, the most ordinary failure there is — a service name that
+  // does not exist, pm2 missing — silently deposits a complete, integrity-clean
+  // copy of the database on disk while stderr claims nothing was changed. Repeated
+  // attempts accumulate more of them, each holding whatever the backup holds.
+  //
+  // So this asserts the message and the disk agree: "Nothing was changed" has to be
+  // true, not merely reassuring.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const before = fs.readFileSync(dbPath);
+  const pm2 = fakePm2({ stopExit: 1 });
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], { encoding: 'utf8', env: pm2.env });
+
+  assert.notEqual(res.status, 0, 'a failed stop must not be treated as success');
+  assert.match(res.stderr, /Failed to stop zylos-dashboard/);
+  assert.match(res.stderr, /Nothing was changed/);
+
+  const leftovers = fs.readdirSync(path.dirname(dbPath)).filter((f) => f.includes('.incoming-'));
+  assert.deepEqual(leftovers, [],
+    'the artifact built before the stop must be discarded, not left on disk contradicting the message');
+  assert.deepEqual(fs.readFileSync(dbPath), before, 'and the live database must be untouched');
+  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard'],
+    'a stop that failed must not be followed by a start');
+});
+
+test('POSITIVE CONTROL: deleting the source backup during the stop window changes nothing', async () => {
+  // The contract is that the source is opened once, to build the artifact, and not
+  // read again — for any purpose, including recording its hash. So it may vanish
+  // entirely once the artifact exists and the restore must still complete, with the
+  // same bytes it would have produced otherwise.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const pm2 = fakePm2({ onStop: `rm -f "${backupPath}"` });
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], { encoding: 'utf8', env: pm2.env });
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(!fs.existsSync(backupPath), 'the source really is gone by the end of the run');
+  assert.deepEqual(rowMarkers(dbPath), ['in-backup'], 'and the restore still produced the frozen state');
+  assert.equal(sha256(dbPath), reportedArtifactHash(res.stdout),
+    'byte-identical to the artifact, so nothing was re-derived from the vanished source');
+  assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard', 'start zylos-dashboard']);
+});
+
+test('the source backup is not read again after the artifact is built', async () => {
+  // Distinct from the controls above, which mutate the source and check the result.
+  // This one checks the reverse direction: no output line reports anything about the
+  // source's contents, because reading it a second time is not something this script
+  // does. A weaker "audit" hash of a mutable WAL-mode main file was deliberately
+  // dropped rather than kept as a second, failure-prone trust semantics.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const res = spawnSync(process.execPath, [
+    SCRIPT, '--db', dbPath, '--backup', backupPath, '--assume-stopped'
+  ], { encoding: 'utf8' });
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.doesNotMatch(res.stdout, /source sha256/,
+    'no hash of the source may be reported: it is not read a second time');
+  assert.match(res.stdout, /artifact sha256\s*: [0-9a-f]{64}/,
+    'the artifact is the verifiable object, and it is still reported');
 });
 
 test('a read-only database file is replaced rather than written through', async () => {

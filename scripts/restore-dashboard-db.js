@@ -13,10 +13,16 @@
  * failure silent, and silent is worse than an error: the operator believes the
  * rollback happened.
  *
- * So every file this script produces or consumes goes through SQLite itself
- * (`VACUUM INTO`), never through a byte copy. VACUUM INTO writes a fresh,
+ * So the backup, and the replacement built from it, go through SQLite itself
+ * (`VACUUM INTO`) rather than through a byte copy. VACUUM INTO writes a fresh,
  * single-file database with any WAL content already materialized into it, so the
  * result cannot be torn and carries no sidecar of its own.
+ *
+ * There is exactly one byte copy left, and it is deliberate: if the live database
+ * cannot be read through SQLite at all, the pre-restore copy falls back to copying
+ * the main file *and its sidecars* (step 3 below). That copy is only usable with
+ * those sidecars kept beside it, which is a different custody contract from
+ * everything else here, so the script labels it as such in its output.
  *
  * The second thing that matters is *when*. Inspecting a backup and then using it
  * are only meaningful together if they are the same logical moment — otherwise
@@ -26,14 +32,15 @@
  * usage row, leaves the row count and cost total identical too. Every check
  * passes and never-inspected content is restored.
  *
- * So the backup is read exactly once, BEFORE anything is stopped, and what is
- * read is frozen on the spot into a self-contained file — the "frozen artifact".
- * That artifact is what gets surveyed, hashed, and later renamed into place. The
- * source backup is never opened again, so nothing that happens to it afterwards
- * can reach the live database, and because the artifact is self-contained no
- * sidecar appearing beside it can alter its logical contents either. "It changed
- * between inspection and use" stops being a thing to guard against and becomes
- * impossible by construction.
+ * So the backup is opened through SQLite exactly once, BEFORE anything is stopped,
+ * and what is read is frozen on the spot into a self-contained file — the "frozen
+ * artifact". That artifact is what gets surveyed, hashed, and later renamed into
+ * place. The source backup is never used as restore content again, so nothing that
+ * happens to it afterwards can reach the live database, and because the artifact is
+ * self-contained no sidecar appearing beside it can alter its logical contents
+ * either. "It changed between inspection and use" stops being a thing to guard
+ * against and becomes impossible by construction — and the source is not read a
+ * second time for any purpose, not even to record its hash.
  *
  * A correct restore then has to do all of this, in order:
  *
@@ -157,7 +164,8 @@ console.log(`shm      : ${sizeOf(shm)} bytes`);
 
 // 1. Freeze the backup into a self-contained artifact, and verify THAT.
 //
-// This is the only time the backup is read. Everything downstream refers to the
+// This is the only time the backup is read at all — opened through SQLite once,
+// here, and never again. Everything downstream refers to the
 // artifact, so the source file can be replaced, appended to, or deleted after
 // this point without any of it reaching the live database.
 //
@@ -202,7 +210,12 @@ const artifactHash = fileHash(artifact);
 console.log(`\nbackup contents  : ${artifactSurvey.rows} usage rows, cost $${artifactSurvey.cost}, integrity ${artifactSurvey.integrity}`);
 console.log(`frozen artifact  : ${artifact}`);
 console.log(`artifact sha256  : ${artifactHash}`);
-console.log(`source sha256    : ${fileHash(backupPath)}  (recorded for the audit trail; the source is never read again)`);
+// Deliberately NOT printed here: a sha256 of the source backup. On a WAL-mode
+// database that hashes the main file only, so it is not a reliable summary of what
+// the artifact actually contains — the verifiable object is the artifact, and its
+// hash is above. Keeping a second, weaker "audit" hash would mean a second read of
+// the source and a second trust semantics to explain, for a record that can
+// mislead. The source is opened once, to build the artifact, and not read again.
 if (artifactSurvey.integrity !== 'ok') {
   discardArtifact();
   die('Backup fails integrity_check. Refusing to restore from it.');
@@ -227,7 +240,15 @@ if (service) {
   console.log(`\nstopping ${service} ...`);
   const stop = spawnSync('pm2', ['stop', service], { encoding: 'utf8' });
   if (stop.status !== 0) {
-    die(`Failed to stop ${service} (exit ${stop.status}). Nothing was changed.\n${stop.stderr || stop.stdout || ''}`);
+    // The artifact already exists at this point — it is built before the stop on
+    // purpose — so this path has to clean it up. Without that, the most ordinary
+    // failure there is (a service name that does not exist, pm2 not installed)
+    // silently leaves a complete, integrity-clean copy of the database on disk
+    // while this very message claims nothing was changed. Repeated attempts would
+    // pile up more of them, each holding whatever the backup holds.
+    discardArtifact();
+    const why = stop.error ? `${stop.error.message}` : `exit ${stop.status}`;
+    die(`Failed to stop ${service} (${why}). Nothing was changed.\n${stop.stderr || stop.stdout || ''}`);
   }
   console.log(`${service} stopped`);
 } else {
@@ -359,8 +380,9 @@ console.log([
   `    the backup's -wal is materialized into the single file now on disk`,
   '  - the file on disk IS the artifact that was surveyed before the service was',
   `    stopped, byte-identical (sha256 ${artifactHash.slice(0, 12)}...), swapped in by rename;`,
-  '    the source backup was read once and never opened again, so nothing that',
-  '    happened to it afterwards could reach this database',
+  '    the source backup was opened through SQLite once and never used as restore',
+  '    content again, so nothing that happened to it afterwards could reach this',
+  '    database',
   '  - it opens cleanly and passes integrity_check',
   `  - it reports the same ${after.rows} usage rows and cost $${after.cost} as that artifact`,
   '  - no replayable -wal remains beside it',
