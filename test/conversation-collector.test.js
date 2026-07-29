@@ -109,7 +109,7 @@ function usageMetrics(store) {
   return store.metrics.filter(m => m.metric_name === 'usage_event');
 }
 
-function makeCollector(store, tmpDir, sessionId = 'test-session-123') {
+function makeCollector(store, tmpDir, sessionId = 'test-session-123', getSessionId = null) {
   const config = {
     zylosDir: tmpDir,
     homeDir: tmpDir,
@@ -118,7 +118,7 @@ function makeCollector(store, tmpDir, sessionId = 'test-session-123') {
       'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
     }
   };
-  const stateEngine = { getCurrentSessionId: () => sessionId };
+  const stateEngine = { getCurrentSessionId: getSessionId || (() => sessionId) };
   const collector = new ConversationCollector(store, config, { stateEngine });
 
   const zylosResolved = fs.realpathSync(tmpDir);
@@ -515,6 +515,48 @@ test('per-file offsets survive a restart', () => {
   collector2._restoreOffset();
   collector2.collect();
   assert.equal(usageMetrics(store2).length, 0, 'nothing re-read after restart');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('falls back to the statusline session id when the state engine has none', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  // State engine reports nothing — the situation after a mid-session restart,
+  // where collection used to stall until the user's next prompt.
+  const { collector, jsonlPath } = makeCollector(store, tmpDir, 'test-session-123', () => null);
+
+  fs.mkdirSync(path.join(tmpDir, 'activity-monitor'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, 'activity-monitor', 'statusline.json'),
+    JSON.stringify({ session_id: 'test-session-123' })
+  );
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('u1', { requestId: 'req_fallback' }) + '\n');
+  collector.collect();
+
+  assert.equal(usageMetrics(store).length, 1, 'collection proceeds via the statusline session id');
+  assert.equal(usageMetrics(store)[0].session_id, 'test-session-123');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('state engine session id wins over the statusline fallback', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir, 'test-session-123');
+
+  fs.mkdirSync(path.join(tmpDir, 'activity-monitor'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, 'activity-monitor', 'statusline.json'),
+    JSON.stringify({ session_id: 'some-other-session' })
+  );
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('u1', { requestId: 'req_primary' }) + '\n');
+  collector.collect();
+
+  assert.equal(usageMetrics(store).length, 1);
+  assert.equal(usageMetrics(store)[0].session_id, 'test-session-123');
 
   fs.rmSync(tmpDir, { recursive: true });
 });

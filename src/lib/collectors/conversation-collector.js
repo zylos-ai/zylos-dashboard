@@ -69,8 +69,26 @@ export class ConversationCollector {
     );
   }
 
+  // The state engine only learns the session id from session_start /
+  // user_prompt_submit events, and its env-var fallback is never set for a
+  // service process. So after a restart mid-session it reports nothing and
+  // collection stalls until the user's next prompt. The statusline file always
+  // names the live session, so fall back to it.
+  _resolveSessionId() {
+    const fromState = this._stateEngine?.getCurrentSessionId?.();
+    if (fromState) return fromState;
+    try {
+      const statusPath = path.join(
+        this.config.zylosDir || path.join(process.env.HOME, 'zylos'),
+        'activity-monitor', 'statusline.json'
+      );
+      const data = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+      return data.session_id || null;
+    } catch { return null; }
+  }
+
   _resolveJsonlPath() {
-    const sessionId = this._stateEngine?.getCurrentSessionId?.();
+    const sessionId = this._resolveSessionId();
     if (!sessionId) return null;
     const jsonlPath = path.join(this._resolveProjectDir(), `${sessionId}.jsonl`);
     return fs.existsSync(jsonlPath) ? jsonlPath : null;
@@ -150,7 +168,7 @@ export class ConversationCollector {
       this._persistOffset();
     }
 
-    const sessionId = this._stateEngine?.getCurrentSessionId?.() || null;
+    const sessionId = this._resolveSessionId();
     let written = this._collectFile(jsonlPath, { sessionId });
 
     // Subagent transcripts are usage-only: their text is not surfaced in the
