@@ -18,7 +18,15 @@ Two consequences drive everything below:
   when the write "works", because the service holds open connections and its own
   WAL state.
 
-So a restore must stop the service, clear the sidecars, copy, and then *verify*.
+- **A byte copy of a WAL database is a torn fragment**, in either direction. The
+  same reasoning that makes `cp backup dashboard.db` unsafe makes `cp
+  dashboard.db somewhere.bak` unsafe: the copy silently omits whatever is still
+  in the `-wal`, and reads correctly right up until it is moved away from its
+  sidecars. Every copy must go through SQLite instead.
+
+So a restore must stop the service, set the current database aside as a
+self-contained file, build the replacement through SQLite, *verify it before
+swapping*, discard the stale sidecars, and only then start the service.
 
 ## What the repair does and does not do
 
@@ -138,38 +146,67 @@ node scripts/restore-dashboard-db.js \
   --service zylos-dashboard
 ```
 
+Every file it produces or consumes goes through SQLite itself (`VACUUM INTO`),
+never through a byte copy. That is the whole point: a WAL-mode database is a main
+file *plus* a `-wal` that may hold committed rows the main file does not, so a
+byte copy of one is a torn fragment, while a file SQLite writes out has that
+state materialized into it and carries no sidecar of its own.
+
 It will:
 
 1. read, integrity-check and **hash** the backup, and refuse to proceed if the
    integrity check fails
 2. stop `zylos-dashboard`, aborting without changes if the stop fails
-3. set the current database aside with its `-wal`/`-shm`, so the restore is
-   itself reversible
-4. remove the stale `-wal`/`-shm` — the step a bare `cp` omits
-5. copy the backup into place
-6. **verify**: the restored file must be byte-identical (SHA-256) to the backup
-   *as hashed in step 1*, pass `integrity_check`, and report the same usage row
-   count and cost total. Exit non-zero if any of those disagree
-7. start the service again — **only if step 6 passed**
+3. set the current database aside as a **self-contained single file**, so
+   restoring from it later needs nothing beside it. (If the live database cannot
+   be read through SQLite — itself a reason people run restores — it falls back
+   to a raw copy *with* its sidecars and says so explicitly in that line of
+   output. That copy is only usable with those sidecars kept next to it.)
+4. re-hash the backup and compare against step 1, **while the live database is
+   still untouched**
+5. build a replacement from the backup through SQLite, so any state in the
+   backup's own `-wal` ends up materialized in it
+6. **verify the replacement before anything is swapped**: it must pass
+   `integrity_check` and report the same usage row count and cost total as the
+   backup surveyed in step 1. If not, the replacement is discarded and the live
+   database is left exactly as it was
+7. swap the verified replacement in by rename, discarding the stale
+   `-wal`/`-shm` — the step a bare `cp` omits — then re-check the result and that
+   no replayable `-wal` remains beside it
+8. start the service again — **only if every check above passed**
+
+Note the ordering of 6 and 7: an unusable backup costs the live database nothing,
+because nothing is swapped until the replacement has already proven itself.
 
 ### What the verification does and does not prove
 
 Worth stating exactly, because "verification passed" invites more confidence
 than the check earns:
 
-- **Proven:** the file now on disk is byte-for-byte the backup that was
-  inspected and approved at the start of the run; it opens cleanly; it passes
-  `integrity_check`; it reports the same usage row count and cost total; and no
-  replayable `-wal` is left beside it.
+- **Proven:** the database now on disk was built by SQLite from the backup, so
+  anything that was in the backup's `-wal` is materialized into the single file;
+  the backup's bytes were unchanged between inspection and use; it opens cleanly;
+  it passes `integrity_check`; it reports the same usage row count and cost
+  total; no replayable `-wal` is left beside it; and the pre-restore copy is a
+  self-contained file.
 - **Not proven:** that the backup itself contained the state you wanted — a
   restore of the wrong backup verifies perfectly. Nor that nothing writes to the
   database after the check; verification is a point-in-time statement, which is
   why the service is only started afterwards.
 
-The byte comparison is against the hash taken in step 1, not a re-read of the
-backup at the end. That is deliberate: anything that alters the backup during
-the run (another operator, a sync job, a stop hook) would otherwise be copied in
-and then compared against itself, and would pass.
+The hash is compared against the value taken in step 1, not a re-read at the end.
+That is deliberate: anything that alters the backup during the run (another
+operator, a sync job, a stop hook) would otherwise be copied in and then compared
+against itself, and would pass.
+
+**The hash covers the main file only.** It therefore cannot see a change confined
+to the backup's `-wal`, which is a real case: the same main-file bytes with an
+extra row arriving in the sidecar hash identically and mean something different.
+That is why step 6 also compares the replacement's logical contents against the
+survey from step 1, and why it does so before the swap rather than after. A
+negative control in the test file constructs exactly that situation — identical
+main-file bytes, different `-wal` — and asserts that the hash check is *not* what
+catches it.
 
 Preview without touching anything:
 
@@ -181,18 +218,22 @@ If the service is managed some other way, stop it yourself and pass
 `--assume-stopped`. There is deliberately no default for this: silence must
 never be read as "the service was stopped".
 
-### If verification fails, or the copy itself fails
+### If verification fails, or the replacement cannot be built
 
 The service is **left stopped on purpose** — the script will not start it against
-a database that did not verify, and says so on stderr. It prints the path of the
-pre-restore copy it set aside; put that back (same procedure,
-`--backup <that copy>`) and investigate before retrying. A failed restore is not
-a one-way door.
+a restore that did not complete, and says so on stderr. It prints the path of the
+pre-restore copy it set aside. A failed restore is not a one-way door.
 
-The same holds if the copy in step 5 fails (an unwritable database file, a full
-disk). By then the stale sidecars are already gone, so the file on disk must not
-be served as-is: the script fails with the pre-restore path and does not reach
-the start step.
+In the common failure modes — a backup that changed after inspection, a backup
+that cannot be materialized (a full disk, a truncated file), a replacement that
+does not match — the failure happens **before the swap**, so `dashboard.db` is
+still the pre-restore database and needs nothing done to it. The script says
+`was NOT touched` when that is the case; take it literally.
+
+Only a failure during or after the swap itself leaves a database that must not be
+served. There the script names the pre-restore copy to put back (same procedure,
+`--backup <that copy>`) and does not reach the start step. Because the
+pre-restore copy is self-contained, restoring from it needs nothing beside it.
 
 Both paths are covered by negative controls in
 `test/restore-dashboard-db.test.js`, using a fake `pm2` on `PATH` that records

@@ -4,26 +4,37 @@
  *
  * Why this script exists instead of a printed `cp`:
  *
- * The database runs with journal_mode = WAL (src/lib/store.js). Copying the
- * backup file over dashboard.db while a stale dashboard.db-wal is still on disk
- * does NOT restore anything — SQLite replays that WAL on the next open, so the
- * rows the backup was supposed to bring back disappear again. The copy reports
- * success, which makes the failure silent, and silent is worse than an error:
- * the operator believes the rollback happened. Copying over a database that a
- * live writer still holds open is separately unsafe.
+ * The database runs with journal_mode = WAL (src/lib/store.js). A SQLite
+ * database in WAL mode is not one file — it is a main file plus a -wal sidecar
+ * that may hold committed state the main file does not. Copying such a database
+ * with `cp` (or copying a backup over it while a stale sidecar is still on disk)
+ * therefore copies a torn fragment: SQLite replays or discards the sidecar on the
+ * next open, and rows appear or vanish. The copy reports success, which makes the
+ * failure silent, and silent is worse than an error: the operator believes the
+ * rollback happened.
  *
- * So a correct restore has to do all of this, in order:
+ * So every file this script produces or consumes goes through SQLite itself
+ * (`VACUUM INTO`), never through a byte copy. VACUUM INTO writes a fresh,
+ * single-file database with any WAL content already materialized into it, so the
+ * result cannot be torn and carries no sidecar of its own.
+ *
+ * A correct restore then has to do all of this, in order:
  *
  *   1. stop every process holding the database (the dashboard service)
- *   2. remove the stale -wal and -shm sidecars
- *   3. put the backup in place
- *   4. verify the result before trusting it
+ *   2. set the current database aside, as a self-contained file
+ *   3. materialize the backup into a replacement, and verify it
+ *   4. swap the replacement in, discarding the stale sidecars
  *   5. start the service again
  *
  * Steps 2-4 are what this script guarantees. Step 1 is not something a script
  * can safely assume, so it must be either performed here (--service) or
  * explicitly asserted by the caller (--assume-stopped). There is deliberately
  * no default: silence must never be read as "the service was stopped".
+ *
+ * Note the ordering of 3 and 4: the replacement is verified while the live
+ * database is still untouched, so a backup that turns out to be unusable costs
+ * nothing at all. Only a replacement that already passed its checks is swapped
+ * in, and the swap itself is a rename.
  *
  *   node scripts/restore-dashboard-db.js --backup <file> --service zylos-dashboard
  *   node scripts/restore-dashboard-db.js --backup <file> --assume-stopped
@@ -72,14 +83,39 @@ const sizeOf = (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
 
 /**
  * SHA-256 of the file's bytes. Taken of the backup BEFORE anything is stopped or
- * moved, so the post-restore comparison is against the bytes that were actually
- * inspected and approved — not against whatever the backup happens to contain by
- * the time the copy runs. Without this, anything that alters the backup mid-run
- * (another operator, a sync job, a stop hook) would be copied in and then
- * "verified" against itself.
+ * moved, and taken again immediately before the backup is used, so that anything
+ * altering it mid-run (another operator, a sync job, a stop hook) is caught while
+ * the live database is still untouched.
+ *
+ * Note what this does NOT do: it says nothing about whether a file is a complete
+ * database. Two databases can have identical main-file bytes and differ entirely
+ * in their -wal sidecars, so a matching hash is evidence about provenance only.
+ * Completeness is what `materialize` establishes, and logical state is what
+ * `survey` checks.
  */
 function fileHash(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+/**
+ * Copy `src` into a NEW self-contained database at `dest`, using SQLite's own
+ * VACUUM INTO rather than a byte copy.
+ *
+ * This is the difference between a restore that works and one that only looks
+ * like it worked. Opening `src` through SQLite reads main file and -wal together,
+ * and VACUUM INTO writes that combined logical state out as a single file with no
+ * sidecar. A file produced this way can be moved, archived, or restored from on
+ * its own — which is exactly what a byte copy of a WAL database cannot promise.
+ *
+ * `dest` must not exist; VACUUM INTO refuses to overwrite.
+ */
+function materialize(src, dest) {
+  const db = new Database(src, { readonly: true });
+  try {
+    db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+  } finally {
+    db.close();
+  }
 }
 
 /** Row counts and cost total, used to compare before/after. */
@@ -100,7 +136,7 @@ function survey(file) {
 
 console.log(`database : ${dbPath}`);
 console.log(`backup   : ${backupPath}`);
-console.log(`wal      : ${sizeOf(wal)} bytes${sizeOf(wal) > 0 ? '  <-- would be replayed by a bare cp' : ''}`);
+console.log(`wal      : ${sizeOf(wal)} bytes${sizeOf(wal) > 0 ? '  <-- holds state the main file does not' : ''}`);
 console.log(`shm      : ${sizeOf(shm)} bytes`);
 
 const backupSurvey = survey(backupPath);
@@ -134,74 +170,163 @@ if (service) {
   console.log('\n--assume-stopped: trusting the caller that nothing holds the database');
 }
 
-// Keep the pre-restore state recoverable: a failed restore must not be a
+const leftStopped = () => (service ? `${service} is still stopped and was deliberately NOT started.` : '');
+
+// 2. Keep the pre-restore state recoverable: a failed restore must not be a
 // one-way door either.
+//
+// This copy goes through SQLite, so it is a single self-contained file. That
+// matters more than it looks: a raw copy of a live WAL database plus its sidecars
+// *reads* correctly while the sidecars sit beside it, which makes it appear
+// recoverable, and then loses everything in the -wal the moment it is restored
+// from as a single file. The pre-restore copy is the one file that must never
+// have that property.
 const aside = `${dbPath}.pre-restore-${Date.now()}`;
+let asideIsRawCopy = false;
 try {
-  fs.copyFileSync(dbPath, aside);
-  for (const [src, suffix] of [[wal, '-wal'], [shm, '-shm']]) {
-    if (fs.existsSync(src)) fs.copyFileSync(src, `${aside}${suffix}`);
-  }
-  console.log(`pre-restore copy: ${aside} (with sidecars, so this restore is itself reversible)`);
+  materialize(dbPath, aside);
 } catch (err) {
-  die(`Could not set aside the current database: ${err.message}. Nothing was changed.`);
-}
-
-// 2. remove the stale sidecars — the step a bare cp omits
-for (const [p, label] of [[wal, 'wal'], [shm, 'shm']]) {
-  if (fs.existsSync(p)) {
-    fs.rmSync(p);
-    console.log(`removed stale ${label}`);
+  // The live database could not be read through SQLite — which is itself a
+  // reason someone is running a restore. Fall back to a raw copy WITH sidecars so
+  // that something is still set aside, and say plainly that this one is only
+  // usable with those sidecars kept beside it.
+  try {
+    fs.copyFileSync(dbPath, aside);
+    for (const [src, suffix] of [[wal, '-wal'], [shm, '-shm']]) {
+      if (fs.existsSync(src)) fs.copyFileSync(src, `${aside}${suffix}`);
+    }
+    asideIsRawCopy = true;
+  } catch (copyErr) {
+    die([
+      `Could not set aside the current database: ${copyErr.message}`,
+      `(reading it through SQLite also failed: ${err.message})`,
+      'Nothing was changed.',
+      leftStopped()
+    ].filter(Boolean).join('\n'));
   }
 }
+console.log(asideIsRawCopy
+  ? `pre-restore copy: ${aside} (RAW copy — the live database was unreadable through SQLite, so its -wal/-shm were copied too and must be kept beside it)`
+  : `pre-restore copy: ${aside} (self-contained single file, so restoring from it needs nothing else)`);
 
-// 3. put the backup in place
-try {
-  fs.copyFileSync(backupPath, dbPath);
-} catch (err) {
-  // The sidecars are already gone at this point, so the database on disk is not
-  // something to leave a service pointed at. Fail loudly, name the way back, and
-  // do not reach step 5.
+// The backup is about to be used. Re-check it against the bytes that were
+// inspected and approved above, while the live database is still intact.
+const backupHashNow = fileHash(backupPath);
+if (backupHashNow !== backupHash) {
   die([
-    `Could not copy the backup into place: ${err.message}`,
-    `The stale sidecars were already removed, so ${dbPath} must not be served as-is.`,
-    `Restore the pre-restore copy from: ${aside}`,
-    service ? `${service} is still stopped and was deliberately NOT started.` : ''
+    'BACKUP CHANGED AFTER INSPECTION — refusing to restore from it.',
+    `inspected: ${backupHash}`,
+    `now      : ${backupHashNow}`,
+    'The database was NOT touched; the file on disk is still the pre-restore one.',
+    `A copy of it is also at: ${aside}`,
+    leftStopped()
   ].filter(Boolean).join('\n'));
 }
-console.log('backup copied into place');
 
-// 4. verify before trusting it
-const after = survey(dbPath);
-console.log(`\nrestored contents: ${after.rows} usage rows, cost $${after.cost}, integrity ${after.integrity}`);
+// 3. Materialize the backup into a replacement and verify it BEFORE the live
+// database is disturbed, so an unusable backup costs nothing.
+const incoming = `${dbPath}.incoming-${process.pid}`;
+const discardIncoming = () => { try { fs.rmSync(incoming, { force: true }); } catch { /* nothing to add */ } };
+try {
+  if (fs.existsSync(incoming)) fs.rmSync(incoming, { force: true, recursive: true });
+  materialize(backupPath, incoming);
+} catch (err) {
+  discardIncoming();
+  die([
+    `Could not build a replacement database from the backup: ${err.message}`,
+    `${dbPath} was NOT touched and is still the pre-restore database.`,
+    `A copy of it is also at: ${aside}`,
+    leftStopped()
+  ].filter(Boolean).join('\n'));
+}
 
-const afterHash = fileHash(dbPath);
-console.log(`restored sha256  : ${afterHash}`);
+let candidate;
+try {
+  candidate = survey(incoming);
+} catch (err) {
+  // Guarded deliberately: an unreadable replacement must produce the fail-safe
+  // message below, not an uncaught stack trace that skips it.
+  discardIncoming();
+  die([
+    `The replacement built from the backup could not be read: ${err.message}`,
+    `${dbPath} was NOT touched and is still the pre-restore database.`,
+    `A copy of it is also at: ${aside}`,
+    leftStopped()
+  ].filter(Boolean).join('\n'));
+}
 
-const ok = after.integrity === 'ok' &&
-  after.rows === backupSurvey.rows &&
-  after.cost === backupSurvey.cost &&
-  afterHash === backupHash;
-if (!ok) {
-  console.error('\nRESTORE VERIFICATION FAILED — the database does not match the backup.');
-  if (afterHash !== backupHash) {
-    console.error('The bytes on disk differ from the backup that was inspected at the start.');
+const matches = candidate.integrity === 'ok' &&
+  candidate.rows === backupSurvey.rows &&
+  candidate.cost === backupSurvey.cost;
+if (!matches) {
+  discardIncoming();
+  die([
+    'RESTORE VERIFICATION FAILED — the replacement does not match the backup.',
+    `backup     : ${backupSurvey.rows} usage rows, cost $${backupSurvey.cost}, integrity ${backupSurvey.integrity}`,
+    `replacement: ${candidate.rows} usage rows, cost $${candidate.cost}, integrity ${candidate.integrity}`,
+    `${dbPath} was NOT touched and is still the pre-restore database.`,
+    `A copy of it is also at: ${aside}`,
+    leftStopped()
+  ].filter(Boolean).join('\n'));
+}
+console.log(`replacement built: ${candidate.rows} usage rows, cost $${candidate.cost}, integrity ${candidate.integrity}`);
+
+// 4. Swap it in. The stale sidecars go with the database they belonged to —
+// leaving either of them beside the new file is the silent-failure case.
+try {
+  for (const [p, label] of [[wal, 'wal'], [shm, 'shm']]) {
+    if (fs.existsSync(p)) {
+      fs.rmSync(p);
+      console.log(`removed stale ${label}`);
+    }
   }
-  console.error(`Put the pre-restore copy back from: ${aside}`);
-  if (service) {
-    console.error(`${service} is still stopped and was deliberately NOT started.`);
-  }
-  process.exit(1);
+  fs.renameSync(incoming, dbPath);
+} catch (err) {
+  die([
+    `Could not swap the verified replacement into place: ${err.message}`,
+    `The stale sidecars may already be gone, so ${dbPath} must not be served as-is.`,
+    `Restore the pre-restore copy from: ${aside}`,
+    `The verified replacement, if it still exists, is at: ${incoming}`,
+    leftStopped()
+  ].filter(Boolean).join('\n'));
+}
+console.log('replacement swapped into place');
+
+let after;
+try {
+  after = survey(dbPath);
+} catch (err) {
+  die([
+    `The restored database could not be read back: ${err.message}`,
+    `Restore the pre-restore copy from: ${aside}`,
+    leftStopped()
+  ].filter(Boolean).join('\n'));
+}
+
+const staleWal = sizeOf(wal) > 0;
+if (after.integrity !== 'ok' || after.rows !== candidate.rows || after.cost !== candidate.cost || staleWal) {
+  die([
+    'RESTORE VERIFICATION FAILED after the swap — the database on disk is not what was verified.',
+    `expected: ${candidate.rows} usage rows, cost $${candidate.cost}`,
+    `found   : ${after.rows} usage rows, cost $${after.cost}, integrity ${after.integrity}`,
+    staleWal ? `and a non-empty ${wal} is beside it, which will be replayed on the next open` : '',
+    `Restore the pre-restore copy from: ${aside}`,
+    leftStopped()
+  ].filter(Boolean).join('\n'));
 }
 
 // State the scope of the claim rather than a bare "verified": be precise about
 // what this proves so nobody reads more into it than it earns.
 console.log([
-  'verified:',
-  `  - the file is byte-identical (sha256) to the backup as inspected at the start`,
-  `  - it opens cleanly and passes integrity_check`,
+  '\nverified:',
+  '  - the database was built by SQLite from the backup, so any state that was in',
+  `    the backup's -wal is materialized into the single file now on disk`,
+  '  - the backup was byte-identical (sha256) to the one inspected at the start,',
+  '    checked again immediately before it was used',
+  '  - it opens cleanly and passes integrity_check',
   `  - it reports the same ${after.rows} usage rows and cost $${after.cost} as that backup`,
   '  - no replayable -wal remains beside it',
+  `  - the pre-restore database is at ${aside}${asideIsRawCopy ? ' (raw copy — keep its sidecars beside it)' : ' as a self-contained file'}`,
   'not proven: that the backup itself held the state you wanted, or that nothing',
   'writes to the database after this moment.'
 ].join('\n'));
