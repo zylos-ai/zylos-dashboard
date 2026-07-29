@@ -419,6 +419,106 @@ test('falls back to message.id, then uuid, when requestId is absent', () => {
   fs.rmSync(tmpDir, { recursive: true });
 });
 
+test('subagent transcripts are collected and billed to the parent session', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath, projectDir } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeResponseLines('req_main', [
+    { type: 'thinking', thinking: 'main' }, { type: 'text', text: 'main' }
+  ]).join('\n') + '\n');
+
+  // A Task/background agent writes its own transcript under <session>/subagents/.
+  const subDir = path.join(projectDir, 'test-session-123', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(path.join(subDir, 'agent-abc123.jsonl'), makeResponseLines('req_sub', [
+    { type: 'thinking', thinking: 'sub' }, { type: 'text', text: 'sub work' }
+  ], { sessionId: 'subagent-own-session', model: 'claude-sonnet-4-5' }).join('\n') + '\n');
+
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 2, 'main + subagent usage, one row each');
+
+  const sub = tokenMetrics.find(m => m.dimensions.request_id === 'req_sub');
+  assert.ok(sub, 'subagent usage must be ingested');
+  assert.equal(sub.dimensions.agent_id, 'abc123', 'tagged with the agent it came from');
+  assert.equal(sub.session_id, 'test-session-123', 'billed to the parent session, not its own');
+
+  const main = tokenMetrics.find(m => m.dimensions.request_id === 'req_main');
+  assert.equal(main.dimensions.agent_id, undefined, 'main rows carry no agent_id');
+
+  // Subagent text must not enter the activity feed.
+  const feed = store.events.filter(e => e.event_type === 'assistant_message');
+  assert.equal(feed.length, 1, 'only the main session contributes feed events');
+  assert.ok(feed[0].summary.includes('main'));
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('subagent transcripts are not re-ingested on the next pass', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath, projectDir } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('m1', { requestId: 'req_main' }) + '\n');
+  const subDir = path.join(projectDir, 'test-session-123', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  const subFile = path.join(subDir, 'agent-xyz.jsonl');
+  fs.writeFileSync(subFile, makeJsonlLine('s1', { requestId: 'req_sub1' }) + '\n');
+
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 2);
+
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 2, 'no duplication on re-read');
+
+  // Appending to the subagent transcript is picked up from its own offset.
+  fs.appendFileSync(subFile, makeJsonlLine('s2', { requestId: 'req_sub2' }) + '\n');
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 3, 'new subagent usage is collected incrementally');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('per-file offsets survive a restart', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath, projectDir } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('m1', { requestId: 'req_main' }) + '\n');
+  const subDir = path.join(projectDir, 'test-session-123', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(path.join(subDir, 'agent-xyz.jsonl'), makeJsonlLine('s1', { requestId: 'req_sub1' }) + '\n');
+
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 2);
+
+  const persisted = store.health['conversation_reader:byte_offset'].extra;
+  assert.ok(persisted.files, 'per-file offsets are persisted');
+  assert.equal(Object.keys(persisted.files).length, 2);
+
+  // Fresh collector restoring those offsets must not re-read either file.
+  const store2 = makeMockStore();
+  store2.db = {
+    prepare(sql) {
+      return {
+        get(param) {
+          if (sql.includes('byte_offset')) return { extra: JSON.stringify(persisted) };
+          if (sql.includes('$.request_id')) return undefined;
+          return { seq: 0 };
+        }
+      };
+    }
+  };
+  const { collector: collector2 } = makeCollector(store2, tmpDir);
+  collector2._restoreOffset();
+  collector2.collect();
+  assert.equal(usageMetrics(store2).length, 0, 'nothing re-read after restart');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
 test('unknown model writes token metrics but skips cost', () => {
   const tmpDir = makeTmpDir();
   const store = makeMockStore();

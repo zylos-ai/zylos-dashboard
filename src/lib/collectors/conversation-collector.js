@@ -15,6 +15,7 @@ export class ConversationCollector {
     this._timer = null;
     this._lastByteOffset = 0;
     this._currentFile = null;
+    this._offsets = new Map();
     this._seenUuids = new Set();
     this._onEvent = null;
     this._onMetric = null;
@@ -33,6 +34,14 @@ export class ConversationCollector {
         if (data.file && data.offset) {
           this._currentFile = data.file;
           this._lastByteOffset = data.offset;
+          this._offsets.set(data.file, data.offset);
+        }
+        // Per-file offsets: a session also has subagent transcripts, each read
+        // independently. Older records carry only the main file above.
+        if (data.files && typeof data.files === 'object') {
+          for (const [file, offset] of Object.entries(data.files)) {
+            if (typeof offset === 'number') this._offsets.set(file, offset);
+          }
         }
       }
     } catch { /* first run or schema mismatch — start from zero */ }
@@ -41,7 +50,9 @@ export class ConversationCollector {
   _persistOffset() {
     if (!this._currentFile) return;
     this.store.upsertSourceHealth('conversation_reader', 'byte_offset', 'tracking', {
-      file: this._currentFile, offset: this._lastByteOffset
+      file: this._currentFile,
+      offset: this._lastByteOffset,
+      files: Object.fromEntries(this._offsets)
     });
   }
 
@@ -51,16 +62,37 @@ export class ConversationCollector {
     return '-' + resolved.replace(/\//g, '-').replace(/^-/, '');
   }
 
+  _resolveProjectDir() {
+    return path.join(
+      this.config.homeDir || process.env.HOME,
+      '.claude', 'projects', this._resolveProjectSlug()
+    );
+  }
+
   _resolveJsonlPath() {
     const sessionId = this._stateEngine?.getCurrentSessionId?.();
     if (!sessionId) return null;
-    const projectSlug = this._resolveProjectSlug();
-    const projectDir = path.join(
-      this.config.homeDir || process.env.HOME,
-      '.claude', 'projects', projectSlug
-    );
-    const jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
+    const jsonlPath = path.join(this._resolveProjectDir(), `${sessionId}.jsonl`);
     return fs.existsSync(jsonlPath) ? jsonlPath : null;
+  }
+
+  // A session's usage is spread over more than one transcript: the main file
+  // plus one per subagent under <session>/subagents/. Reading only the main
+  // file silently omits every Task/background-agent call from cost — measured
+  // at -10% of a session's true cost with a single memory-sync subagent.
+  _resolveSubagentPaths(sessionId) {
+    if (!sessionId) return [];
+    const dir = path.join(this._resolveProjectDir(), sessionId, 'subagents');
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch { return []; }
+    return entries
+      .filter(name => name.endsWith('.jsonl'))
+      .map(name => ({
+        file: path.join(dir, name),
+        // agent-<id>.jsonl — kept as a dimension so subagent spend stays
+        // attributable without leaving the parent session's totals.
+        agentId: name.replace(/^agent-/, '').replace(/\.jsonl$/, '')
+      }));
   }
 
   // A single API response is written to the transcript as one line per content
@@ -113,23 +145,55 @@ export class ConversationCollector {
     if (jsonlPath !== this._currentFile) {
       this._currentFile = jsonlPath;
       this._lastByteOffset = 0;
+      this._offsets.clear();
       this._seenUuids.clear();
       this._persistOffset();
     }
 
+    const sessionId = this._stateEngine?.getCurrentSessionId?.() || null;
+    let written = this._collectFile(jsonlPath, { sessionId });
+
+    // Subagent transcripts are usage-only: their text is not surfaced in the
+    // activity feed, but their tokens are the parent session's spend.
+    for (const { file, agentId } of this._resolveSubagentPaths(sessionId)) {
+      written += this._collectFile(file, { sessionId, agentId, usageOnly: true });
+    }
+
+    // Persist offsets only AFTER all writes succeed — crash-safe: on restart,
+    // unacknowledged lines are re-read; request-level dedup prevents
+    // double-counting.
+    this._persistOffset();
+
+    if (written > 0) {
+      this.store.upsertSourceHealth('conversation_reader', 'collector_liveness', 'healthy', {
+        last_success: new Date().toISOString(), messages_ingested: written
+      });
+    }
+
+    return written;
+  }
+
+  _collectFile(jsonlPath, { sessionId = null, agentId = null, usageOnly = false } = {}) {
+    const startOffset = this._offsets.get(jsonlPath) || 0;
+
     let stat;
     try { stat = fs.statSync(jsonlPath); } catch { return 0; }
-    if (stat.size <= this._lastByteOffset) return 0;
+    if (stat.size <= startOffset) return 0;
 
-    const buf = Buffer.alloc(stat.size - this._lastByteOffset);
+    const buf = Buffer.alloc(stat.size - startOffset);
     const fd = fs.openSync(jsonlPath, 'r');
-    fs.readSync(fd, buf, 0, buf.length, this._lastByteOffset);
-    fs.closeSync(fd);
+    try {
+      fs.readSync(fd, buf, 0, buf.length, startOffset);
+    } finally {
+      fs.closeSync(fd);
+    }
 
     const chunk = buf.toString('utf8');
     const lastNewline = chunk.lastIndexOf('\n');
     if (lastNewline === -1) return 0;
-    this._lastByteOffset += Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
+    const consumed = Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
+    this._offsets.set(jsonlPath, startOffset + consumed);
+    if (jsonlPath === this._currentFile) this._lastByteOffset = startOffset + consumed;
 
     const lines = chunk.slice(0, lastNewline).split('\n').filter(l => l.trim());
 
@@ -146,9 +210,13 @@ export class ConversationCollector {
       this._seenUuids.add(uuid);
 
       const timestamp = msg.timestamp || now;
-      const sessionId = msg.sessionId || null;
+      // Subagent records carry their own sessionId. Bill them to the parent
+      // session or their spend never rolls up into the session total the
+      // statusline reports.
+      const rowSessionId = agentId ? sessionId : (msg.sessionId || sessionId);
 
       if (msg.type === 'user') {
+        if (usageOnly) continue;
         const userContent = msg.message?.content;
         const isToolResult = Array.isArray(userContent) &&
           userContent.every(c => c.type === 'tool_result');
@@ -175,11 +243,12 @@ export class ConversationCollector {
       if (usage) {
         const speed = usage.speed || 'standard';
         usageWritten += this._ingestUsage(
-          usage, model, sessionId, timestamp, uuid, speed, projects, this._requestKeyFor(msg)
+          usage, model, rowSessionId, timestamp, uuid, speed, projects,
+          this._requestKeyFor(msg), agentId
         );
       }
 
-      if (!Array.isArray(content)) continue;
+      if (usageOnly || !Array.isArray(content)) continue;
 
       const textBlocks = content
         .filter(c => c.type === 'text' && c.text?.trim())
@@ -201,7 +270,7 @@ export class ConversationCollector {
           ingest_id: `conv-${uuid}`,
           timestamp,
           runtime: 'claude',
-          session_id: sessionId,
+          session_id: rowSessionId,
           event_type: 'assistant_message',
           category: 'assistant',
           summary,
@@ -234,21 +303,10 @@ export class ConversationCollector {
       }
     }
 
-    // Persist offset only AFTER all writes succeed — crash-safe: on restart,
-    // unacknowledged lines are re-read; uuid dedup in _seenUuids + dimensions
-    // prevents double-counting.
-    this._persistOffset();
-
-    if (written > 0) {
-      this.store.upsertSourceHealth('conversation_reader', 'collector_liveness', 'healthy', {
-        last_success: now, messages_ingested: written
-      });
-    }
-
     return written;
   }
 
-  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = [], requestKey = null) {
+  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = [], requestKey = null, agentId = null) {
     const inputTokens = usage.input_tokens || 0;
     const outputTokens = usage.output_tokens || 0;
     const cacheRead = usage.cache_read_input_tokens || 0;
@@ -273,6 +331,7 @@ export class ConversationCollector {
       request_id: key,
       uuid
     };
+    if (agentId) dims.agent_id = agentId;
     if (projects.length > 0) dims.projects = projects;
 
     const price = this._resolveModelPrice(model);
