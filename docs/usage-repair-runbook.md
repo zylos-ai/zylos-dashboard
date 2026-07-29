@@ -140,15 +140,36 @@ node scripts/restore-dashboard-db.js \
 
 It will:
 
-1. read and integrity-check the backup, and refuse to proceed if it fails
+1. read, integrity-check and **hash** the backup, and refuse to proceed if the
+   integrity check fails
 2. stop `zylos-dashboard`, aborting without changes if the stop fails
 3. set the current database aside with its `-wal`/`-shm`, so the restore is
    itself reversible
 4. remove the stale `-wal`/`-shm` — the step a bare `cp` omits
 5. copy the backup into place
-6. **verify** row count, cost total and `integrity_check` against the backup,
-   and exit non-zero if they disagree
-7. start the service again
+6. **verify**: the restored file must be byte-identical (SHA-256) to the backup
+   *as hashed in step 1*, pass `integrity_check`, and report the same usage row
+   count and cost total. Exit non-zero if any of those disagree
+7. start the service again — **only if step 6 passed**
+
+### What the verification does and does not prove
+
+Worth stating exactly, because "verification passed" invites more confidence
+than the check earns:
+
+- **Proven:** the file now on disk is byte-for-byte the backup that was
+  inspected and approved at the start of the run; it opens cleanly; it passes
+  `integrity_check`; it reports the same usage row count and cost total; and no
+  replayable `-wal` is left beside it.
+- **Not proven:** that the backup itself contained the state you wanted — a
+  restore of the wrong backup verifies perfectly. Nor that nothing writes to the
+  database after the check; verification is a point-in-time statement, which is
+  why the service is only started afterwards.
+
+The byte comparison is against the hash taken in step 1, not a re-read of the
+backup at the end. That is deliberate: anything that alters the backup during
+the run (another operator, a sync job, a stop hook) would otherwise be copied in
+and then compared against itself, and would pass.
 
 Preview without touching anything:
 
@@ -160,11 +181,24 @@ If the service is managed some other way, stop it yourself and pass
 `--assume-stopped`. There is deliberately no default for this: silence must
 never be read as "the service was stopped".
 
-### If verification fails
+### If verification fails, or the copy itself fails
 
-The script prints the path of the pre-restore copy it set aside. Put that back
-(same procedure, `--backup <that copy>`) and investigate before retrying. A
-failed restore is not a one-way door.
+The service is **left stopped on purpose** — the script will not start it against
+a database that did not verify, and says so on stderr. It prints the path of the
+pre-restore copy it set aside; put that back (same procedure,
+`--backup <that copy>`) and investigate before retrying. A failed restore is not
+a one-way door.
+
+The same holds if the copy in step 5 fails (an unwritable database file, a full
+disk). By then the stale sidecars are already gone, so the file on disk must not
+be served as-is: the script fails with the pre-restore path and does not reach
+the start step.
+
+Both paths are covered by negative controls in
+`test/restore-dashboard-db.test.js`, using a fake `pm2` on `PATH` that records
+every invocation — so "the service was not restarted" is asserted from observed
+behaviour rather than read off the source. The same technique asserts that
+`--assume-stopped` invokes no service manager at all.
 
 ## Do not
 

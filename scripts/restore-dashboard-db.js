@@ -31,6 +31,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 
@@ -69,6 +70,18 @@ const wal = `${dbPath}-wal`;
 const shm = `${dbPath}-shm`;
 const sizeOf = (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
 
+/**
+ * SHA-256 of the file's bytes. Taken of the backup BEFORE anything is stopped or
+ * moved, so the post-restore comparison is against the bytes that were actually
+ * inspected and approved — not against whatever the backup happens to contain by
+ * the time the copy runs. Without this, anything that alters the backup mid-run
+ * (another operator, a sync job, a stop hook) would be copied in and then
+ * "verified" against itself.
+ */
+function fileHash(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
 /** Row counts and cost total, used to compare before/after. */
 function survey(file) {
   const db = new Database(file, { readonly: true });
@@ -91,7 +104,9 @@ console.log(`wal      : ${sizeOf(wal)} bytes${sizeOf(wal) > 0 ? '  <-- would be 
 console.log(`shm      : ${sizeOf(shm)} bytes`);
 
 const backupSurvey = survey(backupPath);
+const backupHash = fileHash(backupPath);
 console.log(`\nbackup contents  : ${backupSurvey.rows} usage rows, cost $${backupSurvey.cost}, integrity ${backupSurvey.integrity}`);
+console.log(`backup sha256    : ${backupHash}`);
 if (backupSurvey.integrity !== 'ok') die('Backup fails integrity_check. Refusing to restore from it.');
 
 let liveSurvey = null;
@@ -141,20 +156,55 @@ for (const [p, label] of [[wal, 'wal'], [shm, 'shm']]) {
 }
 
 // 3. put the backup in place
-fs.copyFileSync(backupPath, dbPath);
+try {
+  fs.copyFileSync(backupPath, dbPath);
+} catch (err) {
+  // The sidecars are already gone at this point, so the database on disk is not
+  // something to leave a service pointed at. Fail loudly, name the way back, and
+  // do not reach step 5.
+  die([
+    `Could not copy the backup into place: ${err.message}`,
+    `The stale sidecars were already removed, so ${dbPath} must not be served as-is.`,
+    `Restore the pre-restore copy from: ${aside}`,
+    service ? `${service} is still stopped and was deliberately NOT started.` : ''
+  ].filter(Boolean).join('\n'));
+}
 console.log('backup copied into place');
 
 // 4. verify before trusting it
 const after = survey(dbPath);
 console.log(`\nrestored contents: ${after.rows} usage rows, cost $${after.cost}, integrity ${after.integrity}`);
 
-const ok = after.integrity === 'ok' && after.rows === backupSurvey.rows && after.cost === backupSurvey.cost;
+const afterHash = fileHash(dbPath);
+console.log(`restored sha256  : ${afterHash}`);
+
+const ok = after.integrity === 'ok' &&
+  after.rows === backupSurvey.rows &&
+  after.cost === backupSurvey.cost &&
+  afterHash === backupHash;
 if (!ok) {
   console.error('\nRESTORE VERIFICATION FAILED — the database does not match the backup.');
+  if (afterHash !== backupHash) {
+    console.error('The bytes on disk differ from the backup that was inspected at the start.');
+  }
   console.error(`Put the pre-restore copy back from: ${aside}`);
+  if (service) {
+    console.error(`${service} is still stopped and was deliberately NOT started.`);
+  }
   process.exit(1);
 }
-console.log('verified: the database now matches the backup exactly');
+
+// State the scope of the claim rather than a bare "verified": be precise about
+// what this proves so nobody reads more into it than it earns.
+console.log([
+  'verified:',
+  `  - the file is byte-identical (sha256) to the backup as inspected at the start`,
+  `  - it opens cleanly and passes integrity_check`,
+  `  - it reports the same ${after.rows} usage rows and cost $${after.cost} as that backup`,
+  '  - no replayable -wal remains beside it',
+  'not proven: that the backup itself held the state you wanted, or that nothing',
+  'writes to the database after this moment.'
+].join('\n'));
 
 // 5. bring the service back
 if (service) {
