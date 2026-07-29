@@ -10,7 +10,7 @@ function makeTmpDir() {
 }
 
 function makeJsonlLine(uuid, opts = {}) {
-  return JSON.stringify({
+  const msg = {
     type: 'assistant',
     uuid,
     timestamp: opts.timestamp || '2026-05-17T10:00:00.000Z',
@@ -25,13 +25,41 @@ function makeJsonlLine(uuid, opts = {}) {
         cache_creation_input_tokens: 2000
       }
     }
-  });
+  };
+  if (opts.requestId) msg.requestId = opts.requestId;
+  if (opts.messageId) msg.message.id = opts.messageId;
+  return JSON.stringify(msg);
+}
+
+// One API response as the transcript actually stores it: one line per content
+// block, every line repeating the whole response's usage, differing only in
+// uuid / parentUuid / timestamp / the block itself.
+function makeResponseLines(requestId, blocks, opts = {}) {
+  const usage = opts.usage ?? {
+    input_tokens: 2,
+    output_tokens: 537,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 68486
+  };
+  return blocks.map((block, i) => makeJsonlLine(`${requestId}-line-${i}`, {
+    ...opts,
+    requestId,
+    messageId: opts.messageId || `msg_${requestId}`,
+    content: [block],
+    usage
+  }));
 }
 
 function makeMockStore() {
   const metrics = [];
   const events = [];
   const health = {};
+  let nextId = 1;
+  const findByRequestId = (requestId) => metrics.find(m =>
+    m.source === 'jsonl_usage' &&
+    m.metric_name === 'usage_event' &&
+    m.dimensions?.request_id === requestId
+  );
   return {
     metrics,
     events,
@@ -43,7 +71,14 @@ function makeMockStore() {
       return { inserted: true, event_seq: events.length };
     },
     insertMetric(point) {
-      metrics.push(point);
+      metrics.push({ id: nextId++, ...point });
+    },
+    updateMetric(id, { metric_value, dimensions } = {}) {
+      const row = metrics.find(m => m.id === id);
+      if (!row) return { updated: false };
+      if (metric_value != null) row.metric_value = metric_value;
+      if (dimensions) row.dimensions = dimensions;
+      return { updated: true };
     },
     upsertSourceHealth(name, signalType, status, extra) {
       health[`${name}:${signalType}`] = { status, extra };
@@ -53,21 +88,14 @@ function makeMockStore() {
         return {
           get(param) {
             if (sql.includes('byte_offset')) return null;
-            if (sql.includes('jsonl_usage')) {
-              // Check if this uuid exists in metrics
-              if (param && typeof param === 'string') {
-                const uuidMatch = param.match(/"uuid":"([^"]+)"/);
-                if (uuidMatch) {
-                  const uuid = uuidMatch[1];
-                  const exists = metrics.find(m =>
-                    m.source === 'jsonl_usage' &&
-                    m.metric_name === 'usage_event' &&
-                    m.dimensions?.uuid === uuid
-                  );
-                  return exists ? { '1': 1 } : undefined;
-                }
-              }
-              return undefined;
+            if (sql.includes('$.request_id')) {
+              const row = findByRequestId(param);
+              if (!row) return undefined;
+              return {
+                id: row.id,
+                metric_value: row.metric_value,
+                dimensions: JSON.stringify(row.dimensions)
+              };
             }
             return { seq: 0 };
           }
@@ -243,38 +271,150 @@ test('uuid dedup prevents double-counting on crash recovery replay', () => {
   const store2 = makeMockStore();
   // Pre-seed store2's metrics with existing data (simulating DB survived the crash)
   store2.metrics.push(...store.metrics);
-  store2.db = {
-    prepare(sql) {
-      return {
-        get(param) {
-          if (sql.includes('byte_offset')) return null; // no persisted offset (crash)
-          if (sql.includes('jsonl_usage')) {
-            // Check against pre-seeded metrics
-            if (param && typeof param === 'string') {
-              const uuidMatch = param.match(/"uuid":"([^"]+)"/);
-              if (uuidMatch) {
-                const uuid = uuidMatch[1];
-                const exists = store2.metrics.find(m =>
-                  m.source === 'jsonl_usage' &&
-                  m.metric_name === 'usage_event' &&
-                  m.dimensions?.uuid === uuid
-                );
-                return exists ? { '1': 1 } : undefined;
-              }
-            }
-            return undefined;
-          }
-          return { seq: 0 };
-        }
-      };
-    }
-  };
   const { collector: collector2 } = makeCollector(store2, tmpDir);
   collector2.collect();
 
   // uuid-replay should NOT be double-counted because dedup check finds it
   const tokenMetrics = usageMetrics(store2);
   assert.equal(tokenMetrics.length, 1); // still just 1, not 2
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('one response split across content-block lines is billed once', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // Exactly the real shape: thinking + text + tool_use, one line each, all
+  // three repeating the same usage. Before the fix this billed 3x.
+  const lines = makeResponseLines('req_A', [
+    { type: 'thinking', thinking: 'pondering' },
+    { type: 'text', text: 'Here is the answer' },
+    { type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/x/workspace/proj/a.js' } }
+  ]);
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1, 'three lines of one response must yield one usage row');
+  assert.equal(tokenMetrics[0].dimensions.output, 537);
+  assert.equal(tokenMetrics[0].metric_value, 2 + 68486);
+  assert.equal(tokenMetrics[0].dimensions.request_id, 'req_A');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('distinct requests are still counted separately', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  const lines = [
+    ...makeResponseLines('req_A', [{ type: 'thinking', thinking: 'a' }, { type: 'text', text: 'a' }]),
+    ...makeResponseLines('req_B', [{ type: 'thinking', thinking: 'b' }, { type: 'text', text: 'b' }])
+  ];
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 2);
+  assert.deepEqual(tokenMetrics.map(m => m.dimensions.request_id).sort(), ['req_A', 'req_B']);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('a later line carrying more complete usage wins (upsert, not skip)', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // Robustness: the observed transcripts repeat usage byte-identically, but the
+  // collector must not silently drop a fuller reading if a shape ever differs.
+  const first = makeJsonlLine('l1', {
+    requestId: 'req_C', messageId: 'msg_C',
+    content: [{ type: 'thinking', thinking: 'partial' }],
+    usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  const second = makeJsonlLine('l2', {
+    requestId: 'req_C', messageId: 'msg_C',
+    content: [{ type: 'text', text: 'complete' }],
+    usage: { input_tokens: 2, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  fs.writeFileSync(jsonlPath, first + '\n' + second + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1, 'still one row per request');
+  assert.equal(tokenMetrics[0].dimensions.output, 900, 'the fuller output must win');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('a later line with less complete usage does not shrink the row', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  const full = makeJsonlLine('l1', {
+    requestId: 'req_D', messageId: 'msg_D',
+    content: [{ type: 'text', text: 'full' }],
+    usage: { input_tokens: 2, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  const partial = makeJsonlLine('l2', {
+    requestId: 'req_D', messageId: 'msg_D',
+    content: [{ type: 'tool_use', id: 't', name: 'Read', input: {} }],
+    usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  fs.writeFileSync(jsonlPath, full + '\n' + partial + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1);
+  assert.equal(tokenMetrics[0].dimensions.output, 900, 'must not regress to the smaller reading');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('projects from every content-block line are merged onto the single row', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // The thinking line knows no project; the tool_use lines do. Deduping to the
+  // first line alone would lose attribution entirely.
+  const lines = makeResponseLines('req_E', [
+    { type: 'thinking', thinking: 'no project here' },
+    { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/home/u/zylos/workspace/alpha/a.js' } },
+    { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/home/u/zylos/workspace/beta/b.js' } }
+  ]);
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1);
+  assert.deepEqual([...tokenMetrics[0].dimensions.projects].sort(), ['alpha', 'beta']);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('falls back to message.id, then uuid, when requestId is absent', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // No requestId (observed on <synthetic> records): message.id still groups the
+  // lines of one response.
+  const a = makeJsonlLine('u1', { messageId: 'msg_F', content: [{ type: 'thinking', thinking: 'x' }] });
+  const b = makeJsonlLine('u2', { messageId: 'msg_F', content: [{ type: 'text', text: 'y' }] });
+  // Neither requestId nor message.id: falls back to uuid, one row per line.
+  const c = makeJsonlLine('u3', { content: [{ type: 'text', text: 'z' }] });
+  fs.writeFileSync(jsonlPath, [a, b, c].join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 2, 'msg_F collapses to one row; the keyless line stands alone');
+  assert.deepEqual(tokenMetrics.map(m => m.dimensions.request_id).sort(), ['msg_F', 'u3']);
 
   fs.rmSync(tmpDir, { recursive: true });
 });

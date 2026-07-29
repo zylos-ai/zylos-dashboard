@@ -63,13 +63,28 @@ export class ConversationCollector {
     return fs.existsSync(jsonlPath) ? jsonlPath : null;
   }
 
-  _hasUsageForUuid(uuid) {
+  // A single API response is written to the transcript as one line per content
+  // block (thinking / text / tool_use), so 2-5 lines share the same requestId
+  // and message.id and each carry a COPY of the whole response's usage. The
+  // usage must therefore be attributed per request, not per line — keying on
+  // uuid (the line's identity) bills one response 2-5 times over.
+  _requestKeyFor(msg) {
+    return msg.requestId || msg.message?.id || msg.uuid || null;
+  }
+
+  _findUsageByRequestKey(requestKey) {
     try {
       const row = this.store.db.prepare(
-        "SELECT 1 FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'usage_event' AND dimensions LIKE ? LIMIT 1"
-      ).get(`%"uuid":"${uuid}"%`);
-      return !!row;
-    } catch { return false; }
+        `SELECT id, metric_value, dimensions FROM metric_points
+         WHERE source = 'jsonl_usage' AND metric_name = 'usage_event'
+           AND json_extract(dimensions, '$.request_id') = ?
+         LIMIT 1`
+      ).get(requestKey);
+      if (!row) return null;
+      let dimensions = null;
+      try { dimensions = row.dimensions ? JSON.parse(row.dimensions) : null; } catch { /* keep null */ }
+      return { ...row, dimensions };
+    } catch { return null; }
   }
 
   _resolveModelPrice(model) {
@@ -159,7 +174,9 @@ export class ConversationCollector {
 
       if (usage) {
         const speed = usage.speed || 'standard';
-        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects);
+        usageWritten += this._ingestUsage(
+          usage, model, sessionId, timestamp, uuid, speed, projects, this._requestKeyFor(msg)
+        );
       }
 
       if (!Array.isArray(content)) continue;
@@ -231,7 +248,7 @@ export class ConversationCollector {
     return written;
   }
 
-  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = []) {
+  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = [], requestKey = null) {
     const inputTokens = usage.input_tokens || 0;
     const outputTokens = usage.output_tokens || 0;
     const cacheRead = usage.cache_read_input_tokens || 0;
@@ -240,7 +257,8 @@ export class ConversationCollector {
 
     if (totalInput === 0 && outputTokens === 0) return 0;
 
-    if (this._hasUsageForUuid(uuid)) return 0;
+    const key = requestKey || uuid;
+    if (!key) return 0;
 
     const dims = {
       input: inputTokens,
@@ -252,6 +270,7 @@ export class ConversationCollector {
       runtime_semantics: 'claude_split_cache',
       model,
       speed,
+      request_id: key,
       uuid
     };
     if (projects.length > 0) dims.projects = projects;
@@ -261,7 +280,17 @@ export class ConversationCollector {
     if (cost != null) dims.cost = cost;
     if (totalInput > 0) dims.cache_hit_rate = cacheRead / totalInput;
 
-    let written = 0;
+    const existing = this._findUsageByRequestKey(key);
+    if (existing) {
+      // Same API response, seen again via another content-block line (or a
+      // crash-recovery re-read). Never insert a second row for it. Upsert
+      // rather than skip so a later line carrying more complete usage still
+      // wins — in observed transcripts the copies are byte-identical, but the
+      // collector must not depend on that holding for every response shape.
+      this._upsertUsage(existing, dims, totalInput, timestamp);
+      return 0;
+    }
+
     const point = {
       timestamp, runtime: 'claude', session_id: sessionId,
       metric_name: 'usage_event', metric_value: totalInput,
@@ -270,12 +299,48 @@ export class ConversationCollector {
     };
     this.store.insertMetric(point);
     if (this._onMetric) this._onMetric(point);
-    written++;
 
     this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
       last_success: timestamp, model, tokens: totalInput + outputTokens
     });
-    return written;
+    return 1;
+  }
+
+  // Token totals of a usage row, used to decide which copy of one response's
+  // usage is the most complete.
+  static _usageWeight(dims) {
+    if (!dims) return -1;
+    return (dims.input || 0) + (dims.output || 0) +
+      (dims.cache_read || 0) + (dims.cache_creation || 0);
+  }
+
+  _upsertUsage(existing, dims, totalInput, timestamp) {
+    if (typeof this.store.updateMetric !== 'function') return;
+
+    const prev = existing.dimensions;
+    const takeNewUsage = ConversationCollector._usageWeight(dims) >
+      ConversationCollector._usageWeight(prev);
+
+    // Projects are extracted per content block, so the tool_use line knows
+    // things the thinking line does not. Union them or attribution is lost.
+    const mergedProjects = [...new Set([...(prev?.projects || []), ...(dims.projects || [])])];
+
+    const next = takeNewUsage ? { ...prev, ...dims } : { ...dims, ...prev };
+    if (mergedProjects.length > 0) next.projects = mergedProjects;
+    else delete next.projects;
+
+    const nextValue = takeNewUsage ? totalInput : existing.metric_value;
+    const changed = JSON.stringify(next) !== JSON.stringify(prev) || nextValue !== existing.metric_value;
+    if (!changed) return;
+
+    // Keep the earliest timestamp: it anchors the response to when it started,
+    // and moving it could shift the row across a reporting bucket boundary.
+    this.store.updateMetric(existing.id, { metric_value: nextValue, dimensions: next });
+    if (takeNewUsage) {
+      this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
+        last_success: timestamp, model: next.model, tokens: nextValue + (next.output || 0)
+      });
+    }
   }
 
   _extractProjectsFromContent(content) {
