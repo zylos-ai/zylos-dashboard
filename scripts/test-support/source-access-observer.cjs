@@ -42,6 +42,12 @@ if (!target || !logPath) {
   throw new Error('source-access-observer requires SOURCE_OBSERVER_TARGET and SOURCE_OBSERVER_LOG');
 }
 
+// `--require` preloads also run on worker threads, and `module.register` starts one
+// for the hooks. Instrumenting there would log a second "ready" line and wrap a
+// thread the script under observation never runs on, so only the main thread does
+// any of this.
+if (!require('worker_threads').isMainThread) return;
+
 const fs = require('fs');
 const childProcess = require('child_process');
 const path = require('path');
@@ -55,8 +61,12 @@ const { pathToFileURL } = require('url');
  */
 let phase = 'before-materialize';
 
+// Captured before anything below wraps it, so writing the log is never itself an
+// observed access.
+const appendFileSync = fs.appendFileSync;
+
 const record = (entry) => {
-  fs.appendFileSync(logPath, `${JSON.stringify({ phase, ...entry })}\n`);
+  appendFileSync(logPath, `${JSON.stringify({ phase, ...entry })}\n`);
 };
 
 /** Only accesses to the watched path are recorded; the script touches many others. */
@@ -68,13 +78,22 @@ const isTarget = (p) => {
 
 // --- better-sqlite3: the connection count that carries the claim ---------------
 //
-// Interposed with `module.registerHooks`, whose resolve hook applies to `import`
-// as well as `require`. Overwriting `require.cache[...].exports` was tried first
-// and does NOT work here: on Node 22 the ESM translation of a CJS package does not
-// read back a mutated cache entry, so `import Database from 'better-sqlite3'` kept
-// receiving the real class and the observer recorded nothing. That failure mode is
-// exactly why the test asserts the must-happen accesses are present — it is what
-// caught this during development.
+// Interposed by redirecting the `better-sqlite3` specifier through a loader hook
+// registered with `module.register`, which exists from Node 20.6 — the repo
+// supports `>=20`, so the mechanism has to work there and not only on current
+// Node. Two other approaches were tried and measured first:
+//
+//   - `require.cache[path].exports = subclass` reaches neither Node 20 nor Node 22:
+//     the ESM translation of a CJS package does not read a mutated cache entry back,
+//     so `import Database from 'better-sqlite3'` kept receiving the real class while
+//     this observer recorded nothing at all.
+//   - `module.registerHooks` works, but only from Node 22.15/23.5. On Node 20.20.2
+//     it is simply `undefined`, and an observer that throws on load turns the test
+//     using it into a failure on the repo's own minimum version.
+//
+// If even `register` is missing (Node < 20.6), nothing is interposed and the
+// mechanism is reported as `none`, so the test can skip with a stated reason rather
+// than assert absences against an observer that was never installed.
 const sqlitePath = require.resolve('better-sqlite3', {
   paths: [path.join(__dirname, '..', '..')]
 });
@@ -93,49 +112,76 @@ class ObservedDatabase extends RealDatabase {
 // The redirect target reads the subclass back off this handle.
 globalThis.__sourceAccessObserver = { ObservedDatabase };
 
-const REDIRECT = path.join(__dirname, 'source-access-observer-sqlite.cjs');
-require('module').registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (specifier === 'better-sqlite3' && !String(context.parentURL || '').includes('source-access-observer')) {
-      return { url: pathToFileURL(REDIRECT).href, shortCircuit: true };
-    }
-    return nextResolve(specifier, context);
-  }
-});
+const { register } = require('module');
+const mechanism = typeof register === 'function' ? 'register' : 'none';
 
-// --- fs: content reads and metadata probes, kept apart ------------------------
+if (mechanism === 'register') {
+  register(pathToFileURL(path.join(__dirname, 'source-access-observer-hooks.mjs')).href, {
+    data: { redirect: pathToFileURL(path.join(__dirname, 'source-access-observer-sqlite.cjs')).href }
+  });
+}
+
+// --- fs: every function the module actually exposes ---------------------------
+//
+// Enumerated from `fs` and `fs.promises` at load time rather than from a hand-
+// written list of the interesting ones. A hand list was the first version and it
+// was wrong in a way review demonstrated rather than argued: it named openSync,
+// readFileSync, createReadStream and friends, and `fs.openAsBlob(src)` followed by
+// `.arrayBuffer()` then read 8,192 real bytes of the watched file while the log
+// stayed empty. Any list of "the ones that matter" is a list of the ones somebody
+// thought of; the module's own surface is not.
+//
+// Two things are still not observed here, and neither is a wording problem:
+// reads performed inside native code (better-sqlite3's own I/O), and reads
+// performed by a child process. Both are real reads of the file that this cannot
+// see, which is why the claim is scoped to the script's own JavaScript.
 //
 // `existsSync`/`stat` answer "is it there", which the script legitimately asks
 // about the source before opening it. Reading bytes is a different thing, and the
-// two must not be conflated in either direction, so they are classified here
-// rather than at assertion time.
-const CONTENT_READS = [
-  'openSync', 'open', 'readFileSync', 'readFile', 'createReadStream',
-  'copyFileSync', 'copyFile', 'opendirSync', 'opendir'
-];
-const METADATA = [
-  'existsSync', 'statSync', 'stat', 'lstatSync', 'lstat', 'accessSync', 'access',
-  'realpathSync', 'realpath'
-];
+// two must not be conflated in either direction, so they are classified — with
+// anything not recognised as a metadata call treated as an access, because the
+// conservative direction is to over-report rather than to miss one.
+const METADATA = new Set([
+  'exists', 'existsSync', 'stat', 'statSync', 'lstat', 'lstatSync', 'statfs',
+  'statfsSync', 'access', 'accessSync', 'realpath', 'realpathSync', 'readlink',
+  'readlinkSync', 'watch', 'watchFile', 'unwatchFile'
+]);
 
-const wrapFs = (name, kind) => {
-  const real = fs[name];
-  if (typeof real !== 'function') return;
-  fs[name] = function (...args) {
-    if (isTarget(args[0])) record({ kind, fn: `fs.${name}`, path: String(args[0]) });
-    return real.apply(this, args);
-  };
-  if (fs.promises && typeof fs.promises[name] === 'function') {
-    const realPromise = fs.promises[name];
-    fs.promises[name] = function (...args) {
-      if (isTarget(args[0])) record({ kind, fn: `fs.promises.${name}`, path: String(args[0]) });
-      return realPromise.apply(this, args);
-    };
+/** Classes (ReadStream, Dir, …) must not be wrapped: they are called with `new`. */
+const isPlainFunction = (value, name) =>
+  typeof value === 'function' && !/^[A-Z]/.test(name);
+
+const wrapAll = (holder, label) => {
+  const wrapped = [];
+  for (const name of Object.keys(holder)) {
+    let real;
+    try {
+      real = holder[name];
+    } catch {
+      continue; // a throwing getter is not something to interpose on
+    }
+    if (!isPlainFunction(real, name)) continue;
+    const kind = METADATA.has(name) ? 'metadata' : 'access';
+    try {
+      const wrapper = function (...args) {
+        if (isTarget(args[0])) record({ kind, fn: `${label}.${name}`, path: String(args[0]) });
+        return real.apply(this, args);
+      };
+      // Carry over attached properties — fs.realpath.native, the promisify hooks —
+      // so wrapping does not quietly remove parts of the API.
+      Object.assign(wrapper, real);
+      holder[name] = wrapper;
+      wrapped.push(name);
+    } catch {
+      // read-only property: nothing to do but leave it uninstrumented. The count
+      // below is what the test uses to see how much of the surface is covered.
+    }
   }
+  return wrapped;
 };
 
-for (const name of CONTENT_READS) wrapFs(name, 'content-read');
-for (const name of METADATA) wrapFs(name, 'metadata');
+const wrappedFs = wrapAll(fs, 'fs');
+const wrappedPromises = fs.promises ? wrapAll(fs.promises, 'fs.promises') : [];
 
 // --- child_process: which commands the script itself launches ------------------
 //
@@ -155,3 +201,18 @@ for (const name of ['spawnSync', 'spawn', 'execFileSync', 'execFile', 'execSync'
     return real.call(this, command, args, ...rest);
   };
 }
+
+// --- what the test needs in order to trust an empty log -----------------------
+//
+// First line of every log: which interposition mechanism was available, and how
+// much of the fs surface got wrapped. Without this, a test asserting "no accesses
+// after materialize" cannot tell a clean run from an observer that never installed
+// itself — and on Node < 20.6 there is no mechanism at all, which the test must be
+// able to see and skip on rather than silently report as proof.
+record({
+  kind: 'observer-ready',
+  mechanism,
+  node: process.versions.node,
+  wrappedFsFunctions: wrappedFs.length,
+  wrappedFsPromisesFunctions: wrappedPromises.length
+});

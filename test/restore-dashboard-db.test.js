@@ -675,25 +675,42 @@ test('no hash of the source backup is reported', async () => {
     'the artifact is the verifiable object, and it is still reported');
 });
 
-test('the script opens one SQLite connection on the source and does not reach for it again after that call returns', async () => {
+/** Parsed observer log: the `observer-ready` header, plus the accesses it saw. */
+function readObserved(logPath) {
+  const lines = fs.existsSync(logPath)
+    ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    : [];
+  return {
+    ready: lines.find((e) => e.kind === 'observer-ready') || null,
+    entries: lines.filter((e) => e.kind !== 'observer-ready')
+  };
+}
+
+test('the script opens one SQLite connection on the source and does not reach for it again after that call returns', async (t) => {
   // The claim this test can support, stated exactly:
   //
   //   the script's own JavaScript opens ONE better-sqlite3 connection on the source
   //   backup, to build the artifact, and after that constructor returns it does not
-  //   reach for the source again through the observed better-sqlite3 constructor, the
-  //   observed fs entry points, or any subprocess it launches.
+  //   reach for the source again through any function of fs / fs.promises, through
+  //   the better-sqlite3 constructor, or through a subprocess it launches.
   //
-  // What it is NOT: a syscall-level claim that the source is "read once". A single
-  // SQLite connection performs as many low-level reads of the main file and its -wal
-  // as SQLite needs, inside native code, and counting those is not what this
-  // observes. And the subprocess check records the commands this script launches — it
-  // is not evidence about what a child process reads.
+  // What it is NOT, in three specific ways:
+  //   - not a syscall-level claim that the source is "read once". One SQLite
+  //     connection performs as many low-level reads of the main file and its -wal as
+  //     SQLite needs, inside native code, where this cannot see them;
+  //   - not a claim about what a child process reads. The subprocess check records
+  //     which commands this script launched, nothing more;
+  //   - not a claim about reads that bypass the fs module entirely.
+  // The fs coverage is the module's own function surface, enumerated at load time
+  // rather than hand-listed — an earlier hand-list version missed fs.openAsBlob, and
+  // the test below pins that hole shut.
   //
   // FAIL-CLOSED: every absence assertion here is worthless unless interposition is
   // actually live — "nothing was recorded" is also what a broken observer produces.
-  // Overwriting require.cache did in fact break exactly this way on Node 22 (the ESM
-  // import kept receiving the real class), which is why the must-happen accesses are
-  // asserted FIRST and the absences only after.
+  // Two real failures of exactly that kind happened while building this: overwriting
+  // require.cache silently reached neither Node 20 nor 22, and module.registerHooks
+  // does not exist before Node 22.15 while this repo supports >=20. So the header
+  // line is checked first, the must-happen accesses second, absences last.
   const { dbPath, backupPath, db, insert } = scenario();
   await db.backup(backupPath);
   insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
@@ -711,10 +728,20 @@ test('the script opens one SQLite connection on the source and does not reach fo
 
   assert.equal(res.status, 0, res.stderr);
 
-  const observed = fs.existsSync(logPath)
-    ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    : [];
-  const of = (kind, phase) => observed.filter((e) => e.kind === kind && (!phase || e.phase === phase));
+  const { ready, entries } = readObserved(logPath);
+  const of = (kind, phase) => entries.filter((e) => e.kind === kind && (!phase || e.phase === phase));
+
+  // 0. Is there an observer at all? On Node < 20.6 there is no way to interpose on
+  // the import, and skipping with the reason stated is the honest outcome — better
+  // than asserting absences nothing was watching, and better than failing on a
+  // version the repo claims to support.
+  assert.ok(ready, 'the observer must report itself before anything else is trusted');
+  if (ready.mechanism === 'none') {
+    t.skip(`no import interposition available on Node ${ready.node} (module.register needs >=20.6)`);
+    return;
+  }
+  assert.ok(ready.wrappedFsFunctions > 50,
+    `the fs surface must actually be wrapped, got ${ready.wrappedFsFunctions} functions`);
 
   // 1. The observer is live — asserted through accesses that must happen.
   assert.deepEqual(of('sqlite-open').map((e) => e.phase), ['before-materialize'],
@@ -726,11 +753,56 @@ test('the script opens one SQLite connection on the source and does not reach fo
     'the child_process interposition must be live, and the subprocess contract is exactly these two pm2 calls');
 
   // 2. Only now, the absences.
-  const after = observed.filter((e) => e.phase === 'after-materialize');
+  const after = entries.filter((e) => e.phase === 'after-materialize');
   assert.deepEqual(after.filter((e) => e.kind !== 'spawn'), [],
     'once the materialize connection returned, the source is not opened or read again');
-  assert.deepEqual(of('content-read'), [],
-    'the source is never read as bytes through fs — it is reached only through SQLite, to build the artifact');
+  assert.deepEqual(of('access'), [],
+    'the source is never reached through an fs function at all — only through SQLite, to build the artifact');
+});
+
+test('INSTRUMENT CONTROL: the observer sees an fs read it was never told to look for', async () => {
+  // The test above can only be trusted as far as the observer's coverage goes, and
+  // coverage was where the first version was wrong: it wrapped a hand-written list of
+  // the obvious read functions, and `fs.openAsBlob(source).arrayBuffer()` walked
+  // straight past it, reading the file for real while the log stayed empty.
+  //
+  // So the instrument gets its own control, with openAsBlob as the case that already
+  // escaped once: a stand-in module opens the watched file through SQLite and then
+  // reads it again that way. Both must appear in the log, in the right phases. If
+  // coverage regresses to "the ones we thought of", this fails here rather than
+  // silently weakening the test above.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const dir = path.dirname(dbPath);
+  const standIn = path.join(dir, 'second-read.mjs');
+  fs.writeFileSync(standIn, [
+    "import fs from 'node:fs';",
+    "import Database from 'better-sqlite3';",
+    'const src = process.argv[2];',
+    "new Database(src, { readonly: true }).close();",
+    'const blob = await fs.openAsBlob(src);',
+    'if ((await blob.arrayBuffer()).byteLength === 0) throw new Error("expected bytes");'
+  ].join('\n'));
+
+  const logPath = path.join(dir, 'instrument.log');
+  const res = spawnSync(process.execPath, ['--require', OBSERVER, standIn, backupPath], {
+    encoding: 'utf8',
+    cwd: path.join(import.meta.dirname, '..'),
+    env: { ...process.env, SOURCE_OBSERVER_TARGET: backupPath, SOURCE_OBSERVER_LOG: logPath }
+  });
+
+  assert.equal(res.status, 0, res.stderr);
+  const { ready, entries } = readObserved(logPath);
+  assert.ok(ready, 'the observer must report itself');
+  if (ready.mechanism === 'none') return; // covered by the skip in the test above
+
+  assert.deepEqual(entries.map((e) => `${e.phase}:${e.kind}:${e.fn || 'sqlite'}`), [
+    'before-materialize:sqlite-open:sqlite',
+    'after-materialize:access:fs.openAsBlob'
+  ], 'the SQLite connection and the later openAsBlob read must both be recorded, in that order');
 });
 
 test('a read-only database file is replaced rather than written through', async () => {
