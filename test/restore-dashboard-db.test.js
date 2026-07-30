@@ -8,6 +8,10 @@ import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 
 const SCRIPT = path.join(import.meta.dirname, '..', 'scripts', 'restore-dashboard-db.js');
+/** Preload that records the script's own accesses to one path; see its header. */
+// Lives outside test/ on purpose: `node --test` treats every .js/.cjs under test/
+// as a test file, and a preload-only module has no tests to run.
+const OBSERVER = path.join(import.meta.dirname, '..', 'scripts', 'test-support', 'source-access-observer.cjs');
 
 /**
  * A WAL-mode database with one usage row, an online backup of that state, and a
@@ -646,12 +650,15 @@ test('POSITIVE CONTROL: deleting the source backup during the stop window change
   assert.deepEqual(pm2Calls(pm2.log), ['stop zylos-dashboard', 'start zylos-dashboard']);
 });
 
-test('the source backup is not read again after the artifact is built', async () => {
-  // Distinct from the controls above, which mutate the source and check the result.
-  // This one checks the reverse direction: no output line reports anything about the
-  // source's contents, because reading it a second time is not something this script
-  // does. A weaker "audit" hash of a mutable WAL-mode main file was deliberately
-  // dropped rather than kept as a second, failure-prone trust semantics.
+test('no hash of the source backup is reported', async () => {
+  // Scope, deliberately narrow: this is an assertion about the script's OUTPUT, and
+  // nothing more. A weaker "audit" hash of a mutable WAL-mode main file was dropped
+  // rather than kept as a second, failure-prone trust semantics, so the artifact is
+  // the only hash there is to report.
+  //
+  // It used to be named for a claim it could not support — that the source "is not
+  // read again after the artifact is built" — which a silent access would have
+  // passed unchallenged. The test below is the one that observes accesses.
   const { dbPath, backupPath, db, insert } = scenario();
   await db.backup(backupPath);
   insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
@@ -663,9 +670,67 @@ test('the source backup is not read again after the artifact is built', async ()
 
   assert.equal(res.status, 0, res.stderr);
   assert.doesNotMatch(res.stdout, /source sha256/,
-    'no hash of the source may be reported: it is not read a second time');
+    'no hash of the source may be reported');
   assert.match(res.stdout, /artifact sha256\s*: [0-9a-f]{64}/,
     'the artifact is the verifiable object, and it is still reported');
+});
+
+test('the script opens one SQLite connection on the source and does not reach for it again after that call returns', async () => {
+  // The claim this test can support, stated exactly:
+  //
+  //   the script's own JavaScript opens ONE better-sqlite3 connection on the source
+  //   backup, to build the artifact, and after that constructor returns it does not
+  //   reach for the source again through the observed better-sqlite3 constructor, the
+  //   observed fs entry points, or any subprocess it launches.
+  //
+  // What it is NOT: a syscall-level claim that the source is "read once". A single
+  // SQLite connection performs as many low-level reads of the main file and its -wal
+  // as SQLite needs, inside native code, and counting those is not what this
+  // observes. And the subprocess check records the commands this script launches — it
+  // is not evidence about what a child process reads.
+  //
+  // FAIL-CLOSED: every absence assertion here is worthless unless interposition is
+  // actually live — "nothing was recorded" is also what a broken observer produces.
+  // Overwriting require.cache did in fact break exactly this way on Node 22 (the ESM
+  // import kept receiving the real class), which is why the must-happen accesses are
+  // asserted FIRST and the absences only after.
+  const { dbPath, backupPath, db, insert } = scenario();
+  await db.backup(backupPath);
+  insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
+  db.close();
+
+  const pm2 = fakePm2();
+  const logPath = path.join(path.dirname(dbPath), 'source-access.log');
+  const res = spawnSync(process.execPath, [
+    '--require', OBSERVER, SCRIPT,
+    '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
+  ], {
+    encoding: 'utf8',
+    env: { ...pm2.env, SOURCE_OBSERVER_TARGET: backupPath, SOURCE_OBSERVER_LOG: logPath }
+  });
+
+  assert.equal(res.status, 0, res.stderr);
+
+  const observed = fs.existsSync(logPath)
+    ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    : [];
+  const of = (kind, phase) => observed.filter((e) => e.kind === kind && (!phase || e.phase === phase));
+
+  // 1. The observer is live — asserted through accesses that must happen.
+  assert.deepEqual(of('sqlite-open').map((e) => e.phase), ['before-materialize'],
+    'exactly one observed SQLite connection on the source, and it precedes the phase flip');
+  assert.ok(of('metadata', 'before-materialize').some((e) => e.fn === 'fs.existsSync'),
+    'the fs interposition must be live: the script probes the source with existsSync before opening it');
+  assert.deepEqual(of('spawn').map((e) => `${e.command} ${e.args.join(' ')}`),
+    ['pm2 stop zylos-dashboard', 'pm2 start zylos-dashboard'],
+    'the child_process interposition must be live, and the subprocess contract is exactly these two pm2 calls');
+
+  // 2. Only now, the absences.
+  const after = observed.filter((e) => e.phase === 'after-materialize');
+  assert.deepEqual(after.filter((e) => e.kind !== 'spawn'), [],
+    'once the materialize connection returned, the source is not opened or read again');
+  assert.deepEqual(of('content-read'), [],
+    'the source is never read as bytes through fs — it is reached only through SQLite, to build the artifact');
 });
 
 test('a read-only database file is replaced rather than written through', async () => {

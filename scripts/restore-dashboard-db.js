@@ -46,7 +46,9 @@
  *
  *   1. freeze the backup into a self-contained artifact, and verify THAT
  *   2. stop every process holding the database (the dashboard service)
- *   3. set the current database aside, as a self-contained file
+ *   3. set the current database aside — normally as a self-contained file, or,
+ *      if it cannot be read through SQLite at all, as the labelled RAW copy of
+ *      step 3's fallback (main file *plus* its sidecars, kept as one group)
  *   4. swap the very same artifact in, discarding the stale sidecars
  *   5. start the service again
  *
@@ -164,10 +166,13 @@ console.log(`shm      : ${sizeOf(shm)} bytes`);
 
 // 1. Freeze the backup into a self-contained artifact, and verify THAT.
 //
-// This is the only time the backup is read at all — opened through SQLite once,
-// here, and never again. Everything downstream refers to the
-// artifact, so the source file can be replaced, appended to, or deleted after
-// this point without any of it reaching the live database.
+// This is the only SQLite connection this script opens on the backup. Opening it
+// of course performs however many low-level reads of the main file and its -wal
+// SQLite needs — the claim here is about the connection, not about a read count:
+// once this call returns, the backup is not opened, hashed, or otherwise reached
+// for again. Everything downstream refers to the artifact, so the source file can
+// be replaced, appended to, or deleted after this point without any of it reaching
+// the live database.
 //
 // It happens before the service is stopped, which means a backup that cannot
 // produce a usable database is rejected at no cost — not even downtime. The
@@ -260,12 +265,19 @@ const leftStopped = () => (service ? `${service} is still stopped and was delibe
 // 3. Keep the pre-restore state recoverable: a failed restore must not be a
 // one-way door either.
 //
-// This copy goes through SQLite, so it is a single self-contained file. That
-// matters more than it looks: a raw copy of a live WAL database plus its sidecars
-// *reads* correctly while the sidecars sit beside it, which makes it appear
-// recoverable, and then loses everything in the -wal the moment it is restored
-// from as a single file. The pre-restore copy is the one file that must never
-// have that property.
+// This copy is attempted through SQLite, which yields a single self-contained
+// file. That matters more than it looks: a raw copy of a live WAL database plus
+// its sidecars *reads* correctly while the sidecars sit beside it, which makes it
+// appear recoverable, and then loses everything in the -wal the moment it is
+// restored from as a single file — so the self-contained form is the one worth
+// preferring for the pre-restore copy.
+//
+// It is preferred, not guaranteed. When the live database cannot be read through
+// SQLite at all, the fallback below deliberately produces exactly the other kind:
+// a RAW copy of the main file *plus* its sidecars, which is only usable with those
+// sidecars kept beside it. Both custody contracts are real, and which one is on
+// disk is not something to infer from this comment — the script says so on its
+// `pre-restore copy:` output line, and that line is the authority.
 const aside = `${dbPath}.pre-restore-${Date.now()}`;
 let asideIsRawCopy = false;
 try {

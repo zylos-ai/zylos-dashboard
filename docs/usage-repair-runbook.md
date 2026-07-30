@@ -171,9 +171,12 @@ the second `RAW copy`. That label is the authoritative answer — do not infer i
 
 It will:
 
-1. read the backup **once**, through SQLite, and freeze what it read into a
-   self-contained file beside the database — the **frozen artifact**. This is the
-   only read of the backup there is — it is not read again for any purpose
+1. open the backup **once**, through SQLite, and freeze what it read into a
+   self-contained file beside the database — the **frozen artifact**. That is the
+   only SQLite connection the script opens on the backup; once it returns, the
+   backup is not opened, hashed, or otherwise reached for again. (The claim is
+   about the connection, not a count of low-level reads — one connection does as
+   many of those to the main file and `-wal` as SQLite needs.)
 2. survey and hash **the artifact** (connection already closed), and refuse to
    proceed unless it passes `integrity_check`. All of this happens **before
    anything is stopped**, so an unusable backup costs nothing — not even downtime
@@ -190,7 +193,7 @@ It will:
 Note the ordering of 1-2 against 3: everything is checked before the service is
 stopped, and what is checked is the file that later gets renamed into place.
 
-### Why the backup is read before the stop, and only once
+### Why the backup is opened before the stop, and only once
 
 Inspecting a backup and using it are only meaningful together if they are the
 same logical moment. Re-reading the backup after the service is stopped is not
@@ -255,8 +258,8 @@ identical main files can differ entirely in their sidecars — so it only become
 provenance guarantee once it is taken of a file that has no sidecar. Recording the
 source's hash as a weaker second "audit" figure was deliberately dropped: it would
 mean reading the source again for a record that can mislead about what the artifact
-holds. The source is opened once, to build the artifact, and after that nothing
-about it can affect the outcome.
+holds. The source gets one SQLite connection, to build the artifact, and after that
+call returns nothing about the source can affect the outcome.
 
 Preview without touching anything:
 
