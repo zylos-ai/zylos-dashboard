@@ -6,12 +6,24 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
+import { fileURLToPath } from 'node:url';
+// The observer needs different flags on different Node versions — `module.register`
+// from 20.6, `--experimental-loader` below it — and only the spawner can pass them,
+// because a preload runs after the loader chain is already fixed.
+import { observerArgv } from '../scripts/test-support/source-access-observer-argv.mjs';
 
-const SCRIPT = path.join(import.meta.dirname, '..', 'scripts', 'restore-dashboard-db.js');
-/** Preload that records the script's own accesses to one path; see its header. */
-// Lives outside test/ on purpose: `node --test` treats every .js/.cjs under test/
-// as a test file, and a preload-only module has no tests to run.
-const OBSERVER = path.join(import.meta.dirname, '..', 'scripts', 'test-support', 'source-access-observer.cjs');
+// Not import.meta.dirname: that needs Node 20.11, while this package declares >=20.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+const SCRIPT = path.join(HERE, '..', 'scripts', 'restore-dashboard-db.js');
+/**
+ * Stand-alone script that reports what the `fs` API looks like from the inside, so
+ * the observer's wrappers can be compared against an uninstrumented run of the
+ * same code rather than against expectations. See its header.
+ */
+const SEMANTICS_PROBE = path.join(
+  HERE, '..', 'scripts', 'test-support', 'source-access-observer-semantics-probe.cjs'
+);
 
 /**
  * A WAL-mode database with one usage row, an online backup of that state, and a
@@ -686,7 +698,7 @@ function readObserved(logPath) {
   };
 }
 
-test('the script opens one SQLite connection on the source and does not reach for it again after that call returns', async (t) => {
+test('the script opens one SQLite connection on the source and does not reach for it again after that call returns', async () => {
   // The claim this test can support, stated exactly:
   //
   //   the script's own JavaScript opens ONE better-sqlite3 connection on the source
@@ -718,8 +730,9 @@ test('the script opens one SQLite connection on the source and does not reach fo
 
   const pm2 = fakePm2();
   const logPath = path.join(path.dirname(dbPath), 'source-access.log');
+  const { mechanism: expectedMechanism, argv } = observerArgv();
   const res = spawnSync(process.execPath, [
-    '--require', OBSERVER, SCRIPT,
+    ...argv, SCRIPT,
     '--db', dbPath, '--backup', backupPath, '--service', 'zylos-dashboard'
   ], {
     encoding: 'utf8',
@@ -731,46 +744,74 @@ test('the script opens one SQLite connection on the source and does not reach fo
   const { ready, entries } = readObserved(logPath);
   const of = (kind, phase) => entries.filter((e) => e.kind === kind && (!phase || e.phase === phase));
 
-  // 0. Is there an observer at all? On Node < 20.6 there is no way to interpose on
-  // the import, and skipping with the reason stated is the honest outcome — better
-  // than asserting absences nothing was watching, and better than failing on a
-  // version the repo claims to support.
+  // 0. Is there an observer at all, and is it the one this Node was supposed to get?
+  // There is deliberately no skip: below 20.6 the spawner passes
+  // `--experimental-loader` instead of relying on `module.register`, so every version
+  // in the supported range has a mechanism. `none` would mean the observer never
+  // installed itself, and that produces exactly the same empty log as a clean run —
+  // so it has to fail here rather than pass quietly.
   assert.ok(ready, 'the observer must report itself before anything else is trusted');
-  if (ready.mechanism === 'none') {
-    t.skip(`no import interposition available on Node ${ready.node} (module.register needs >=20.6)`);
-    return;
-  }
+  assert.equal(ready.node, process.versions.node, 'the log must come from this Node');
+  assert.equal(ready.mechanism, expectedMechanism,
+    `Node ${process.versions.node} must interpose via ${expectedMechanism}, got ${ready.mechanism}`);
   assert.ok(ready.wrappedFsFunctions > 50,
     `the fs surface must actually be wrapped, got ${ready.wrappedFsFunctions} functions`);
 
+  // Coverage is pinned rather than merely counted. Everything the observer declines
+  // to instrument is named in its header, so the sets below are the complete list of
+  // what it is allowed to miss; a new hole turns this red instead of silently
+  // widening the gap between what the test asserts and what the observer can see.
+  // All four values were measured identical on 20.0.0, 20.5.1, 20.20.2, 22 and 24.
+  assert.deepEqual(ready.wrappedAttached, [
+    'fs.exists.Symbol(nodejs.util.promisify.custom)',
+    'fs.promises.opendir.Symbol(nodejs.util.promisify.custom)',
+    'fs.realpath.native',
+    'fs.realpathSync.native'
+  ], 'callables hanging off fs functions must be instrumented, not copied across');
+  assert.deepEqual(ready.excludedAttached, [
+    'fs.promises.opendir.Symbol(nodejs.util.promisify.custom).Symbol(nodejs.util.promisify.custom):depth'
+  ], 'the only declined callable is the self-referential promisify.custom past the wrapped depth');
+  assert.deepEqual(ready.unwrappable, [],
+    'every plain fs function must be replaceable — a read-only one would be an unwatched hole');
+
   // 1. The observer is live — asserted through accesses that must happen.
-  assert.deepEqual(of('sqlite-open').map((e) => e.phase), ['before-materialize'],
+  assert.deepEqual(of('sqlite-open').map((e) => e.phase), ['before-source-connection-open'],
     'exactly one observed SQLite connection on the source, and it precedes the phase flip');
-  assert.ok(of('metadata', 'before-materialize').some((e) => e.fn === 'fs.existsSync'),
+  assert.ok(of('metadata', 'before-source-connection-open').some((e) => e.fn === 'fs.existsSync'),
     'the fs interposition must be live: the script probes the source with existsSync before opening it');
   assert.deepEqual(of('spawn').map((e) => `${e.command} ${e.args.join(' ')}`),
     ['pm2 stop zylos-dashboard', 'pm2 start zylos-dashboard'],
     'the child_process interposition must be live, and the subprocess contract is exactly these two pm2 calls');
 
   // 2. Only now, the absences.
-  const after = entries.filter((e) => e.phase === 'after-materialize');
+  const after = entries.filter((e) => e.phase === 'after-source-connection-open');
   assert.deepEqual(after.filter((e) => e.kind !== 'spawn'), [],
     'once the materialize connection returned, the source is not opened or read again');
   assert.deepEqual(of('access'), [],
     'the source is never reached through an fs function at all — only through SQLite, to build the artifact');
 });
 
-test('INSTRUMENT CONTROL: the observer sees an fs read it was never told to look for', async () => {
+test('INSTRUMENT CONTROL: the observer sees the reads that have escaped it before', async () => {
   // The test above can only be trusted as far as the observer's coverage goes, and
-  // coverage was where the first version was wrong: it wrapped a hand-written list of
-  // the obvious read functions, and `fs.openAsBlob(source).arrayBuffer()` walked
-  // straight past it, reading the file for real while the log stayed empty.
+  // coverage is where every previous version was wrong — three times, each found by
+  // review reaching the watched file rather than by argument:
   //
-  // So the instrument gets its own control, with openAsBlob as the case that already
-  // escaped once: a stand-in module opens the watched file through SQLite and then
-  // reads it again that way. Both must appear in the log, in the right phases. If
-  // coverage regresses to "the ones we thought of", this fails here rather than
-  // silently weakening the test above.
+  //   - a hand-written list of "the obvious read functions" missed `fs.openAsBlob`,
+  //     whose `.arrayBuffer()` read 8,192 real bytes while the log stayed empty;
+  //   - `isTarget` understood only strings and Buffers, so
+  //     `fs.readFileSync(pathToFileURL(src))` read the file unrecorded;
+  //   - `Object.assign(wrapper, real)` republished the original, uninstrumented
+  //     `fs.realpathSync.native`, which then reached the file unrecorded.
+  //
+  // So each of those is a permanent control here, and each is discriminating: delete
+  // the URL branch of the observer's path matching and the URL line disappears;
+  // delete the attached-property wrapping and the `.native` line disappears; narrow
+  // the fs enumeration back to a hand list and openAsBlob disappears. The url-like
+  // plain object is here for the same reason — `fs` duck-types it and really does read
+  // through it, so recognising only `instanceof URL` would leave the same hole again.
+  //
+  // The sequence is asserted in full, including the argument form each access arrived
+  // as, and it was measured identical on 20.0.0, 20.5.1, 20.20.2, 22.22.2 and 24.17.0.
   const { dbPath, backupPath, db, insert } = scenario();
   await db.backup(backupPath);
   insert.run('2026-07-01T11:00:00.000Z', JSON.stringify({ marker: 'after-backup', cost: 2 }));
@@ -780,29 +821,100 @@ test('INSTRUMENT CONTROL: the observer sees an fs read it was never told to look
   const standIn = path.join(dir, 'second-read.mjs');
   fs.writeFileSync(standIn, [
     "import fs from 'node:fs';",
+    "import { pathToFileURL } from 'node:url';",
     "import Database from 'better-sqlite3';",
     'const src = process.argv[2];',
-    "new Database(src, { readonly: true }).close();",
+    // Positive control for the loader redirect itself, independent of the log: without
+    // it this prints the real class name, so the log being empty would have a second,
+    // visible explanation instead of looking like a clean run.
+    'process.stdout.write(`DatabaseClass=${Database.name}\\n`);',
+    'new Database(src, { readonly: true }).close();',
     'const blob = await fs.openAsBlob(src);',
-    'if ((await blob.arrayBuffer()).byteLength === 0) throw new Error("expected bytes");'
+    'if ((await blob.arrayBuffer()).byteLength === 0) throw new Error("expected bytes");',
+    'if (fs.readFileSync(pathToFileURL(src)).byteLength === 0) throw new Error("expected bytes via URL");',
+    'const u = pathToFileURL(src);',
+    'const like = { protocol: u.protocol, pathname: u.pathname, href: u.href,',
+    '  hostname: u.hostname, search: u.search, hash: u.hash };',
+    'if (fs.readFileSync(like).byteLength === 0) throw new Error("expected bytes via url-like");',
+    'if (fs.realpathSync.native(src) !== fs.realpathSync(src)) throw new Error("native mismatch");'
   ].join('\n'));
 
   const logPath = path.join(dir, 'instrument.log');
-  const res = spawnSync(process.execPath, ['--require', OBSERVER, standIn, backupPath], {
+  const { mechanism: expectedMechanism, argv } = observerArgv();
+  const res = spawnSync(process.execPath, [...argv, standIn, backupPath], {
     encoding: 'utf8',
-    cwd: path.join(import.meta.dirname, '..'),
+    cwd: path.join(HERE, '..'),
     env: { ...process.env, SOURCE_OBSERVER_TARGET: backupPath, SOURCE_OBSERVER_LOG: logPath }
   });
 
   assert.equal(res.status, 0, res.stderr);
+  // The redirect happened, witnessed from inside the observed process.
+  assert.match(res.stdout, /DatabaseClass=ObservedDatabase/,
+    'the loader must redirect `better-sqlite3` to the observed subclass');
+
   const { ready, entries } = readObserved(logPath);
   assert.ok(ready, 'the observer must report itself');
-  if (ready.mechanism === 'none') return; // covered by the skip in the test above
+  assert.equal(ready.mechanism, expectedMechanism,
+    `Node ${process.versions.node} must interpose via ${expectedMechanism}, got ${ready.mechanism}`);
 
-  assert.deepEqual(entries.map((e) => `${e.phase}:${e.kind}:${e.fn || 'sqlite'}`), [
-    'before-materialize:sqlite-open:sqlite',
-    'after-materialize:access:fs.openAsBlob'
-  ], 'the SQLite connection and the later openAsBlob read must both be recorded, in that order');
+  assert.deepEqual(entries.map((e) => `${e.phase}|${e.kind}|${e.fn || 'sqlite'}|${e.form}`), [
+    'before-source-connection-open|sqlite-open|sqlite|string',
+    'after-source-connection-open|access|fs.openAsBlob|string',
+    'after-source-connection-open|access|fs.readFileSync|URL',
+    'after-source-connection-open|access|fs.openSync|URL',
+    'after-source-connection-open|access|fs.readFileSync|url-like',
+    'after-source-connection-open|access|fs.openSync|url-like',
+    'after-source-connection-open|metadata|fs.realpathSync.native|string',
+    'after-source-connection-open|metadata|fs.realpathSync|string'
+  ], 'every read the stand-in performs must be recorded, with the path form it used');
+});
+
+test('INSTRUMENT CONTROL: wrapping fs does not change how fs behaves', async () => {
+  // The absence assertions rest on wrappers that replace most of the `fs` module in
+  // the observed process. That is only sound if the replacements are transparent, and
+  // "transparent" is not something to establish by reading the wrapper and finding it
+  // reasonable — `Object.assign` looked reasonable and silently dropped every
+  // symbol-keyed property, which changed what `util.promisify(fs.exists)` does.
+  //
+  // So the same probe script runs twice on the same file, once observed and once not,
+  // and the two reports must be identical. It exercises descriptors, own-key sets
+  // including symbols, arity and name, the intrinsic kind of every callable on both
+  // holders, callback/promise/sync forms of the same operation, the callable attached
+  // properties actually being called, and the error each rejected path form produces —
+  // all by running them, not by inspecting them.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-semantics-'));
+  const file = path.join(dir, 'watched.bin');
+  fs.writeFileSync(file, crypto.randomBytes(4096));
+
+  const { argv } = observerArgv();
+  const run = (prefix, logName) => spawnSync(process.execPath, [...prefix, SEMANTICS_PROBE, file], {
+    encoding: 'utf8',
+    cwd: path.join(HERE, '..'),
+    env: {
+      ...process.env,
+      SOURCE_OBSERVER_TARGET: file,
+      SOURCE_OBSERVER_LOG: path.join(dir, logName)
+    }
+  });
+
+  const pristine = run([], 'unused.log');
+  const observed = run(argv, 'observed.log');
+
+  assert.equal(pristine.status, 0, pristine.stderr);
+  assert.equal(observed.status, 0, observed.stderr);
+  assert.ok(pristine.stdout.length > 0, 'the probe must produce a report');
+
+  assert.deepEqual(JSON.parse(observed.stdout), JSON.parse(pristine.stdout),
+    'the observed fs surface must behave exactly like the uninstrumented one');
+
+  // And the observed run really was observed — otherwise "identical" is trivially
+  // true, which is the same vacuous pass the header line exists to rule out.
+  const { ready, entries } = readObserved(path.join(dir, 'observed.log'));
+  assert.ok(ready, 'the observed run must have installed the observer');
+  assert.ok(entries.some((e) => e.kind === 'access' && e.form === 'URL'),
+    'the probe reads the watched file through a URL, so the observer must have seen it');
+  assert.ok(entries.some((e) => e.fn === 'fs.realpathSync.native'),
+    'the probe calls the attached native function, so the observer must have seen it');
 });
 
 test('a read-only database file is replaced rather than written through', async () => {

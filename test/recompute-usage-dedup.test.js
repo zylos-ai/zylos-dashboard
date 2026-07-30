@@ -5,8 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
+import { fileURLToPath } from 'node:url';
 
-const SCRIPT = path.join(import.meta.dirname, '..', 'scripts', 'recompute-usage-dedup.js');
+// Not import.meta.dirname: that needs Node 20.11, while this package declares >=20.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+const SCRIPT = path.join(HERE, '..', 'scripts', 'recompute-usage-dedup.js');
 
 /** Minimal metric_points table — the script only reads and writes this one. */
 function makeDb(dir) {
