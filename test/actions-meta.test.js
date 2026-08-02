@@ -22,6 +22,7 @@ async function withCodexHome(fn) {
 function makeZylosDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-zylos-'));
   fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
   return dir;
 }
 
@@ -143,6 +144,44 @@ test('Claude effort mappings: xhigh for Fable/Opus 4.8+/aliases, none for Haiku'
   assert.deepStrictEqual(e['haiku'], []);
   assert.deepStrictEqual(e['claude-haiku-4-5-20251001'], []);
   assert.deepStrictEqual(e['*'], ['low', 'medium', 'high']);
+});
+
+test('getActionsMeta reports effective Claude model from runtime context window', () => {
+  const zylosDir = makeZylosDir();
+  fs.writeFileSync(path.join(zylosDir, '.claude', 'settings.json'), JSON.stringify({ model: 'opus[1m]' }));
+
+  try {
+    const meta = getActionsMeta(
+      { runtime: 'claude', zylosDir },
+      { model_id: 'opus[1m]', context_window_size: 200000 }
+    );
+
+    assert.equal(meta.requested_model, 'opus[1m]');
+    assert.equal(meta.effective_model, 'opus');
+    assert.equal(meta.current_model, 'opus');
+    assert.equal(meta.effective_context_window, 200000);
+  } finally {
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
+test('getActionsMeta keeps Claude 1M selected when runtime context window is effective 1M', () => {
+  const zylosDir = makeZylosDir();
+  fs.writeFileSync(path.join(zylosDir, '.claude', 'settings.json'), JSON.stringify({ model: 'opus[1m]' }));
+
+  try {
+    const meta = getActionsMeta(
+      { runtime: 'claude', zylosDir },
+      { model_id: 'opus', context_window_size: 1000000 }
+    );
+
+    assert.equal(meta.requested_model, 'opus[1m]');
+    assert.equal(meta.effective_model, 'opus[1m]');
+    assert.equal(meta.current_model, 'opus[1m]');
+    assert.equal(meta.effective_context_window, 1000000);
+  } finally {
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
 });
 
 test('handleAction stores Codex model and effort in config.toml', async () => {

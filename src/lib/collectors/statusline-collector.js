@@ -39,6 +39,9 @@ export class StatuslineCollector {
     if (data.context_window?.used_percentage != null) {
       dims.context_pct = data.context_window.used_percentage;
     }
+    if (data.context_window?.context_window_size != null) {
+      dims.context_window_size = data.context_window.context_window_size;
+    }
 
     if (data.cost?.total_cost_usd != null) {
       dims.session_cost = data.cost.total_cost_usd;
@@ -83,6 +86,7 @@ export class StatuslineCollector {
       model: data.model?.display_name || data.model?.id || null,
       model_id: data.model?.id || null,
       effort: data.effort?.level || null,
+      context_window_size: data.context_window?.context_window_size || null,
       cc_version: data.version || null
     };
 

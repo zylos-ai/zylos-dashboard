@@ -202,6 +202,7 @@
   "actions.upgrade_zylos": "Upgrade zylos",
   "actions.upgrade_cc": "Upgrade CC",
   "actions.upgrade_codex": "Upgrade Codex",
+  "actions.model_pending_effective": "Requested {requested}; running {effective} ({window}). Restart session to apply.",
   "info.update_available": "v{version} available — click Actions to upgrade",
   "info.restart_available": "v{version} installed — restart to apply",
   "info.version_available": "v{version} available",

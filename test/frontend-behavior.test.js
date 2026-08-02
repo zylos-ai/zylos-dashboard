@@ -56,6 +56,18 @@ test('Codex runtime renders CLI update badge in info bar and actions modal', () 
   assert.match(app, /ccVer\.classList\.toggle\('action-ver-dot', !!cliUpdate\)/);
 });
 
+test('Actions modal surfaces requested versus effective Claude model mismatch', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const en = JSON.parse(fs.readFileSync(path.resolve('public/i18n/en.json'), 'utf8'));
+  const zh = JSON.parse(fs.readFileSync(path.resolve('public/i18n/zh.json'), 'utf8'));
+
+  assert.match(app, /meta\.requested_model !== meta\.effective_model/);
+  assert.match(app, /actions\.model_pending_effective/);
+  assert.match(app, /contextWindowLabel\(meta\.effective_context_window\)/);
+  assert.match(en['actions.model_pending_effective'], /Requested \{requested\}; running \{effective\}/);
+  assert.match(zh['actions.model_pending_effective'], /已请求 \{requested\}/);
+});
+
 test('Codex runtime info exposes running, installed, effective, and restart fields', () => {
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
   assert.match(index, /const codexRunning = activeRuntime === 'codex' \? codexRuntimeInfo\?\.cli_version \|\| null : null;/);

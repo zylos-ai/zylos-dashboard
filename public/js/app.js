@@ -21,6 +21,13 @@ const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
 const PROMPT_TRANSIENT_SECONDS = 5;
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
+function contextWindowLabel(tokens) {
+  const value = Number(tokens);
+  if (!Number.isFinite(value) || value <= 0) return t('status.unknown');
+  if (value >= 1000000) return `${Math.round(value / 100000) / 10}M`;
+  if (value >= 1000) return `${Math.round(value / 1000)}K`;
+  return String(Math.round(value));
+}
 
 const state = {
   dashboardState: null,
@@ -3738,6 +3745,22 @@ async function openActionsModal() {
 
     const thresholdInput = modal.querySelector('#action-threshold');
     if (thresholdInput) thresholdInput.value = meta.new_session_threshold || state.newSessionThreshold || 70;
+
+    if (
+      statusEl &&
+      meta.runtime === 'claude' &&
+      meta.requested_model &&
+      meta.effective_model &&
+      meta.requested_model !== meta.effective_model
+    ) {
+      statusEl.hidden = false;
+      statusEl.className = 'modal-status running';
+      statusEl.textContent = t('actions.model_pending_effective', {
+        requested: meta.requested_model,
+        effective: meta.effective_model,
+        window: contextWindowLabel(meta.effective_context_window)
+      });
+    }
   } catch { /* meta unavailable, modal still usable */ }
 }
 
