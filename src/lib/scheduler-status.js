@@ -45,8 +45,12 @@ export function readSchedulerStatus(
     `).all();
     const outcomes = db.prepare(`
       SELECT
-        COUNT(*) FILTER (WHERE failed_at IS NOT NULL) AS outcome_failed,
-        MAX(failed_at) AS latest_failure_at,
+        COUNT(*) FILTER (
+          WHERE status IN ('pending', 'running') AND failed_at IS NOT NULL
+        ) AS outcome_failed,
+        MAX(failed_at) FILTER (
+          WHERE status IN ('pending', 'running')
+        ) AS latest_failure_at,
         COUNT(*) FILTER (
           WHERE status = 'pending'
             AND next_run_at + COALESCE(miss_threshold, 300) < ?

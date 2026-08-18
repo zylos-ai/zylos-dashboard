@@ -97,6 +97,28 @@ test('scheduler status is healthy after the failure outcome is cleared', () => {
   });
 });
 
+test('scheduler health ignores historical outcomes on paused and terminal tasks', () => {
+  withSchedulerDb(({ zylosDir, db }) => {
+    const currentTime = 1_800_000_000;
+    const insert = db.prepare(`
+      INSERT INTO tasks (
+        id, name, prompt, status, next_run_at, miss_threshold, failed_at, last_error
+      ) VALUES (?, 'private', 'private', ?, ?, 300, ?, 'historical error')
+    `);
+    insert.run('task-paused-history', 'paused', currentTime + 600, currentTime - 60);
+    insert.run('task-completed-history', 'completed', currentTime + 600, currentTime - 50);
+    insert.run('task-failed-history', 'failed', currentTime + 600, currentTime - 40);
+
+    const status = readSchedulerStatus(zylosDir, { currentTime });
+
+    assert.equal(status.paused, 1);
+    assert.equal(status.outcome_failed, 0);
+    assert.equal(status.latest_failure_at, null);
+    assert.equal(status.overdue, 0);
+    assert.equal(status.health, 'healthy');
+  });
+});
+
 test('scheduler status degrades for an overdue pending task without inventing a failed outcome', () => {
   withSchedulerDb(({ zylosDir, db }) => {
     const currentTime = 1_800_000_000;
