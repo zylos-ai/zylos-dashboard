@@ -2,6 +2,7 @@ import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
+import { buildSchedulerView } from './scheduler-view.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -924,14 +925,17 @@ function renderHealth() {
 
   // Scheduler — timeline of upcoming tasks
   const sched = sysResp.scheduler;
+  const schedView = buildSchedulerView(sched);
   const schedCount = $('#scheduler-count');
   const schedTimeline = $('#scheduler-timeline');
   if (schedCount) {
-    schedCount.textContent = sched?.pending ? t('sched.pending', { count: sched.pending }) : '';
+    schedCount.textContent = schedView.pending ? t('sched.pending', { count: schedView.pending }) : '';
   }
   if (schedTimeline) {
-    const tasks = sched?.upcoming || [];
-    if (tasks.length === 0) {
+    const tasks = schedView.upcoming;
+    if (schedView.state === 'unknown') {
+      schedTimeline.innerHTML = `<span class="gauge-detail">${esc(t('sched.unknown'))}</span>`;
+    } else if (tasks.length === 0) {
       schedTimeline.innerHTML = `<span class="gauge-detail">${esc(t('sched.no_pending'))}</span>`;
     } else {
       const now = Date.now();
@@ -941,7 +945,7 @@ function renderHealth() {
         const time = runAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const cls = isOverdue ? ' overdue' : '';
         const line = i < tasks.length - 1 ? '<div class="sched-line"></div>' : '';
-        return `<div class="sched-item${cls}"><div class="sched-dot"></div><div class="sched-info"><div class="sched-time">${esc(time)}</div><div class="sched-name">${esc(task.name)}</div></div></div>${line}`;
+        return `<div class="sched-item${cls}"><div class="sched-dot"></div><div class="sched-info"><div class="sched-time">${esc(time)}</div><div class="sched-name">${esc(task.label)}</div></div></div>${line}`;
       }).join('');
     }
   }
