@@ -310,18 +310,7 @@ export class CodexRolloutCollector {
       if (contextInput != null) tokenDims.context_pct = (contextInput / contextWindow) * 100;
     }
 
-    const primaryRate = rateLimitDimensions(context.rateLimits?.primary);
-    if (primaryRate) {
-      tokenDims.rate_limit = primaryRate.value;
-      tokenDims.rate_limit_window_minutes = primaryRate.window_minutes;
-      tokenDims.rate_limit_resets_at = primaryRate.resets_at;
-    }
-    const secondaryRate = rateLimitDimensions(context.rateLimits?.secondary);
-    if (secondaryRate) {
-      tokenDims.rate_limit_7d = secondaryRate.value;
-      tokenDims.rate_limit_7d_window_minutes = secondaryRate.window_minutes;
-      tokenDims.rate_limit_7d_resets_at = secondaryRate.resets_at;
-    }
+    applyRateLimitDimensions(tokenDims, context.rateLimits);
 
     if (totalInput > 0) {
       tokenDims.cache_hit_rate = tokenDims.cache_read / totalInput;
@@ -891,6 +880,23 @@ function rateLimitDimensions(limit) {
     window_minutes: limit.window_minutes ?? null,
     resets_at: limit.resets_at ?? null
   };
+}
+
+function applyRateLimitDimensions(dimensions, rateLimits) {
+  for (const limit of [rateLimits?.primary, rateLimits?.secondary]) {
+    const rate = rateLimitDimensions(limit);
+    if (!rate) continue;
+
+    if (Number(rate.window_minutes) === 300) {
+      dimensions.rate_limit = rate.value;
+      dimensions.rate_limit_window_minutes = rate.window_minutes;
+      dimensions.rate_limit_resets_at = rate.resets_at;
+    } else if (Number(rate.window_minutes) === 10080) {
+      dimensions.rate_limit_7d = rate.value;
+      dimensions.rate_limit_7d_window_minutes = rate.window_minutes;
+      dimensions.rate_limit_7d_resets_at = rate.resets_at;
+    }
+  }
 }
 
 function stableEventId(seed) {

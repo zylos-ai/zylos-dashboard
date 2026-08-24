@@ -21,6 +21,45 @@ function usageEvents(store) {
   return store.queryMetrics({ name: 'usage_event' });
 }
 
+function collectRateLimitDimensions(rateLimits, expectedWritten = 1) {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-rate-limits.jsonl');
+  const lines = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-08-24T01:00:00.000Z',
+      payload: { id: 'codex-rate-limit-session', originator: 'codex-tui' }
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-08-24T01:00:01.000Z',
+      payload: {
+        type: 'token_count',
+        rate_limits: rateLimits,
+        info: { model_context_window: 200000 }
+      }
+    }
+  ];
+  fs.writeFileSync(rolloutPath, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-rate-limit-session',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-08-24T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  assert.equal(collector.collect(), expectedWritten);
+  const [event] = usageEvents(store);
+  const dimensions = event?.dimensions ?? null;
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+  return dimensions;
+}
+
 test('Sanitizer preserves safe Codex locator metadata and strips raw payload fields', () => {
   const raw = fixture('pre-tool-use.json');
   const sanitizer = new Sanitizer('/tmp/zylos');
@@ -171,6 +210,50 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector routes a primary-only seven-day limit by window duration', () => {
+  const dimensions = collectRateLimitDimensions({
+    primary: { used_percent: 12, window_minutes: 10080, resets_at: 1780083600 }
+  });
+
+  assert.equal(dimensions.rate_limit, undefined);
+  assert.equal(dimensions.rate_limit_resets_at, undefined);
+  assert.equal(dimensions.rate_limit_7d, 12);
+  assert.equal(dimensions.rate_limit_7d_window_minutes, 10080);
+  assert.equal(dimensions.rate_limit_7d_resets_at, 1780083600);
+});
+
+test('CodexRolloutCollector routes a primary-only five-hour limit by window duration', () => {
+  const dimensions = collectRateLimitDimensions({
+    primary: { used_percent: 37.5, window_minutes: 300, resets_at: 1779516000 }
+  });
+
+  assert.equal(dimensions.rate_limit, 37.5);
+  assert.equal(dimensions.rate_limit_window_minutes, 300);
+  assert.equal(dimensions.rate_limit_resets_at, 1779516000);
+  assert.equal(dimensions.rate_limit_7d, undefined);
+  assert.equal(dimensions.rate_limit_7d_resets_at, undefined);
+});
+
+test('CodexRolloutCollector ignores primary and secondary roles when routing limits', () => {
+  const dimensions = collectRateLimitDimensions({
+    primary: { used_percent: 12.25, window_minutes: 10080, resets_at: 1780083600 },
+    secondary: { used_percent: 37.5, window_minutes: 300, resets_at: 1779516000 }
+  });
+
+  assert.equal(dimensions.rate_limit, 37.5);
+  assert.equal(dimensions.rate_limit_window_minutes, 300);
+  assert.equal(dimensions.rate_limit_7d, 12.25);
+  assert.equal(dimensions.rate_limit_7d_window_minutes, 10080);
+});
+
+test('CodexRolloutCollector does not guess a slot for unknown window durations', () => {
+  const dimensions = collectRateLimitDimensions({
+    primary: { used_percent: 50, window_minutes: 1440, resets_at: 1780083600 }
+  }, 0);
+
+  assert.equal(dimensions, null);
 });
 
 test('CodexRolloutCollector bounds each collect pass by complete lines', () => {
