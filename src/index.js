@@ -39,10 +39,10 @@ import { FleetProxy } from './lib/fleet-proxy.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
-import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
+import { CLAUDE_ACTION_MODELS, consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
 import { isNewerVersion } from './lib/version-utils.js';
-import { applyVersionUpdateFields } from './lib/runtime-info.js';
+import { applyVersionUpdateFields, claudeModelMatchesRequested } from './lib/runtime-info.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
@@ -219,8 +219,10 @@ function buildRuntimeInfo() {
   const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model', config.zylosDir) : null;
   const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
   const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort', config.zylosDir) : null;
+  const claudeModels = isClaudeRuntime ? CLAUDE_ACTION_MODELS : [];
+  const claudeModelMismatch = isClaudeRuntime && !claudeModelMatchesRequested(settings.model, slInfo, claudeModels);
   const claudeNeedsRestart = isClaudeRuntime &&
-    ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
+    (claudeModelMismatch ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
     (ccInstalledVersion && ccRunning && isNewerVersion(ccInstalledVersion, ccRunning)));
   const codexNeedsRestart = activeRuntime === 'codex' &&
@@ -235,6 +237,7 @@ function buildRuntimeInfo() {
     model: activeRuntime === 'codex' ? codexModelInfo?.display_name || codexRuntimeInfo?.model || codexModelInfo?.id || codexModel : slInfo?.model || null,
     model_id: activeRuntime === 'codex' ? codexModel || null : slInfo?.model_id || null,
     effort: activeRuntime === 'codex' ? codexEffort || codexModelInfo?.default_effort || null : slInfo?.effort || null,
+    context_window_size: activeRuntime === 'claude' ? slInfo?.context_window_size || null : null,
     service_tier: activeRuntime === 'codex' ? codexRuntimeInfo?.service_tier || null : null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,

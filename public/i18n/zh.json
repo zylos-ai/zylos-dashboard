@@ -202,6 +202,7 @@
   "actions.upgrade_zylos": "升级 zylos",
   "actions.upgrade_cc": "升级 CC",
   "actions.upgrade_codex": "升级 Codex",
+  "actions.model_pending_effective": "已请求 {requested}；当前运行 {effective}（{window}）。重启会话后生效。",
   "info.update_available": "v{version} 可用 — 点击操作升级",
   "info.restart_available": "v{version} 已安装 — 重启生效",
   "info.version_available": "v{version} 可用",

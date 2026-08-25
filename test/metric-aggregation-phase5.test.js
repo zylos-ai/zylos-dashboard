@@ -87,6 +87,7 @@ test('StatuslineCollector writes one statusline_summary row with capacity dimens
       version: '1.2.3',
       context_window: {
         used_percentage: 42.5,
+        context_window_size: 200000,
         current_usage: {
           input_tokens: 100,
           cache_read_input_tokens: 300,
@@ -108,11 +109,13 @@ test('StatuslineCollector writes one statusline_summary row with capacity dimens
     assert.equal(rows.length, 1);
     assert.equal(rows[0].session_id, 'claude-session-1');
     assert.equal(rows[0].dimensions.context_pct, 42.5);
+    assert.equal(rows[0].dimensions.context_window_size, 200000);
     assert.equal(rows[0].dimensions.session_cost, 0.1234);
     assert.equal(rows[0].dimensions.rate_limit, 55);
     assert.equal(rows[0].dimensions.rate_limit_7d, 11);
     assert.equal(rows[0].dimensions.cache_hit_rate, 0.6);
     assert.equal(collector.getRuntimeInfo().model_id, 'claude-opus-4-6');
+    assert.equal(collector.getRuntimeInfo().context_window_size, 200000);
   });
 });
 

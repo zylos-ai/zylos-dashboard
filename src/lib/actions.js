@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DEFAULT_CODEX_MODEL_PRICES } from './config.js';
+import { claudeModelSelectionFromRuntime } from './runtime-info.js';
 import { compareVersions, isNewerVersion } from './version-utils.js';
 
 const execFileAsync = promisify(execFile);
@@ -77,6 +78,24 @@ export function consumeZylosUpgradeMarker(zylosDir, currentVersion) {
 
 const DEDUP_WINDOW_MS = 2000;
 const recentInvocations = new Map();
+
+export const CLAUDE_ACTION_MODELS = [
+  { id: 'fable[1m]', display_name: 'Fable [1M] (latest)' },
+  { id: 'opus', display_name: 'Opus (latest)' },
+  { id: 'opus[1m]', display_name: 'Opus [1M] (latest)' },
+  { id: 'sonnet', display_name: 'Sonnet (latest)' },
+  { id: 'sonnet[1m]', display_name: 'Sonnet [1M] (latest)' },
+  { id: 'haiku', display_name: 'Haiku (latest)' },
+  { id: 'claude-fable-5[1m]' },
+  { id: 'claude-opus-4-8' },
+  { id: 'claude-opus-4-8[1m]' },
+  { id: 'claude-opus-4-7' },
+  { id: 'claude-opus-4-7[1m]' },
+  { id: 'claude-opus-4-6' },
+  { id: 'claude-opus-4-6[1m]' },
+  { id: 'claude-sonnet-4-6' },
+  { id: 'claude-haiku-4-5-20251001' },
+];
 
 function readSettings(zylosDir) {
   try {
@@ -474,23 +493,7 @@ export function getActionsMeta(config, runtimeInfo) {
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
   const codexModels = runtime === 'codex' ? readCodexModels() : [];
 
-  const claudeModels = [
-    { id: 'fable[1m]', display_name: 'Fable [1M] (latest)' },
-    { id: 'opus', display_name: 'Opus (latest)' },
-    { id: 'opus[1m]', display_name: 'Opus [1M] (latest)' },
-    { id: 'sonnet', display_name: 'Sonnet (latest)' },
-    { id: 'sonnet[1m]', display_name: 'Sonnet [1M] (latest)' },
-    { id: 'haiku', display_name: 'Haiku (latest)' },
-    { id: 'claude-fable-5[1m]' },
-    { id: 'claude-opus-4-8' },
-    { id: 'claude-opus-4-8[1m]' },
-    { id: 'claude-opus-4-7' },
-    { id: 'claude-opus-4-7[1m]' },
-    { id: 'claude-opus-4-6' },
-    { id: 'claude-opus-4-6[1m]' },
-    { id: 'claude-sonnet-4-6' },
-    { id: 'claude-haiku-4-5-20251001' },
-  ];
+  const claudeModels = CLAUDE_ACTION_MODELS;
 
   const models = runtime === 'claude'
     ? claudeModels
@@ -513,6 +516,9 @@ export function getActionsMeta(config, runtimeInfo) {
   const currentCodexModelInfo = runtime === 'codex'
     ? codexModels.find(m => m.id === currentCodexModel) || codexModels[0] || null
     : null;
+  const currentClaudeModel = runtime === 'claude'
+    ? claudeModelSelectionFromRuntime(runtimeInfo?.model_id, runtimeInfo?.context_window_size, claudeModels) || settings.model || null
+    : null;
 
   const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
   const defaultThreshold = runtime === 'codex' ? 75 : 70;
@@ -520,7 +526,10 @@ export function getActionsMeta(config, runtimeInfo) {
 
   return {
     runtime,
-    current_model: runtime === 'claude' ? settings.model || null : currentCodexModel,
+    current_model: runtime === 'claude' ? currentClaudeModel : currentCodexModel,
+    requested_model: runtime === 'claude' ? settings.model || null : codexModel,
+    effective_model: runtime === 'claude' ? currentClaudeModel : runtimeInfo?.model_id || currentCodexModel,
+    effective_context_window: runtime === 'claude' ? runtimeInfo?.context_window_size || null : null,
     current_effort: runtime === 'claude'
       ? runtimeInfo?.effort || settings.effortLevel || null
       : codexEffort || runtimeInfo?.effort || currentCodexModelInfo?.default_effort || null,
