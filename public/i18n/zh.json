@@ -238,6 +238,7 @@
   "metric.total_cost": "合计：{total}",
   "sched.pending": "{count} 个待执行",
   "sched.no_pending": "无待执行任务",
+  "sched.unknown": "调度数据暂不可用",
   "actions.custom": "自定义...",
   "actions.model_placeholder": "如 claude-opus-4-7",
   "btn.remove": "移除",
