@@ -254,6 +254,24 @@ export class Store {
         this.db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
       }
     }
+    if (currentVersion < 12) {
+      // One Claude API response becomes several transcript lines, so usage must
+      // be unique per request, not per line. Belt-and-braces behind the
+      // collector's own request-level dedup. Partial index: pre-fix rows carry
+      // no request_id dimension, so they are excluded and this cannot fail on
+      // existing data.
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_event_request_dedup
+        ON metric_points (
+          source,
+          metric_name,
+          json_extract(dimensions, '$.request_id')
+        )
+        WHERE metric_name = 'usage_event'
+          AND json_extract(dimensions, '$.request_id') IS NOT NULL;
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(12);
+    }
   }
 
   _prepareStatements() {
@@ -314,6 +332,13 @@ export class Store {
     this._insertMetricIgnore = this.db.prepare(`
       INSERT OR IGNORE INTO metric_points (timestamp, runtime, session_id, metric_name, metric_value, dimensions, source, confidence)
       VALUES (@timestamp, @runtime, @session_id, @metric_name, @metric_value, @dimensions, @source, @confidence)
+    `);
+
+    this._updateMetric = this.db.prepare(`
+      UPDATE metric_points
+         SET metric_value = COALESCE(@metric_value, metric_value),
+             dimensions   = COALESCE(@dimensions, dimensions)
+       WHERE id = @id
     `);
 
     this._metricExistsByEventId = this.db.prepare(`
@@ -632,6 +657,18 @@ export class Store {
 
   insertMetricOnce(point) {
     return this._runMetricInsert(this._insertMetricIgnore, point);
+  }
+
+  // Correct a metric row in place. Used when a single logical event is observed
+  // more than once and the later observation is the more complete one.
+  updateMetric(id, { metric_value, dimensions } = {}) {
+    if (!id) return { updated: false };
+    const info = this._updateMetric.run({
+      id,
+      metric_value: metric_value ?? null,
+      dimensions: dimensions ? JSON.stringify(dimensions) : null
+    });
+    return { updated: info.changes > 0, changes: info.changes };
   }
 
   _runMetricInsert(stmt, point) {

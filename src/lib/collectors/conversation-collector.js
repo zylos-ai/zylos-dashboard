@@ -7,6 +7,17 @@ import { Sanitizer } from '../sanitizer.js';
 const PER_MTOK = 1_000_000;
 const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 
+// What a cache write costs, as a multiple of the model's own input price:
+// 5-minute TTL is 1.25x input, 1-hour TTL is 2x. Derived from `input` instead
+// of tabulated per model on purpose — a per-model 5m column would drift out of
+// step the next time an input price changes, which is exactly how the single
+// `cacheCreation` column came to bill every write at the 1-hour rate. Cache
+// *reads* are unrelated (0.1x input) and keep their own `cacheRead` column.
+const CACHE_WRITE_INPUT_MULTIPLIER = {
+  ephemeral_5m_input_tokens: 1.25,
+  ephemeral_1h_input_tokens: 2
+};
+
 export class ConversationCollector {
   constructor(store, config, { stateEngine } = {}) {
     this.store = store;
@@ -15,6 +26,7 @@ export class ConversationCollector {
     this._timer = null;
     this._lastByteOffset = 0;
     this._currentFile = null;
+    this._offsets = new Map();
     this._seenUuids = new Set();
     this._onEvent = null;
     this._onMetric = null;
@@ -33,6 +45,14 @@ export class ConversationCollector {
         if (data.file && data.offset) {
           this._currentFile = data.file;
           this._lastByteOffset = data.offset;
+          this._offsets.set(data.file, data.offset);
+        }
+        // Per-file offsets: a session also has subagent transcripts, each read
+        // independently. Older records carry only the main file above.
+        if (data.files && typeof data.files === 'object') {
+          for (const [file, offset] of Object.entries(data.files)) {
+            if (typeof offset === 'number') this._offsets.set(file, offset);
+          }
         }
       }
     } catch { /* first run or schema mismatch — start from zero */ }
@@ -41,7 +61,9 @@ export class ConversationCollector {
   _persistOffset() {
     if (!this._currentFile) return;
     this.store.upsertSourceHealth('conversation_reader', 'byte_offset', 'tracking', {
-      file: this._currentFile, offset: this._lastByteOffset
+      file: this._currentFile,
+      offset: this._lastByteOffset,
+      files: Object.fromEntries(this._offsets)
     });
   }
 
@@ -51,25 +73,79 @@ export class ConversationCollector {
     return '-' + resolved.replace(/\//g, '-').replace(/^-/, '');
   }
 
-  _resolveJsonlPath() {
-    const sessionId = this._stateEngine?.getCurrentSessionId?.();
-    if (!sessionId) return null;
-    const projectSlug = this._resolveProjectSlug();
-    const projectDir = path.join(
+  _resolveProjectDir() {
+    return path.join(
       this.config.homeDir || process.env.HOME,
-      '.claude', 'projects', projectSlug
+      '.claude', 'projects', this._resolveProjectSlug()
     );
-    const jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
+  }
+
+  // The state engine only learns the session id from session_start /
+  // user_prompt_submit events, and its env-var fallback is never set for a
+  // service process. So after a restart mid-session it reports nothing and
+  // collection stalls until the user's next prompt. The statusline file always
+  // names the live session, so fall back to it.
+  _resolveSessionId() {
+    const fromState = this._stateEngine?.getCurrentSessionId?.();
+    if (fromState) return fromState;
+    try {
+      const statusPath = path.join(
+        this.config.zylosDir || path.join(process.env.HOME, 'zylos'),
+        'activity-monitor', 'statusline.json'
+      );
+      const data = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+      return data.session_id || null;
+    } catch { return null; }
+  }
+
+  _resolveJsonlPath() {
+    const sessionId = this._resolveSessionId();
+    if (!sessionId) return null;
+    const jsonlPath = path.join(this._resolveProjectDir(), `${sessionId}.jsonl`);
     return fs.existsSync(jsonlPath) ? jsonlPath : null;
   }
 
-  _hasUsageForUuid(uuid) {
+  // A session's usage is spread over more than one transcript: the main file
+  // plus one per subagent under <session>/subagents/. Reading only the main
+  // file silently omits every Task/background-agent call from cost — measured
+  // at -10% of a session's true cost with a single memory-sync subagent.
+  _resolveSubagentPaths(sessionId) {
+    if (!sessionId) return [];
+    const dir = path.join(this._resolveProjectDir(), sessionId, 'subagents');
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch { return []; }
+    return entries
+      .filter(name => name.endsWith('.jsonl'))
+      .map(name => ({
+        file: path.join(dir, name),
+        // agent-<id>.jsonl — kept as a dimension so subagent spend stays
+        // attributable without leaving the parent session's totals.
+        agentId: name.replace(/^agent-/, '').replace(/\.jsonl$/, '')
+      }));
+  }
+
+  // A single API response is written to the transcript as one line per content
+  // block (thinking / text / tool_use), so 2-5 lines share the same requestId
+  // and message.id and each carry a COPY of the whole response's usage. The
+  // usage must therefore be attributed per request, not per line — keying on
+  // uuid (the line's identity) bills one response 2-5 times over.
+  _requestKeyFor(msg) {
+    return msg.requestId || msg.message?.id || msg.uuid || null;
+  }
+
+  _findUsageByRequestKey(requestKey) {
     try {
       const row = this.store.db.prepare(
-        "SELECT 1 FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'usage_event' AND dimensions LIKE ? LIMIT 1"
-      ).get(`%"uuid":"${uuid}"%`);
-      return !!row;
-    } catch { return false; }
+        `SELECT id, metric_value, dimensions FROM metric_points
+         WHERE source = 'jsonl_usage' AND metric_name = 'usage_event'
+           AND json_extract(dimensions, '$.request_id') = ?
+         LIMIT 1`
+      ).get(requestKey);
+      if (!row) return null;
+      let dimensions = null;
+      try { dimensions = row.dimensions ? JSON.parse(row.dimensions) : null; } catch { /* keep null */ }
+      return { ...row, dimensions };
+    } catch { return null; }
   }
 
   _resolveModelPrice(model) {
@@ -81,13 +157,52 @@ export class ConversationCollector {
     return null;
   }
 
+  // Cache writes are billed by the TTL that was requested, so a single
+  // cache_creation figure cannot be priced correctly. The transcript records
+  // both a flat total and a nested per-TTL breakdown; prefer the breakdown.
+  // Without one the TTL is not knowable from the line, so the write keeps the
+  // pre-split 1-hour treatment rather than being guessed at.
+  static _cacheCreationTokensByTtl(usage) {
+    const flat = usage.cache_creation_input_tokens || 0;
+    const breakdown = usage.cache_creation;
+    if (!breakdown || typeof breakdown !== 'object') return { untyped: flat };
+
+    const byTtl = {};
+    let typed = 0;
+    for (const key of Object.keys(CACHE_WRITE_INPUT_MULTIPLIER)) {
+      const tokens = breakdown[key] || 0;
+      if (tokens > 0) byTtl[key] = tokens;
+      typed += tokens;
+    }
+    // A TTL class this build does not know about must not silently drop off the
+    // bill. Charge the remainder at the 1-hour rate — the most expensive of the
+    // known writes — so an unrecognised TTL over-reports rather than under.
+    const untyped = flat - typed;
+    if (untyped > 0) byTtl.untyped = untyped;
+    return byTtl;
+  }
+
+  // Returns price-weighted tokens (per MTOK, un-scaled) so the caller keeps
+  // ownership of the fast-mode multiplier and the PER_MTOK division.
+  _cacheCreationRate(usage, price) {
+    const byTtl = ConversationCollector._cacheCreationTokensByTtl(usage);
+    let weighted = 0;
+    for (const [ttl, tokens] of Object.entries(byTtl)) {
+      const inputMultiple = CACHE_WRITE_INPUT_MULTIPLIER[ttl];
+      weighted += inputMultiple != null && price.input != null
+        ? tokens * price.input * inputMultiple
+        : tokens * (price.cacheCreation || 0);
+    }
+    return weighted;
+  }
+
   _calculateCost(usage, price, speed) {
     if (!price) return null;
     const multiplier = speed === 'fast' ? (fastModeMultiplierForRuntime(this.config, 'claude') || 6) : 1;
     const input = (usage.input_tokens || 0) * price.input * multiplier / PER_MTOK;
     const output = (usage.output_tokens || 0) * price.output * multiplier / PER_MTOK;
     const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead * multiplier / PER_MTOK;
-    const cacheCreation = (usage.cache_creation_input_tokens || 0) * price.cacheCreation * multiplier / PER_MTOK;
+    const cacheCreation = this._cacheCreationRate(usage, price) * multiplier / PER_MTOK;
     return input + output + cacheRead + cacheCreation;
   }
 
@@ -98,23 +213,55 @@ export class ConversationCollector {
     if (jsonlPath !== this._currentFile) {
       this._currentFile = jsonlPath;
       this._lastByteOffset = 0;
+      this._offsets.clear();
       this._seenUuids.clear();
       this._persistOffset();
     }
 
+    const sessionId = this._resolveSessionId();
+    let written = this._collectFile(jsonlPath, { sessionId });
+
+    // Subagent transcripts are usage-only: their text is not surfaced in the
+    // activity feed, but their tokens are the parent session's spend.
+    for (const { file, agentId } of this._resolveSubagentPaths(sessionId)) {
+      written += this._collectFile(file, { sessionId, agentId, usageOnly: true });
+    }
+
+    // Persist offsets only AFTER all writes succeed — crash-safe: on restart,
+    // unacknowledged lines are re-read; request-level dedup prevents
+    // double-counting.
+    this._persistOffset();
+
+    if (written > 0) {
+      this.store.upsertSourceHealth('conversation_reader', 'collector_liveness', 'healthy', {
+        last_success: new Date().toISOString(), messages_ingested: written
+      });
+    }
+
+    return written;
+  }
+
+  _collectFile(jsonlPath, { sessionId = null, agentId = null, usageOnly = false } = {}) {
+    const startOffset = this._offsets.get(jsonlPath) || 0;
+
     let stat;
     try { stat = fs.statSync(jsonlPath); } catch { return 0; }
-    if (stat.size <= this._lastByteOffset) return 0;
+    if (stat.size <= startOffset) return 0;
 
-    const buf = Buffer.alloc(stat.size - this._lastByteOffset);
+    const buf = Buffer.alloc(stat.size - startOffset);
     const fd = fs.openSync(jsonlPath, 'r');
-    fs.readSync(fd, buf, 0, buf.length, this._lastByteOffset);
-    fs.closeSync(fd);
+    try {
+      fs.readSync(fd, buf, 0, buf.length, startOffset);
+    } finally {
+      fs.closeSync(fd);
+    }
 
     const chunk = buf.toString('utf8');
     const lastNewline = chunk.lastIndexOf('\n');
     if (lastNewline === -1) return 0;
-    this._lastByteOffset += Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
+    const consumed = Buffer.byteLength(chunk.slice(0, lastNewline + 1), 'utf8');
+    this._offsets.set(jsonlPath, startOffset + consumed);
+    if (jsonlPath === this._currentFile) this._lastByteOffset = startOffset + consumed;
 
     const lines = chunk.slice(0, lastNewline).split('\n').filter(l => l.trim());
 
@@ -131,9 +278,13 @@ export class ConversationCollector {
       this._seenUuids.add(uuid);
 
       const timestamp = msg.timestamp || now;
-      const sessionId = msg.sessionId || null;
+      // Subagent records carry their own sessionId. Bill them to the parent
+      // session or their spend never rolls up into the session total the
+      // statusline reports.
+      const rowSessionId = agentId ? sessionId : (msg.sessionId || sessionId);
 
       if (msg.type === 'user') {
+        if (usageOnly) continue;
         const userContent = msg.message?.content;
         const isToolResult = Array.isArray(userContent) &&
           userContent.every(c => c.type === 'tool_result');
@@ -159,10 +310,13 @@ export class ConversationCollector {
 
       if (usage) {
         const speed = usage.speed || 'standard';
-        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects);
+        usageWritten += this._ingestUsage(
+          usage, model, rowSessionId, timestamp, uuid, speed, projects,
+          this._requestKeyFor(msg), agentId
+        );
       }
 
-      if (!Array.isArray(content)) continue;
+      if (usageOnly || !Array.isArray(content)) continue;
 
       const textBlocks = content
         .filter(c => c.type === 'text' && c.text?.trim())
@@ -184,7 +338,7 @@ export class ConversationCollector {
           ingest_id: `conv-${uuid}`,
           timestamp,
           runtime: 'claude',
-          session_id: sessionId,
+          session_id: rowSessionId,
           event_type: 'assistant_message',
           category: 'assistant',
           summary,
@@ -217,21 +371,10 @@ export class ConversationCollector {
       }
     }
 
-    // Persist offset only AFTER all writes succeed — crash-safe: on restart,
-    // unacknowledged lines are re-read; uuid dedup in _seenUuids + dimensions
-    // prevents double-counting.
-    this._persistOffset();
-
-    if (written > 0) {
-      this.store.upsertSourceHealth('conversation_reader', 'collector_liveness', 'healthy', {
-        last_success: now, messages_ingested: written
-      });
-    }
-
     return written;
   }
 
-  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = []) {
+  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = [], requestKey = null, agentId = null) {
     const inputTokens = usage.input_tokens || 0;
     const outputTokens = usage.output_tokens || 0;
     const cacheRead = usage.cache_read_input_tokens || 0;
@@ -240,7 +383,22 @@ export class ConversationCollector {
 
     if (totalInput === 0 && outputTokens === 0) return 0;
 
-    if (this._hasUsageForUuid(uuid)) return 0;
+    const key = requestKey || uuid;
+    if (!key) return 0;
+
+    // Persist the TTL split, not just the flat total: it is the only record of
+    // how a cache write was priced, and it cannot be reconstructed from the
+    // total afterwards. Written as explicit zeros whenever the transcript
+    // carried a breakdown, so a missing field means "TTL unknown for this row"
+    // rather than "zero 5-minute tokens" — a later recompute must be able to
+    // tell those apart instead of assuming one.
+    const ttlDims = {};
+    if (usage.cache_creation && typeof usage.cache_creation === 'object') {
+      const byTtl = ConversationCollector._cacheCreationTokensByTtl(usage);
+      ttlDims.cache_creation_5m = byTtl.ephemeral_5m_input_tokens || 0;
+      ttlDims.cache_creation_1h = byTtl.ephemeral_1h_input_tokens || 0;
+      if (byTtl.untyped) ttlDims.cache_creation_unknown_ttl = byTtl.untyped;
+    }
 
     const dims = {
       input: inputTokens,
@@ -250,10 +408,13 @@ export class ConversationCollector {
       cache_read: cacheRead,
       cache_creation: cacheCreation,
       runtime_semantics: 'claude_split_cache',
+      ...ttlDims,
       model,
       speed,
+      request_id: key,
       uuid
     };
+    if (agentId) dims.agent_id = agentId;
     if (projects.length > 0) dims.projects = projects;
 
     const price = this._resolveModelPrice(model);
@@ -261,7 +422,17 @@ export class ConversationCollector {
     if (cost != null) dims.cost = cost;
     if (totalInput > 0) dims.cache_hit_rate = cacheRead / totalInput;
 
-    let written = 0;
+    const existing = this._findUsageByRequestKey(key);
+    if (existing) {
+      // Same API response, seen again via another content-block line (or a
+      // crash-recovery re-read). Never insert a second row for it. Upsert
+      // rather than skip so a later line carrying more complete usage still
+      // wins — in observed transcripts the copies are byte-identical, but the
+      // collector must not depend on that holding for every response shape.
+      this._upsertUsage(existing, dims, totalInput, timestamp);
+      return 0;
+    }
+
     const point = {
       timestamp, runtime: 'claude', session_id: sessionId,
       metric_name: 'usage_event', metric_value: totalInput,
@@ -270,12 +441,48 @@ export class ConversationCollector {
     };
     this.store.insertMetric(point);
     if (this._onMetric) this._onMetric(point);
-    written++;
 
     this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
       last_success: timestamp, model, tokens: totalInput + outputTokens
     });
-    return written;
+    return 1;
+  }
+
+  // Token totals of a usage row, used to decide which copy of one response's
+  // usage is the most complete.
+  static _usageWeight(dims) {
+    if (!dims) return -1;
+    return (dims.input || 0) + (dims.output || 0) +
+      (dims.cache_read || 0) + (dims.cache_creation || 0);
+  }
+
+  _upsertUsage(existing, dims, totalInput, timestamp) {
+    if (typeof this.store.updateMetric !== 'function') return;
+
+    const prev = existing.dimensions;
+    const takeNewUsage = ConversationCollector._usageWeight(dims) >
+      ConversationCollector._usageWeight(prev);
+
+    // Projects are extracted per content block, so the tool_use line knows
+    // things the thinking line does not. Union them or attribution is lost.
+    const mergedProjects = [...new Set([...(prev?.projects || []), ...(dims.projects || [])])];
+
+    const next = takeNewUsage ? { ...prev, ...dims } : { ...dims, ...prev };
+    if (mergedProjects.length > 0) next.projects = mergedProjects;
+    else delete next.projects;
+
+    const nextValue = takeNewUsage ? totalInput : existing.metric_value;
+    const changed = JSON.stringify(next) !== JSON.stringify(prev) || nextValue !== existing.metric_value;
+    if (!changed) return;
+
+    // Keep the earliest timestamp: it anchors the response to when it started,
+    // and moving it could shift the row across a reporting bucket boundary.
+    this.store.updateMetric(existing.id, { metric_value: nextValue, dimensions: next });
+    if (takeNewUsage) {
+      this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
+        last_success: timestamp, model: next.model, tokens: nextValue + (next.output || 0)
+      });
+    }
   }
 
   _extractProjectsFromContent(content) {

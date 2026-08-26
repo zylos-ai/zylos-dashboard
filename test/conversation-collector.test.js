@@ -10,7 +10,7 @@ function makeTmpDir() {
 }
 
 function makeJsonlLine(uuid, opts = {}) {
-  return JSON.stringify({
+  const msg = {
     type: 'assistant',
     uuid,
     timestamp: opts.timestamp || '2026-05-17T10:00:00.000Z',
@@ -25,13 +25,41 @@ function makeJsonlLine(uuid, opts = {}) {
         cache_creation_input_tokens: 2000
       }
     }
-  });
+  };
+  if (opts.requestId) msg.requestId = opts.requestId;
+  if (opts.messageId) msg.message.id = opts.messageId;
+  return JSON.stringify(msg);
+}
+
+// One API response as the transcript actually stores it: one line per content
+// block, every line repeating the whole response's usage, differing only in
+// uuid / parentUuid / timestamp / the block itself.
+function makeResponseLines(requestId, blocks, opts = {}) {
+  const usage = opts.usage ?? {
+    input_tokens: 2,
+    output_tokens: 537,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 68486
+  };
+  return blocks.map((block, i) => makeJsonlLine(`${requestId}-line-${i}`, {
+    ...opts,
+    requestId,
+    messageId: opts.messageId || `msg_${requestId}`,
+    content: [block],
+    usage
+  }));
 }
 
 function makeMockStore() {
   const metrics = [];
   const events = [];
   const health = {};
+  let nextId = 1;
+  const findByRequestId = (requestId) => metrics.find(m =>
+    m.source === 'jsonl_usage' &&
+    m.metric_name === 'usage_event' &&
+    m.dimensions?.request_id === requestId
+  );
   return {
     metrics,
     events,
@@ -43,7 +71,14 @@ function makeMockStore() {
       return { inserted: true, event_seq: events.length };
     },
     insertMetric(point) {
-      metrics.push(point);
+      metrics.push({ id: nextId++, ...point });
+    },
+    updateMetric(id, { metric_value, dimensions } = {}) {
+      const row = metrics.find(m => m.id === id);
+      if (!row) return { updated: false };
+      if (metric_value != null) row.metric_value = metric_value;
+      if (dimensions) row.dimensions = dimensions;
+      return { updated: true };
     },
     upsertSourceHealth(name, signalType, status, extra) {
       health[`${name}:${signalType}`] = { status, extra };
@@ -53,21 +88,14 @@ function makeMockStore() {
         return {
           get(param) {
             if (sql.includes('byte_offset')) return null;
-            if (sql.includes('jsonl_usage')) {
-              // Check if this uuid exists in metrics
-              if (param && typeof param === 'string') {
-                const uuidMatch = param.match(/"uuid":"([^"]+)"/);
-                if (uuidMatch) {
-                  const uuid = uuidMatch[1];
-                  const exists = metrics.find(m =>
-                    m.source === 'jsonl_usage' &&
-                    m.metric_name === 'usage_event' &&
-                    m.dimensions?.uuid === uuid
-                  );
-                  return exists ? { '1': 1 } : undefined;
-                }
-              }
-              return undefined;
+            if (sql.includes('$.request_id')) {
+              const row = findByRequestId(param);
+              if (!row) return undefined;
+              return {
+                id: row.id,
+                metric_value: row.metric_value,
+                dimensions: JSON.stringify(row.dimensions)
+              };
             }
             return { seq: 0 };
           }
@@ -81,16 +109,20 @@ function usageMetrics(store) {
   return store.metrics.filter(m => m.metric_name === 'usage_event');
 }
 
-function makeCollector(store, tmpDir, sessionId = 'test-session-123') {
+function makeCollector(store, tmpDir, sessionId = 'test-session-123', getSessionId = null, configOverrides = {}) {
   const config = {
     zylosDir: tmpDir,
     homeDir: tmpDir,
     modelPrices: {
       'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
-      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
-    }
+      'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
+      // Standard price, matching the shipped table: cacheCreation is the
+      // 1-hour rate, so the 5-minute rate must come out as 3 * 1.25 = 3.75.
+      'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
+    },
+    ...configOverrides
   };
-  const stateEngine = { getCurrentSessionId: () => sessionId };
+  const stateEngine = { getCurrentSessionId: getSessionId || (() => sessionId) };
   const collector = new ConversationCollector(store, config, { stateEngine });
 
   const zylosResolved = fs.realpathSync(tmpDir);
@@ -243,38 +275,292 @@ test('uuid dedup prevents double-counting on crash recovery replay', () => {
   const store2 = makeMockStore();
   // Pre-seed store2's metrics with existing data (simulating DB survived the crash)
   store2.metrics.push(...store.metrics);
-  store2.db = {
-    prepare(sql) {
-      return {
-        get(param) {
-          if (sql.includes('byte_offset')) return null; // no persisted offset (crash)
-          if (sql.includes('jsonl_usage')) {
-            // Check against pre-seeded metrics
-            if (param && typeof param === 'string') {
-              const uuidMatch = param.match(/"uuid":"([^"]+)"/);
-              if (uuidMatch) {
-                const uuid = uuidMatch[1];
-                const exists = store2.metrics.find(m =>
-                  m.source === 'jsonl_usage' &&
-                  m.metric_name === 'usage_event' &&
-                  m.dimensions?.uuid === uuid
-                );
-                return exists ? { '1': 1 } : undefined;
-              }
-            }
-            return undefined;
-          }
-          return { seq: 0 };
-        }
-      };
-    }
-  };
   const { collector: collector2 } = makeCollector(store2, tmpDir);
   collector2.collect();
 
   // uuid-replay should NOT be double-counted because dedup check finds it
   const tokenMetrics = usageMetrics(store2);
   assert.equal(tokenMetrics.length, 1); // still just 1, not 2
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('one response split across content-block lines is billed once', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // Exactly the real shape: thinking + text + tool_use, one line each, all
+  // three repeating the same usage. Before the fix this billed 3x.
+  const lines = makeResponseLines('req_A', [
+    { type: 'thinking', thinking: 'pondering' },
+    { type: 'text', text: 'Here is the answer' },
+    { type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/x/workspace/proj/a.js' } }
+  ]);
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1, 'three lines of one response must yield one usage row');
+  assert.equal(tokenMetrics[0].dimensions.output, 537);
+  assert.equal(tokenMetrics[0].metric_value, 2 + 68486);
+  assert.equal(tokenMetrics[0].dimensions.request_id, 'req_A');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('distinct requests are still counted separately', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  const lines = [
+    ...makeResponseLines('req_A', [{ type: 'thinking', thinking: 'a' }, { type: 'text', text: 'a' }]),
+    ...makeResponseLines('req_B', [{ type: 'thinking', thinking: 'b' }, { type: 'text', text: 'b' }])
+  ];
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 2);
+  assert.deepEqual(tokenMetrics.map(m => m.dimensions.request_id).sort(), ['req_A', 'req_B']);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('a later line carrying more complete usage wins (upsert, not skip)', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // Robustness: the observed transcripts repeat usage byte-identically, but the
+  // collector must not silently drop a fuller reading if a shape ever differs.
+  const first = makeJsonlLine('l1', {
+    requestId: 'req_C', messageId: 'msg_C',
+    content: [{ type: 'thinking', thinking: 'partial' }],
+    usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  const second = makeJsonlLine('l2', {
+    requestId: 'req_C', messageId: 'msg_C',
+    content: [{ type: 'text', text: 'complete' }],
+    usage: { input_tokens: 2, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  fs.writeFileSync(jsonlPath, first + '\n' + second + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1, 'still one row per request');
+  assert.equal(tokenMetrics[0].dimensions.output, 900, 'the fuller output must win');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('a later line with less complete usage does not shrink the row', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  const full = makeJsonlLine('l1', {
+    requestId: 'req_D', messageId: 'msg_D',
+    content: [{ type: 'text', text: 'full' }],
+    usage: { input_tokens: 2, output_tokens: 900, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  const partial = makeJsonlLine('l2', {
+    requestId: 'req_D', messageId: 'msg_D',
+    content: [{ type: 'tool_use', id: 't', name: 'Read', input: {} }],
+    usage: { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 }
+  });
+  fs.writeFileSync(jsonlPath, full + '\n' + partial + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1);
+  assert.equal(tokenMetrics[0].dimensions.output, 900, 'must not regress to the smaller reading');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('projects from every content-block line are merged onto the single row', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // The thinking line knows no project; the tool_use lines do. Deduping to the
+  // first line alone would lose attribution entirely.
+  const lines = makeResponseLines('req_E', [
+    { type: 'thinking', thinking: 'no project here' },
+    { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/home/u/zylos/workspace/alpha/a.js' } },
+    { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/home/u/zylos/workspace/beta/b.js' } }
+  ]);
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 1);
+  assert.deepEqual([...tokenMetrics[0].dimensions.projects].sort(), ['alpha', 'beta']);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('falls back to message.id, then uuid, when requestId is absent', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  // No requestId (observed on <synthetic> records): message.id still groups the
+  // lines of one response.
+  const a = makeJsonlLine('u1', { messageId: 'msg_F', content: [{ type: 'thinking', thinking: 'x' }] });
+  const b = makeJsonlLine('u2', { messageId: 'msg_F', content: [{ type: 'text', text: 'y' }] });
+  // Neither requestId nor message.id: falls back to uuid, one row per line.
+  const c = makeJsonlLine('u3', { content: [{ type: 'text', text: 'z' }] });
+  fs.writeFileSync(jsonlPath, [a, b, c].join('\n') + '\n');
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 2, 'msg_F collapses to one row; the keyless line stands alone');
+  assert.deepEqual(tokenMetrics.map(m => m.dimensions.request_id).sort(), ['msg_F', 'u3']);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('subagent transcripts are collected and billed to the parent session', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath, projectDir } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeResponseLines('req_main', [
+    { type: 'thinking', thinking: 'main' }, { type: 'text', text: 'main' }
+  ]).join('\n') + '\n');
+
+  // A Task/background agent writes its own transcript under <session>/subagents/.
+  const subDir = path.join(projectDir, 'test-session-123', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(path.join(subDir, 'agent-abc123.jsonl'), makeResponseLines('req_sub', [
+    { type: 'thinking', thinking: 'sub' }, { type: 'text', text: 'sub work' }
+  ], { sessionId: 'subagent-own-session', model: 'claude-sonnet-4-5' }).join('\n') + '\n');
+
+  collector.collect();
+
+  const tokenMetrics = usageMetrics(store);
+  assert.equal(tokenMetrics.length, 2, 'main + subagent usage, one row each');
+
+  const sub = tokenMetrics.find(m => m.dimensions.request_id === 'req_sub');
+  assert.ok(sub, 'subagent usage must be ingested');
+  assert.equal(sub.dimensions.agent_id, 'abc123', 'tagged with the agent it came from');
+  assert.equal(sub.session_id, 'test-session-123', 'billed to the parent session, not its own');
+
+  const main = tokenMetrics.find(m => m.dimensions.request_id === 'req_main');
+  assert.equal(main.dimensions.agent_id, undefined, 'main rows carry no agent_id');
+
+  // Subagent text must not enter the activity feed.
+  const feed = store.events.filter(e => e.event_type === 'assistant_message');
+  assert.equal(feed.length, 1, 'only the main session contributes feed events');
+  assert.ok(feed[0].summary.includes('main'));
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('subagent transcripts are not re-ingested on the next pass', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath, projectDir } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('m1', { requestId: 'req_main' }) + '\n');
+  const subDir = path.join(projectDir, 'test-session-123', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  const subFile = path.join(subDir, 'agent-xyz.jsonl');
+  fs.writeFileSync(subFile, makeJsonlLine('s1', { requestId: 'req_sub1' }) + '\n');
+
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 2);
+
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 2, 'no duplication on re-read');
+
+  // Appending to the subagent transcript is picked up from its own offset.
+  fs.appendFileSync(subFile, makeJsonlLine('s2', { requestId: 'req_sub2' }) + '\n');
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 3, 'new subagent usage is collected incrementally');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('per-file offsets survive a restart', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath, projectDir } = makeCollector(store, tmpDir);
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('m1', { requestId: 'req_main' }) + '\n');
+  const subDir = path.join(projectDir, 'test-session-123', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(path.join(subDir, 'agent-xyz.jsonl'), makeJsonlLine('s1', { requestId: 'req_sub1' }) + '\n');
+
+  collector.collect();
+  assert.equal(usageMetrics(store).length, 2);
+
+  const persisted = store.health['conversation_reader:byte_offset'].extra;
+  assert.ok(persisted.files, 'per-file offsets are persisted');
+  assert.equal(Object.keys(persisted.files).length, 2);
+
+  // Fresh collector restoring those offsets must not re-read either file.
+  const store2 = makeMockStore();
+  store2.db = {
+    prepare(sql) {
+      return {
+        get(param) {
+          if (sql.includes('byte_offset')) return { extra: JSON.stringify(persisted) };
+          if (sql.includes('$.request_id')) return undefined;
+          return { seq: 0 };
+        }
+      };
+    }
+  };
+  const { collector: collector2 } = makeCollector(store2, tmpDir);
+  collector2._restoreOffset();
+  collector2.collect();
+  assert.equal(usageMetrics(store2).length, 0, 'nothing re-read after restart');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('falls back to the statusline session id when the state engine has none', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  // State engine reports nothing — the situation after a mid-session restart,
+  // where collection used to stall until the user's next prompt.
+  const { collector, jsonlPath } = makeCollector(store, tmpDir, 'test-session-123', () => null);
+
+  fs.mkdirSync(path.join(tmpDir, 'activity-monitor'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, 'activity-monitor', 'statusline.json'),
+    JSON.stringify({ session_id: 'test-session-123' })
+  );
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('u1', { requestId: 'req_fallback' }) + '\n');
+  collector.collect();
+
+  assert.equal(usageMetrics(store).length, 1, 'collection proceeds via the statusline session id');
+  assert.equal(usageMetrics(store)[0].session_id, 'test-session-123');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('state engine session id wins over the statusline fallback', () => {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir, 'test-session-123');
+
+  fs.mkdirSync(path.join(tmpDir, 'activity-monitor'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, 'activity-monitor', 'statusline.json'),
+    JSON.stringify({ session_id: 'some-other-session' })
+  );
+
+  fs.writeFileSync(jsonlPath, makeJsonlLine('u1', { requestId: 'req_primary' }) + '\n');
+  collector.collect();
+
+  assert.equal(usageMetrics(store).length, 1);
+  assert.equal(usageMetrics(store)[0].session_id, 'test-session-123');
 
   fs.rmSync(tmpDir, { recursive: true });
 });
@@ -430,6 +716,183 @@ test('cache rate formula: cache_read / (input + cache_read + cache_creation)', (
   const cacheMetric = usageMetrics(store)[0];
   // cache_read / (input + cache_read + cache_creation) = 8000 / (1000 + 8000 + 1000) = 0.8
   assert.ok(Math.abs(cacheMetric.dimensions.cache_hit_rate - 0.8) < 0.0001);
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+// --- Cache-write TTL pricing -------------------------------------------------
+// A cache write costs 1.25x input at a 5-minute TTL and 2x at 1 hour. The
+// collector used to multiply the flat cache_creation total by the single
+// `cacheCreation` price (the 1-hour rate), billing every 5-minute write at
+// 2 / 1.25 = 1.6x contract. These cases pin each TTL to its own rate and pin
+// the split into `dimensions`, without which the cost cannot be re-derived.
+
+// One request whose cache write is entirely one TTL class. `usage.cache_creation`
+// is the nested breakdown the transcript actually carries; the flat total is
+// kept alongside it, exactly as Claude Code writes both.
+function makeTtlUsage(breakdown, extra = {}) {
+  const flat = Object.values(breakdown).reduce((a, b) => a + (b || 0), 0);
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: flat,
+    cache_creation: breakdown,
+    ...extra
+  };
+}
+
+function collectTtlRow(usage, { configOverrides } = {}) {
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(
+    store, tmpDir, 'test-session-123', null, configOverrides
+  );
+  fs.writeFileSync(jsonlPath, makeJsonlLine('uuid-ttl', {
+    model: 'claude-sonnet-5', usage
+  }) + '\n');
+  collector.collect();
+  const rows = usageMetrics(store);
+  fs.rmSync(tmpDir, { recursive: true });
+  return rows[0];
+}
+
+test('5-minute cache writes bill at 1.25x input, not the 1-hour rate', () => {
+  const row = collectTtlRow(makeTtlUsage({
+    ephemeral_5m_input_tokens: 1_000_000,
+    ephemeral_1h_input_tokens: 0
+  }));
+
+  // 1M pure 5m tokens on Sonnet 5 (input 3): contract is 3 * 1.25 = $3.75.
+  assert.ok(Math.abs(row.dimensions.cost - 3.75) < 1e-9,
+    `expected $3.75, got ${row.dimensions.cost}`);
+  // Negative control: the pre-fix formula (1M * cacheCreation 6) gave $6.
+  assert.ok(Math.abs(row.dimensions.cost - 6) > 1e-9,
+    'still billing 5-minute writes at the 1-hour rate');
+
+  // The split must survive into dimensions or this row can never be re-costed.
+  assert.equal(row.dimensions.cache_creation, 1_000_000);
+  assert.equal(row.dimensions.cache_creation_5m, 1_000_000);
+  assert.equal(row.dimensions.cache_creation_1h, 0);
+});
+
+test('1-hour cache writes still bill at 2x input', () => {
+  const row = collectTtlRow(makeTtlUsage({
+    ephemeral_5m_input_tokens: 0,
+    ephemeral_1h_input_tokens: 1_000_000
+  }));
+
+  // Unchanged by the fix: 1M * 3 * 2 = $6. Guards against "correcting" the
+  // rate that was already right.
+  assert.ok(Math.abs(row.dimensions.cost - 6) < 1e-9,
+    `expected $6.00, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.cache_creation_5m, 0);
+  assert.equal(row.dimensions.cache_creation_1h, 1_000_000);
+});
+
+test('mixed-TTL cache writes bill each portion at its own rate', () => {
+  const row = collectTtlRow(makeTtlUsage({
+    ephemeral_5m_input_tokens: 400_000,
+    ephemeral_1h_input_tokens: 600_000
+  }));
+
+  // 400k * 3 * 1.25 + 600k * 3 * 2 = 1.50 + 3.60 = $5.10.
+  assert.ok(Math.abs(row.dimensions.cost - 5.10) < 1e-9,
+    `expected $5.10, got ${row.dimensions.cost}`);
+  // The flat total alone would have priced the same row at $6.00 — the two
+  // must not coincide, or the test would pass without the split being read.
+  assert.ok(Math.abs(row.dimensions.cost - 6) > 1e-9);
+
+  assert.equal(row.dimensions.cache_creation, 1_000_000);
+  assert.equal(row.dimensions.cache_creation_5m, 400_000);
+  assert.equal(row.dimensions.cache_creation_1h, 600_000);
+});
+
+test('fast mode multiplies TTL-aware cache-write cost', () => {
+  const row = collectTtlRow(
+    makeTtlUsage({ ephemeral_5m_input_tokens: 400_000, ephemeral_1h_input_tokens: 600_000 },
+      { speed: 'fast' }),
+    { configOverrides: { fastModeMultiplier: 4 } }
+  );
+
+  // Same tokens as above at 4x: 5.10 * 4 = $20.40. Pins that the fast-mode
+  // path still applies after the cache-write term stopped being a single
+  // price lookup.
+  assert.ok(Math.abs(row.dimensions.cost - 20.40) < 1e-9,
+    `expected $20.40, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.speed, 'fast');
+  assert.equal(row.dimensions.cache_creation_5m, 400_000);
+  assert.equal(row.dimensions.cache_creation_1h, 600_000);
+});
+
+test('a cache write with no TTL breakdown keeps the 1-hour rate and is marked unknown', () => {
+  // Older transcripts (and any future line that omits the nested object) carry
+  // only the flat total. The TTL is genuinely unknowable there, so pricing must
+  // not change and the row must not claim a split it does not have — a later
+  // recompute has to be able to tell "no 5m tokens" from "TTL unrecorded".
+  const row = collectTtlRow({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 1_000_000
+  });
+
+  assert.ok(Math.abs(row.dimensions.cost - 6) < 1e-9,
+    `expected the unchanged $6.00, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.cache_creation, 1_000_000);
+  assert.equal('cache_creation_5m' in row.dimensions, false);
+  assert.equal('cache_creation_1h' in row.dimensions, false);
+});
+
+test('an unrecognised TTL class is billed, not dropped', () => {
+  // If a new TTL is added upstream, its tokens are still in the flat total but
+  // in no known bucket. They must keep costing money (at the highest known
+  // write rate) rather than silently falling out of the bill.
+  const row = collectTtlRow({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 1_000_000,
+    cache_creation: {
+      ephemeral_5m_input_tokens: 400_000,
+      ephemeral_1h_input_tokens: 0,
+      ephemeral_12h_input_tokens: 600_000
+    }
+  });
+
+  // 400k at 1.25x + 600k unknown at the 1-hour 2x = 1.50 + 3.60 = $5.10.
+  assert.ok(Math.abs(row.dimensions.cost - 5.10) < 1e-9,
+    `expected $5.10, got ${row.dimensions.cost}`);
+  assert.equal(row.dimensions.cache_creation_unknown_ttl, 600_000);
+});
+
+test('the TTL split survives the per-content-block upsert', () => {
+  // One response is written as several lines that each repeat the whole usage
+  // object; the collector merges them into one row. The split must not be lost
+  // or halved by that merge.
+  const tmpDir = makeTmpDir();
+  const store = makeMockStore();
+  const { collector, jsonlPath } = makeCollector(store, tmpDir);
+
+  const usage = makeTtlUsage({
+    ephemeral_5m_input_tokens: 400_000,
+    ephemeral_1h_input_tokens: 600_000
+  });
+  const lines = makeResponseLines('req-ttl-1', [
+    { type: 'thinking', thinking: 'considering' },
+    { type: 'text', text: 'answer' },
+    { type: 'tool_use', id: 'tu1', name: 'Read', input: {} }
+  ], { usage, model: 'claude-sonnet-5' });
+
+  fs.writeFileSync(jsonlPath, lines.join('\n') + '\n');
+  collector.collect();
+
+  const rows = usageMetrics(store);
+  assert.equal(rows.length, 1, 'three content-block lines are one billable request');
+  assert.equal(rows[0].dimensions.cache_creation_5m, 400_000);
+  assert.equal(rows[0].dimensions.cache_creation_1h, 600_000);
+  assert.ok(Math.abs(rows[0].dimensions.cost - 5.10) < 1e-9,
+    `expected $5.10 charged once, got ${rows[0].dimensions.cost}`);
 
   fs.rmSync(tmpDir, { recursive: true });
 });
