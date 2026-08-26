@@ -307,7 +307,13 @@ test('/api/system payload uses DB-backed PM2 and system summary fallback after w
     pm2Data: null,
     sysData: null,
     pm2State: [
-      { process_name: 'zylos-dashboard', status: 'online', updated_at: '2026-06-07T01:00:00.000Z' }
+      {
+        process_name: 'zylos-dashboard',
+        status: 'online',
+        memory_bytes: 123456,
+        uptime_ms: 5000,
+        updated_at: '2026-06-07T01:00:00.000Z'
+      }
     ],
     systemSummary: {
       timestamp: '2026-06-07T01:01:00.000Z',
@@ -316,7 +322,10 @@ test('/api/system payload uses DB-backed PM2 and system summary fallback after w
     scheduler: { running: true }
   });
 
-  assert.equal(payload.pm2[0].process_name, 'zylos-dashboard');
+  assert.equal(payload.pm2[0].name, 'zylos-dashboard');
+  assert.equal(payload.pm2[0].memory, 123456);
+  assert.equal(payload.pm2[0].uptime, 5000);
+  assert.equal(payload.pm2[0].process_name, undefined);
   assert.equal(payload.system.cpu_pct, 12.5);
   assert.equal(payload.scheduler.running, true);
   assert.equal(payload.collected_at.pm2, '2026-06-07T01:00:00.000Z');

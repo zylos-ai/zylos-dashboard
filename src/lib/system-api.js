@@ -2,11 +2,11 @@ function sanitizePm2Process(proc) {
   if (!proc) return proc;
   return {
     pid: proc.pid,
-    name: proc.name ?? proc.pm2_env?.name,
+    name: proc.name ?? proc.process_name ?? proc.pm2_env?.name,
     status: proc.pm2_env?.status ?? proc.status,
     cpu: proc.monit?.cpu ?? proc.cpu,
-    memory: proc.monit?.memory ?? proc.memory,
-    uptime: proc.pm2_env?.pm_uptime ?? proc.pm_uptime,
+    memory: proc.monit?.memory ?? proc.memory ?? proc.memory_bytes,
+    uptime: proc.pm2_env?.pm_uptime ?? proc.pm_uptime ?? proc.uptime ?? proc.uptime_ms,
     restarts: proc.pm2_env?.restart_time ?? proc.restart_time ?? proc.restarts,
     version: proc.pm2_env?.version ?? proc.version,
   };
