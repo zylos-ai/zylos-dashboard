@@ -136,7 +136,7 @@ export class ConversationCollector {
   _findUsageByRequestKey(requestKey) {
     try {
       const row = this.store.db.prepare(
-        `SELECT id, metric_value, dimensions FROM metric_points
+        `SELECT id, timestamp, session_id, metric_value, dimensions FROM metric_points
          WHERE source = 'jsonl_usage' AND metric_name = 'usage_event'
            AND json_extract(dimensions, '$.request_id') = ?
          LIMIT 1`
@@ -433,7 +433,7 @@ export class ConversationCollector {
       // rather than skip so a later line carrying more complete usage still
       // wins — in observed transcripts the copies are byte-identical, but the
       // collector must not depend on that holding for every response shape.
-      this._upsertUsage(existing, dims, totalInput, timestamp);
+      this._upsertUsage(existing, dims, totalInput, timestamp, sessionId);
       return 0;
     }
 
@@ -460,7 +460,7 @@ export class ConversationCollector {
       (dims.cache_read || 0) + (dims.cache_creation || 0);
   }
 
-  _upsertUsage(existing, dims, totalInput, timestamp) {
+  _upsertUsage(existing, dims, totalInput, timestamp, sessionId) {
     if (typeof this.store.updateMetric !== 'function') return;
 
     const prev = existing.dimensions;
@@ -476,12 +476,30 @@ export class ConversationCollector {
     else delete next.projects;
 
     const nextValue = takeNewUsage ? totalInput : existing.metric_value;
-    const changed = JSON.stringify(next) !== JSON.stringify(prev) || nextValue !== existing.metric_value;
+    // Attribution is independent of usage completeness: a smaller, earlier
+    // block may arrive after the final block, even after a collector restart.
+    // Compare instants (not ISO strings, which may use different UTC offsets).
+    // Equal instants use session then timestamp text as stable tie-breaks.
+    const incomingTime = Date.parse(timestamp);
+    const previousTime = Date.parse(existing.timestamp);
+    const timeOrder = Number.isFinite(incomingTime) && Number.isFinite(previousTime)
+      ? incomingTime - previousTime
+      : (timestamp < existing.timestamp ? -1 : timestamp > existing.timestamp ? 1 : 0);
+    const incomingSession = sessionId || '';
+    const previousSession = existing.session_id || '';
+    const takeNewAttribution = timeOrder < 0 || (timeOrder === 0 &&
+      (incomingSession < previousSession ||
+        (incomingSession === previousSession && timestamp < existing.timestamp)));
+    const changed = takeNewAttribution ||
+      JSON.stringify(next) !== JSON.stringify(prev) || nextValue !== existing.metric_value;
     if (!changed) return;
 
-    // Keep the earliest timestamp: it anchors the response to when it started,
-    // and moving it could shift the row across a reporting bucket boundary.
-    this.store.updateMetric(existing.id, { metric_value: nextValue, dimensions: next });
+    // Update the earliest time and its owning session together, without
+    // replacing the more complete usage with the earlier block's partial usage.
+    this.store.updateMetric(existing.id, {
+      metric_value: nextValue, dimensions: next,
+      ...(takeNewAttribution ? { timestamp, session_id: sessionId || null } : {})
+    });
     if (takeNewUsage) {
       this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {
         last_success: timestamp, model: next.model, tokens: nextValue + (next.output || 0)

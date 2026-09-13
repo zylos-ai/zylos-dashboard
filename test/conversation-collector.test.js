@@ -75,11 +75,15 @@ function makeMockStore() {
     insertMetric(point) {
       metrics.push({ id: nextId++, ...point });
     },
-    updateMetric(id, { metric_value, dimensions } = {}) {
+    updateMetric(id, { metric_value, dimensions, timestamp, session_id } = {}) {
       const row = metrics.find(m => m.id === id);
       if (!row) return { updated: false };
       if (metric_value != null) row.metric_value = metric_value;
       if (dimensions) row.dimensions = dimensions;
+      if (timestamp != null) {
+        row.timestamp = timestamp;
+        row.session_id = session_id || null;
+      }
       return { updated: true };
     },
     upsertSourceHealth(name, signalType, status, extra) {
@@ -95,6 +99,8 @@ function makeMockStore() {
               if (!row) return undefined;
               return {
                 id: row.id,
+                timestamp: row.timestamp,
+                session_id: row.session_id,
                 metric_value: row.metric_value,
                 dimensions: JSON.stringify(row.dimensions)
               };
@@ -949,56 +955,82 @@ test('specific Claude model prices win regardless of insertion order and retain 
   assert.equal(collector._resolveModelPrice('unpriced-model'), null);
 });
 
-for (const reverse of [false, true]) {
-  test(`one subagent response across session files is billed once (${reverse ? 'new first' : 'old first'})`, (t) => {
-    const tmpDir = makeTmpDir();
-    const store = new Store(path.join(tmpDir, 'usage.db'));
-    t.after(() => {
+for (const scenario of [
+  { name: 'cross day', oldTime: '2026-09-13T23:59:50.000Z', newTime: '2026-09-14T00:00:10.000Z', session: 'old-session' },
+  { name: 'equal time', oldTime: '2026-09-14T00:00:10.000Z', newTime: '2026-09-14T00:00:10.000Z', session: 'new-session' },
+  { name: 'offset time', oldTime: '2026-09-14T07:59:50.000+08:00', newTime: '2026-09-14T00:00:10.000Z', session: 'old-session' }
+]) {
+  for (const reverse of [false, true]) {
+    test(`one subagent response across session files is billed once (${scenario.name}, ${reverse ? 'new first' : 'old first'})`, (t) => {
+      const tmpDir = makeTmpDir();
+      let store = new Store(path.join(tmpDir, 'usage.db'));
+      t.after(() => {
+        store.close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      });
+      const { config } = makeCollector(store, tmpDir, undefined, null, {
+        modelPrices: DEFAULT_CLAUDE_MODEL_PRICES
+      });
+      const usage = { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 200,
+        cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 0 } };
+      // A continuing agent keeps its request/message IDs while its parent session
+      // rotates. The tool block links back to the old thinking block's UUID.
+      const old = JSON.parse(makeJsonlLine('old-thinking', {
+        timestamp: scenario.oldTime, sessionId: 'old-session', requestId: 'continued-request', messageId: 'continued-message',
+        model: 'claude-sonnet-5', usage,
+        content: [{ type: 'thinking', thinking: 'redacted' }]
+      }));
+      const next = JSON.parse(makeJsonlLine('new-tool', {
+        timestamp: scenario.newTime, sessionId: 'new-session', requestId: 'continued-request', messageId: 'continued-message',
+        model: 'claude-sonnet-5', usage: { ...usage, output_tokens: 50 },
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }]
+      }));
+      next.parentUuid = old.uuid;
+      for (const record of [old, next]) {
+        record.agentId = 'continuing-agent';
+        record.isSidechain = true;
+      }
+      const files = [old, next].map(record => {
+        const file = path.join(tmpDir, `${record.sessionId}.jsonl`);
+        fs.writeFileSync(file, JSON.stringify(record) + '\n');
+        return { file, sessionId: record.sessionId };
+      });
+      if (reverse) files.reverse();
+      for (const { file, sessionId } of files) {
+        // Reopen the database between observations as well as before replay.
+        store.close();
+        store = new Store(path.join(tmpDir, 'usage.db'));
+        const collector = new ConversationCollector(store, config);
+        collector._collectFile(file, { sessionId, agentId: 'continuing-agent', usageOnly: true });
+      }
+      // Restart removes in-memory request/UUID caches and exercises SQLite dedup.
       store.close();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      store = new Store(path.join(tmpDir, 'usage.db'));
+      const restarted = new ConversationCollector(store, config);
+      for (const { file, sessionId } of files) {
+        restarted._collectFile(file, { sessionId, agentId: 'continuing-agent', usageOnly: true });
+      }
+      const rows = store.db.prepare("SELECT * FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'usage_event'").all();
+      assert.equal(rows.length, 1);
+      const dims = JSON.parse(rows[0].dimensions);
+      assert.equal(dims.output, 50);
+      assert.equal(dims.request_id, 'continued-request');
+      assert.ok(Math.abs(dims.cost - 0.001024) < 1e-12);
+      const expectedTime = scenario.session === 'old-session' ? scenario.oldTime : scenario.newTime;
+      assert.equal(rows[0].timestamp, expectedTime);
+      assert.equal(rows[0].session_id, scenario.session);
+      for (const bucketSeconds of [3600, 86400]) {
+        const series = store.aggregateCostSeries({
+          since: '2026-09-13', until: '2026-09-15', bucketSeconds
+        });
+        assert.equal(series.length, 1);
+        assert.equal(series[0].bucket_start, Math.floor(Date.parse(expectedTime) / (bucketSeconds * 1000)) * bucketSeconds);
+        assert.equal(series[0].request_count, 1);
+        assert.ok(Math.abs(series[0].cost_sum - 0.001024) < 1e-12);
+      }
+      const sessions = store.db.prepare("SELECT session_id, SUM(json_extract(dimensions, '$.cost')) AS cost FROM metric_points WHERE source = 'jsonl_usage' GROUP BY session_id").all();
+      assert.deepEqual(sessions, [{ session_id: scenario.session, cost: dims.cost }]);
     });
-    const { collector, config } = makeCollector(store, tmpDir, undefined, null, {
-      modelPrices: DEFAULT_CLAUDE_MODEL_PRICES
-    });
-    const usage = { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 100,
-      cache_creation_input_tokens: 200,
-      cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 0 } };
-    // A continuing agent keeps its request/message IDs while its parent session
-    // rotates. The tool block links back to the old thinking block's UUID.
-    const old = JSON.parse(makeJsonlLine('old-thinking', {
-      sessionId: 'old-session', requestId: 'continued-request', messageId: 'continued-message',
-      model: 'claude-sonnet-5', usage,
-      content: [{ type: 'thinking', thinking: 'redacted' }]
-    }));
-    const next = JSON.parse(makeJsonlLine('new-tool', {
-      sessionId: 'new-session', requestId: 'continued-request', messageId: 'continued-message',
-      model: 'claude-sonnet-5', usage: { ...usage, output_tokens: 50 },
-      content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }]
-    }));
-    next.parentUuid = old.uuid;
-    for (const record of [old, next]) {
-      record.agentId = 'continuing-agent';
-      record.isSidechain = true;
-    }
-    const files = [old, next].map(record => {
-      const file = path.join(tmpDir, `${record.sessionId}.jsonl`);
-      fs.writeFileSync(file, JSON.stringify(record) + '\n');
-      return { file, sessionId: record.sessionId };
-    });
-    if (reverse) files.reverse();
-    for (const { file, sessionId } of files) {
-      collector._collectFile(file, { sessionId, agentId: 'continuing-agent', usageOnly: true });
-    }
-    // Restart removes in-memory request/UUID caches and exercises SQLite dedup.
-    const restarted = new ConversationCollector(store, config);
-    for (const { file, sessionId } of files) {
-      restarted._collectFile(file, { sessionId, agentId: 'continuing-agent', usageOnly: true });
-    }
-    const rows = store.db.prepare("SELECT * FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'usage_event'").all();
-    assert.equal(rows.length, 1);
-    const dims = JSON.parse(rows[0].dimensions);
-    assert.equal(dims.output, 50);
-    assert.equal(dims.request_id, 'continued-request');
-    assert.ok(Math.abs(dims.cost - 0.001024) < 1e-12);
-  });
+  }
 }

@@ -337,7 +337,9 @@ export class Store {
     this._updateMetric = this.db.prepare(`
       UPDATE metric_points
          SET metric_value = COALESCE(@metric_value, metric_value),
-             dimensions   = COALESCE(@dimensions, dimensions)
+             dimensions   = COALESCE(@dimensions, dimensions),
+             timestamp    = COALESCE(@timestamp, timestamp),
+             session_id   = CASE WHEN @timestamp IS NOT NULL THEN @session_id ELSE session_id END
        WHERE id = @id
     `);
 
@@ -661,12 +663,16 @@ export class Store {
 
   // Correct a metric row in place. Used when a single logical event is observed
   // more than once and the later observation is the more complete one.
-  updateMetric(id, { metric_value, dimensions } = {}) {
+  // An optional timestamp/session_id pair replaces attribution atomically;
+  // omitting timestamp preserves both, including for existing partial updates.
+  updateMetric(id, { metric_value, dimensions, timestamp, session_id } = {}) {
     if (!id) return { updated: false };
     const info = this._updateMetric.run({
       id,
       metric_value: metric_value ?? null,
-      dimensions: dimensions ? JSON.stringify(dimensions) : null
+      dimensions: dimensions ? JSON.stringify(dimensions) : null,
+      timestamp: timestamp ?? null,
+      session_id: session_id || null
     });
     return { updated: info.changes > 0, changes: info.changes };
   }
