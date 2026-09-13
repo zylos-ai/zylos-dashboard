@@ -391,6 +391,12 @@ export class ConversationCollector {
     const key = requestKey || uuid;
     if (!key) return 0;
 
+    // Store range filters compare ISO text against UTC bounds. Normalize before
+    // both insertion and attribution selection so offsets cannot hide a request
+    // from its actual hour/day window. Leave invalid input handling unchanged.
+    const parsedTimestamp = Date.parse(timestamp);
+    if (Number.isFinite(parsedTimestamp)) timestamp = new Date(parsedTimestamp).toISOString();
+
     // Persist the TTL split, not just the flat total: it is the only record of
     // how a cache write was priced, and it cannot be reconstructed from the
     // total afterwards. Written as explicit zeros whenever the transcript

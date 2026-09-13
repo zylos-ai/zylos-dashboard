@@ -958,6 +958,7 @@ test('specific Claude model prices win regardless of insertion order and retain 
 for (const scenario of [
   { name: 'cross day', oldTime: '2026-09-13T23:59:50.000Z', newTime: '2026-09-14T00:00:10.000Z', session: 'old-session' },
   { name: 'equal time', oldTime: '2026-09-14T00:00:10.000Z', newTime: '2026-09-14T00:00:10.000Z', session: 'new-session' },
+  { name: 'negative offset', oldTime: '2026-09-13T16:00:10.000-08:00', newTime: '2026-09-14T00:00:20.000Z', session: 'old-session' },
   { name: 'offset time', oldTime: '2026-09-14T07:59:50.000+08:00', newTime: '2026-09-14T00:00:10.000Z', session: 'old-session' }
 ]) {
   for (const reverse of [false, true]) {
@@ -1017,7 +1018,7 @@ for (const scenario of [
       assert.equal(dims.output, 50);
       assert.equal(dims.request_id, 'continued-request');
       assert.ok(Math.abs(dims.cost - 0.001024) < 1e-12);
-      const expectedTime = scenario.session === 'old-session' ? scenario.oldTime : scenario.newTime;
+      const expectedTime = new Date(scenario.session === 'old-session' ? scenario.oldTime : scenario.newTime).toISOString();
       assert.equal(rows[0].timestamp, expectedTime);
       assert.equal(rows[0].session_id, scenario.session);
       for (const bucketSeconds of [3600, 86400]) {
@@ -1028,6 +1029,17 @@ for (const scenario of [
         assert.equal(series[0].bucket_start, Math.floor(Date.parse(expectedTime) / (bucketSeconds * 1000)) * bucketSeconds);
         assert.equal(series[0].request_count, 1);
         assert.ok(Math.abs(series[0].cost_sum - 0.001024) < 1e-12);
+        const start = Math.floor(Date.parse(expectedTime) / (bucketSeconds * 1000)) * bucketSeconds * 1000;
+        const window = { since: new Date(start).toISOString(), until: new Date(start + bucketSeconds * 1000 - 1).toISOString(), bucketSeconds };
+        assert.deepEqual(store.aggregateCostSeries(window), series);
+        assert.equal(store.aggregateCostSeries({
+          since: new Date(start - bucketSeconds * 1000).toISOString(),
+          until: new Date(start - 1).toISOString(), bucketSeconds
+        }).length, 0);
+        assert.equal(store.aggregateCostSeries({
+          since: new Date(start + bucketSeconds * 1000).toISOString(),
+          until: new Date(start + 2 * bucketSeconds * 1000 - 1).toISOString(), bucketSeconds
+        }).length, 0);
       }
       const sessions = store.db.prepare("SELECT session_id, SUM(json_extract(dimensions, '$.cost')) AS cost FROM metric_points WHERE source = 'jsonl_usage' GROUP BY session_id").all();
       assert.deepEqual(sessions, [{ session_id: scenario.session, cost: dims.cost }]);
