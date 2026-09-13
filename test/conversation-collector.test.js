@@ -3,6 +3,8 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { DEFAULT_CLAUDE_MODEL_PRICES } from '../src/lib/config.js';
+import { Store } from '../src/lib/store.js';
 import { ConversationCollector } from '../src/lib/collectors/conversation-collector.js';
 
 function makeTmpDir() {
@@ -116,8 +118,8 @@ function makeCollector(store, tmpDir, sessionId = 'test-session-123', getSession
     modelPrices: {
       'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
       'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
-      // Standard price, matching the shipped table: cacheCreation is the
-      // 1-hour rate, so the 5-minute rate must come out as 3 * 1.25 = 3.75.
+      // Custom rates isolate the TTL arithmetic from the shipped price table:
+      // cacheCreation is the 1-hour rate; the 5-minute rate is 3 * 1.25.
       'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 }
     },
     ...configOverrides
@@ -828,8 +830,8 @@ test('fast mode multiplies TTL-aware cache-write cost', () => {
 test('a cache write with no TTL breakdown keeps the 1-hour rate and is marked unknown', () => {
   // Older transcripts (and any future line that omits the nested object) carry
   // only the flat total. The TTL is genuinely unknowable there, so pricing must
-  // not change and the row must not claim a split it does not have — a later
-  // recompute has to be able to tell "no 5m tokens" from "TTL unrecorded".
+  // not change and the row must distinguish "no 5m tokens" from
+  // "TTL unrecorded" when inspecting the charged usage.
   const row = collectTtlRow({
     input_tokens: 0,
     output_tokens: 0,
@@ -896,3 +898,107 @@ test('the TTL split survives the per-content-block upsert', () => {
 
   fs.rmSync(tmpDir, { recursive: true });
 });
+
+// Token counts from real Claude Code JSONL responses; identifiers and content
+// are replaced. Expected dollar amounts use the published per-model rates.
+for (const sample of [
+  {
+    model: 'claude-sonnet-5', expected: 0.085584,
+    usage: { input_tokens: 2, output_tokens: 290, cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 33072,
+      cache_creation: { ephemeral_5m_input_tokens: 33072, ephemeral_1h_input_tokens: 0 } }
+  },
+  {
+    model: 'claude-fable-5-1', expected: 0.12718725,
+    usage: { input_tokens: 32, output_tokens: 1129, cache_read_input_tokens: 129189,
+      cache_creation_input_tokens: 1906,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1906 } }
+  }
+]) {
+  test(`shipped prices charge real ${sample.model} usage correctly`, (t) => {
+    const tmpDir = makeTmpDir();
+    t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const store = makeMockStore();
+    const { collector, jsonlPath } = makeCollector(store, tmpDir, undefined, null, {
+      modelPrices: DEFAULT_CLAUDE_MODEL_PRICES
+    });
+    fs.writeFileSync(jsonlPath, makeJsonlLine('price-sample', sample) + '\n');
+    collector.collect();
+    const rows = usageMetrics(store);
+    assert.equal(rows.length, 1);
+    assert.ok(Math.abs(rows[0].dimensions.cost - sample.expected) < 1e-12,
+      `expected $${sample.expected}, got $${rows[0].dimensions.cost}`);
+  });
+}
+
+test('specific Claude model prices win regardless of insertion order and retain configured overrides', (t) => {
+  const tmpDir = makeTmpDir();
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const family = DEFAULT_CLAUDE_MODEL_PRICES['claude-fable-5'];
+  const specific = DEFAULT_CLAUDE_MODEL_PRICES['claude-fable-5-1'];
+  const override = { ...specific, cacheRead: 0.125 };
+  const { collector } = makeCollector(makeMockStore(), tmpDir, undefined, null, {
+    runtimeModelPrices: { claude: {
+      'claude-fable-5': family,
+      'claude-fable-5-1': override
+    } }
+  });
+  assert.equal(collector._resolveModelPrice('claude-fable-5-1'), override);
+  assert.equal(collector._resolveModelPrice('claude-fable-5-1-20260901'), override);
+  assert.equal(collector._resolveModelPrice('claude-fable-5'), family);
+  assert.equal(collector._resolveModelPrice('unpriced-model'), null);
+});
+
+for (const reverse of [false, true]) {
+  test(`one subagent response across session files is billed once (${reverse ? 'new first' : 'old first'})`, (t) => {
+    const tmpDir = makeTmpDir();
+    const store = new Store(path.join(tmpDir, 'usage.db'));
+    t.after(() => {
+      store.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+    const { collector, config } = makeCollector(store, tmpDir, undefined, null, {
+      modelPrices: DEFAULT_CLAUDE_MODEL_PRICES
+    });
+    const usage = { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 100,
+      cache_creation_input_tokens: 200,
+      cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 0 } };
+    // A continuing agent keeps its request/message IDs while its parent session
+    // rotates. The tool block links back to the old thinking block's UUID.
+    const old = JSON.parse(makeJsonlLine('old-thinking', {
+      sessionId: 'old-session', requestId: 'continued-request', messageId: 'continued-message',
+      model: 'claude-sonnet-5', usage,
+      content: [{ type: 'thinking', thinking: 'redacted' }]
+    }));
+    const next = JSON.parse(makeJsonlLine('new-tool', {
+      sessionId: 'new-session', requestId: 'continued-request', messageId: 'continued-message',
+      model: 'claude-sonnet-5', usage: { ...usage, output_tokens: 50 },
+      content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }]
+    }));
+    next.parentUuid = old.uuid;
+    for (const record of [old, next]) {
+      record.agentId = 'continuing-agent';
+      record.isSidechain = true;
+    }
+    const files = [old, next].map(record => {
+      const file = path.join(tmpDir, `${record.sessionId}.jsonl`);
+      fs.writeFileSync(file, JSON.stringify(record) + '\n');
+      return { file, sessionId: record.sessionId };
+    });
+    if (reverse) files.reverse();
+    for (const { file, sessionId } of files) {
+      collector._collectFile(file, { sessionId, agentId: 'continuing-agent', usageOnly: true });
+    }
+    // Restart removes in-memory request/UUID caches and exercises SQLite dedup.
+    const restarted = new ConversationCollector(store, config);
+    for (const { file, sessionId } of files) {
+      restarted._collectFile(file, { sessionId, agentId: 'continuing-agent', usageOnly: true });
+    }
+    const rows = store.db.prepare("SELECT * FROM metric_points WHERE source = 'jsonl_usage' AND metric_name = 'usage_event'").all();
+    assert.equal(rows.length, 1);
+    const dims = JSON.parse(rows[0].dimensions);
+    assert.equal(dims.output, 50);
+    assert.equal(dims.request_id, 'continued-request');
+    assert.ok(Math.abs(dims.cost - 0.001024) < 1e-12);
+  });
+}

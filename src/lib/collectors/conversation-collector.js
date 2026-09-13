@@ -12,7 +12,7 @@ const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 // of tabulated per model on purpose — a per-model 5m column would drift out of
 // step the next time an input price changes, which is exactly how the single
 // `cacheCreation` column came to bill every write at the 1-hour rate. Cache
-// *reads* are unrelated (0.1x input) and keep their own `cacheRead` column.
+// *reads* have model-specific rates in their own `cacheRead` column.
 const CACHE_WRITE_INPUT_MULTIPLIER = {
   ephemeral_5m_input_tokens: 1.25,
   ephemeral_1h_input_tokens: 2
@@ -151,10 +151,15 @@ export class ConversationCollector {
   _resolveModelPrice(model) {
     if (!model) return null;
     const prices = modelPricesForRuntime(this.config, 'claude');
-    for (const [prefix, price] of Object.entries(prices)) {
-      if (model.startsWith(prefix)) return price;
+    // A specific model (including a configured override) must win over its
+    // family prefix, regardless of the table's insertion order.
+    let matchedPrefix = null;
+    for (const prefix of Object.keys(prices)) {
+      if (model.startsWith(prefix) && (matchedPrefix === null || prefix.length > matchedPrefix.length)) {
+        matchedPrefix = prefix;
+      }
     }
-    return null;
+    return matchedPrefix === null ? null : prices[matchedPrefix];
   }
 
   // Cache writes are billed by the TTL that was requested, so a single
@@ -390,8 +395,7 @@ export class ConversationCollector {
     // how a cache write was priced, and it cannot be reconstructed from the
     // total afterwards. Written as explicit zeros whenever the transcript
     // carried a breakdown, so a missing field means "TTL unknown for this row"
-    // rather than "zero 5-minute tokens" — a later recompute must be able to
-    // tell those apart instead of assuming one.
+    // rather than "zero 5-minute tokens" when inspecting the charged usage.
     const ttlDims = {};
     if (usage.cache_creation && typeof usage.cache_creation === 'object') {
       const byTtl = ConversationCollector._cacheCreationTokensByTtl(usage);
