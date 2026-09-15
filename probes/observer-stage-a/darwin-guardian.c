@@ -46,6 +46,22 @@ typedef struct {
 static bool debug_env_probe = false;
 static unsigned long census_call_count = 0;
 static unsigned long identity_call_count = 0;
+static unsigned long listpids_query_call_count = 0;
+static unsigned long listpids_fill_call_count = 0;
+
+typedef int (*listpids_api)(
+    uint32_t type,
+    uint32_t typeinfo,
+    void *buffer,
+    int buffersize,
+    void *context
+);
+
+typedef struct {
+    bool ok;
+    pid_t *pids;
+    size_t count;
+} pid_list_result;
 
 static int64_t monotonic_ms(void) {
     struct timespec ts;
@@ -321,6 +337,240 @@ static bool inject_census_failure(void) {
            census_call_count >= first && census_call_count <= last;
 }
 
+static bool listpids_failure_selected(bool fill) {
+    const char *mode = getenv("ZYLOS_GUARDIAN_TEST_FAIL_LISTPIDS");
+    if (mode == NULL || *mode == '\0') {
+        return false;
+    }
+    const char *separator = strchr(mode, ':');
+    if (separator == NULL) {
+        return false;
+    }
+    size_t phase_length = (size_t)(separator - mode);
+    bool selected_phase = (fill && phase_length == 4 && memcmp(mode, "fill", 4) == 0) ||
+                          (!fill && phase_length == 5 && memcmp(mode, "query", 5) == 0);
+    if (!selected_phase) {
+        return false;
+    }
+    unsigned long *call_count = fill ? &listpids_fill_call_count : &listpids_query_call_count;
+    (*call_count)++;
+    const char *failure_mode = separator + 1;
+    if (strcmp(failure_mode, "always") == 0) {
+        return true;
+    }
+    unsigned long first = 0;
+    unsigned long last = 0;
+    return sscanf(failure_mode, "%lu-%lu", &first, &last) == 2 &&
+           *call_count >= first && *call_count <= last;
+}
+
+static int native_listpids(
+    uint32_t type,
+    uint32_t typeinfo,
+    void *buffer,
+    int buffersize,
+    void *context
+) {
+    (void)context;
+    bool fill = buffer != NULL && buffersize > 0;
+    if (listpids_failure_selected(fill)) {
+        errno = EIO;
+        return 0;
+    }
+    return proc_listpids(type, typeinfo, buffer, buffersize);
+}
+
+static pid_list_result list_owned_uid_pids(uint32_t owner_uid, listpids_api api, void *context) {
+    pid_list_result result = {.ok = false, .pids = NULL, .count = 0};
+    errno = 0;
+    int estimated_bytes = api(PROC_UID_ONLY, owner_uid, NULL, 0, context);
+    if (estimated_bytes <= 0 || estimated_bytes % (int)sizeof(pid_t) != 0) {
+        if (errno == 0) {
+            errno = EIO;
+        }
+        return result;
+    }
+    size_t estimated_count = (size_t)estimated_bytes / sizeof(pid_t);
+    if (estimated_count > MAX_PIDS) {
+        errno = EOVERFLOW;
+        return result;
+    }
+    size_t pid_capacity = estimated_count > MAX_PIDS - INITIAL_PID_SLACK
+        ? MAX_PIDS
+        : estimated_count + INITIAL_PID_SLACK;
+
+    for (;;) {
+        if (pid_capacity == 0 || pid_capacity > MAX_PIDS ||
+            pid_capacity > (size_t)INT32_MAX / sizeof(pid_t)) {
+            errno = EOVERFLOW;
+            return result;
+        }
+        pid_t *pids = calloc(pid_capacity, sizeof(pid_t));
+        if (pids == NULL) {
+            return result;
+        }
+        int buffer_bytes = (int)(pid_capacity * sizeof(pid_t));
+        errno = 0;
+        int returned_bytes = api(PROC_UID_ONLY, owner_uid, pids, buffer_bytes, context);
+        if (returned_bytes == 0 && getenv("ZYLOS_GUARDIAN_TEST_COLLAPSE_LISTPIDS_ZERO") != NULL) {
+            result.ok = true;
+            result.pids = pids;
+            return result;
+        }
+        if (returned_bytes <= 0 || returned_bytes > buffer_bytes ||
+            returned_bytes % (int)sizeof(pid_t) != 0) {
+            int query_errno = errno;
+            free(pids);
+            errno = query_errno != 0 ? query_errno : EIO;
+            return result;
+        }
+        if (returned_bytes < buffer_bytes) {
+            result.ok = true;
+            result.pids = pids;
+            result.count = (size_t)returned_bytes / sizeof(pid_t);
+            return result;
+        }
+        free(pids);
+        if (pid_capacity > MAX_PIDS / 2) {
+            errno = EOVERFLOW;
+            return result;
+        }
+        pid_capacity *= 2;
+    }
+}
+
+typedef enum {
+    FAKE_LISTPIDS_NORMAL,
+    FAKE_LISTPIDS_ZERO_ALWAYS,
+    FAKE_LISTPIDS_ZERO_ONCE,
+    FAKE_LISTPIDS_SATURATE_ONCE,
+    FAKE_LISTPIDS_MAX_SATURATED,
+    FAKE_LISTPIDS_MISALIGNED,
+} fake_listpids_mode;
+
+typedef struct {
+    fake_listpids_mode mode;
+    int fill_calls;
+    int first_buffer_bytes;
+    int second_buffer_bytes;
+} fake_listpids_context;
+
+static int fake_listpids(
+    uint32_t type,
+    uint32_t typeinfo,
+    void *buffer,
+    int buffersize,
+    void *raw_context
+) {
+    (void)type;
+    (void)typeinfo;
+    fake_listpids_context *context = raw_context;
+    if (buffer == NULL || buffersize == 0) {
+        if (context->mode == FAKE_LISTPIDS_MAX_SATURATED) {
+            return MAX_PIDS * (int)sizeof(pid_t);
+        }
+        if (context->mode == FAKE_LISTPIDS_MISALIGNED) {
+            return (int)sizeof(pid_t) + 1;
+        }
+        return 2 * (int)sizeof(pid_t);
+    }
+    context->fill_calls++;
+    if (context->fill_calls == 1) {
+        context->first_buffer_bytes = buffersize;
+    } else if (context->fill_calls == 2) {
+        context->second_buffer_bytes = buffersize;
+    }
+    if (context->mode == FAKE_LISTPIDS_ZERO_ALWAYS ||
+        (context->mode == FAKE_LISTPIDS_ZERO_ONCE && context->fill_calls == 1)) {
+        errno = EIO;
+        return 0;
+    }
+    if (context->mode == FAKE_LISTPIDS_SATURATE_ONCE && context->fill_calls == 1) {
+        return buffersize;
+    }
+    if (context->mode == FAKE_LISTPIDS_MAX_SATURATED) {
+        return buffersize;
+    }
+    pid_t *pids = buffer;
+    pids[0] = 101;
+    pids[1] = 202;
+    return 2 * (int)sizeof(pid_t);
+}
+
+static int run_listpids_selftest(void) {
+    fake_listpids_context normal = {.mode = FAKE_LISTPIDS_NORMAL};
+    pid_list_result normal_result = list_owned_uid_pids(501, fake_listpids, &normal);
+    bool normal_ok = normal_result.ok && normal_result.count == 2 &&
+                     normal_result.pids[0] == 101 && normal_result.pids[1] == 202;
+    free(normal_result.pids);
+
+    fake_listpids_context permanent = {.mode = FAKE_LISTPIDS_ZERO_ALWAYS};
+    errno = 0;
+    pid_list_result permanent_result = list_owned_uid_pids(501, fake_listpids, &permanent);
+    int permanent_errno = errno;
+    free(permanent_result.pids);
+
+    fake_listpids_context temporary = {.mode = FAKE_LISTPIDS_ZERO_ONCE};
+    errno = 0;
+    pid_list_result temporary_first = list_owned_uid_pids(501, fake_listpids, &temporary);
+    int temporary_errno = errno;
+    free(temporary_first.pids);
+    pid_list_result temporary_second = list_owned_uid_pids(501, fake_listpids, &temporary);
+    bool temporary_recovered = temporary_second.ok && temporary_second.count == 2;
+    free(temporary_second.pids);
+
+    fake_listpids_context saturated = {.mode = FAKE_LISTPIDS_SATURATE_ONCE};
+    pid_list_result saturated_result = list_owned_uid_pids(501, fake_listpids, &saturated);
+    bool saturated_ok = saturated_result.ok && saturated_result.count == 2 &&
+                        saturated.fill_calls == 2 &&
+                        saturated.second_buffer_bytes == saturated.first_buffer_bytes * 2;
+    free(saturated_result.pids);
+
+    fake_listpids_context boundary = {.mode = FAKE_LISTPIDS_MAX_SATURATED};
+    errno = 0;
+    pid_list_result boundary_result = list_owned_uid_pids(501, fake_listpids, &boundary);
+    int boundary_errno = errno;
+    free(boundary_result.pids);
+
+    fake_listpids_context misaligned = {.mode = FAKE_LISTPIDS_MISALIGNED};
+    errno = 0;
+    pid_list_result misaligned_result = list_owned_uid_pids(501, fake_listpids, &misaligned);
+    int misaligned_errno = errno;
+    free(misaligned_result.pids);
+
+    fake_listpids_context known_bad = {.mode = FAKE_LISTPIDS_ZERO_ALWAYS};
+    if (setenv("ZYLOS_GUARDIAN_TEST_COLLAPSE_LISTPIDS_ZERO", "1", 1) != 0) {
+        return 5;
+    }
+    pid_list_result known_bad_result = list_owned_uid_pids(501, fake_listpids, &known_bad);
+    unsetenv("ZYLOS_GUARDIAN_TEST_COLLAPSE_LISTPIDS_ZERO");
+    bool known_bad_false_empty = known_bad_result.ok && known_bad_result.count == 0;
+    free(known_bad_result.pids);
+
+    bool pass = normal_ok && !permanent_result.ok && permanent_errno == EIO &&
+                !temporary_first.ok && temporary_errno == EIO && temporary_recovered &&
+                saturated_ok && !boundary_result.ok && boundary_errno == EOVERFLOW &&
+                !misaligned_result.ok && misaligned_errno == EIO && known_bad_false_empty;
+    printf("{\"event\":\"listpids-selftest\",\"result\":\"%s\","
+           "\"normalCount\":%zu,\"permanentZeroErrno\":%d,"
+           "\"temporaryZeroErrno\":%d,\"temporaryRecovered\":%s,"
+           "\"saturationFillCalls\":%d,\"saturationFirstBytes\":%d,"
+           "\"saturationSecondBytes\":%d,\"boundaryErrno\":%d,"
+           "\"misalignedErrno\":%d,\"knownBadFalseEmpty\":%s}\n",
+           pass ? "pass" : "fail",
+           normal_result.count,
+           permanent_errno,
+           temporary_errno,
+           temporary_recovered ? "true" : "false",
+           saturated.fill_calls,
+           saturated.first_buffer_bytes,
+           saturated.second_buffer_bytes,
+           boundary_errno,
+           misaligned_errno,
+           known_bad_false_empty ? "true" : "false");
+    return pass ? 0 : 5;
+}
+
 static census_result census(const char *marker, pid_t skip_pid, owned_process *owned, size_t capacity) {
     census_result result = {.ok = false, .count = 0, .query_error_pid = 0};
     if (inject_census_failure()) {
@@ -334,44 +584,15 @@ static census_result census(const char *marker, pid_t skip_pid, owned_process *o
         return result;
     }
     uint32_t owner_uid = (uint32_t)geteuid();
-    int estimated_count = proc_listpids(PROC_UID_ONLY, owner_uid, NULL, 0);
-    if (estimated_count <= 0) {
+    pid_list_result pid_list = list_owned_uid_pids(owner_uid, native_listpids, NULL);
+    if (!pid_list.ok) {
         return result;
     }
-    size_t pid_capacity = (size_t)estimated_count + INITIAL_PID_SLACK;
-    if (pid_capacity > MAX_PIDS) {
-        return result;
-    }
-    pid_t *pids = NULL;
-    int count = 0;
-    for (;;) {
-        pids = calloc(pid_capacity, sizeof(pid_t));
-        if (pids == NULL) {
-            return result;
-        }
-        count = proc_listpids(
-            PROC_UID_ONLY,
-            owner_uid,
-            pids,
-            (int)(pid_capacity * sizeof(pid_t))
-        );
-        if (count < 0) {
-            free(pids);
-            return result;
-        }
-        if ((size_t)count < pid_capacity) {
-            break;
-        }
-        free(pids);
-        pids = NULL;
-        if (pid_capacity > MAX_PIDS / 2) {
-            return result;
-        }
-        pid_capacity *= 2;
-    }
+    pid_t *pids = pid_list.pids;
+    size_t count = pid_list.count;
 
-    owned_process *all = calloc((size_t)count, sizeof(owned_process));
-    bool *selected = calloc((size_t)count, sizeof(bool));
+    owned_process *all = calloc(count, sizeof(owned_process));
+    bool *selected = calloc(count, sizeof(bool));
     if (all == NULL || selected == NULL) {
         free(all);
         free(selected);
@@ -380,7 +601,7 @@ static census_result census(const char *marker, pid_t skip_pid, owned_process *o
     }
 
     size_t all_count = 0;
-    for (int i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         pid_t pid = pids[i];
         if (pid <= 1 || pid == skip_pid) {
             continue;
@@ -631,11 +852,16 @@ static void usage(const char *program) {
             "usage: %s watch <fd> <parent-pid> <start-sec> <start-usec> <marker> <deadline-ms>\n"
             "       %s reconcile <parent-pid> <start-sec> <start-usec> <marker> <deadline-ms>\n"
             "       %s census <marker>\n"
-            "       %s identity <pid>\n",
-            program, program, program, program);
+            "       %s identity <pid>\n"
+            "       %s listpids-selftest\n",
+            program, program, program, program, program);
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "listpids-selftest") == 0) {
+        return run_listpids_selftest();
+    }
+
     if (argc == 4 && strcmp(argv[1], "inspect") == 0) {
         pid_t pid = 0;
         if (!parse_pid(argv[2], &pid)) {

@@ -34,7 +34,7 @@ node probes/observer-stage-a/guardian-selftest.mjs \
   "$runtime_root/guardian-selftest-rerun.json"
 ```
 
-The clone command recreates both rejected estimators and their replacements: JSON text vs a 5,000-byte `ArrayBuffer`, and view length vs a one-byte view over a 1 MiB backing buffer. The guardian self-test covers exact-owner selection, unrelated-reader exclusion, match/gone-or-changed/query-error propagation through every C identity consumer and the shared JavaScript oracle, permanent and transient bottom-level faults, signal-time recovery, parent reconcile/watch, independent liveness HUP, timeout reporting, discriminating collapse mutants, post-TERM grace, permanent census failure, fail-closed SIGKILL of a previously observed owner, and final clean recovery.
+The clone command recreates both rejected estimators and their replacements: JSON text vs a 5,000-byte `ArrayBuffer`, and view length vs a one-byte view over a 1 MiB backing buffer. The guardian self-test directly simulates Apple's byte-returning, zero-on-failure `proc_listpids` API for permanent and transient fill faults, normal nonempty results, saturation/growth, the resource ceiling, and malformed byte counts; it also exercises the old zero-as-empty mutant through the real cleanup loop. Existing coverage remains: exact-owner selection, unrelated-reader exclusion, match/gone-or-changed/query-error propagation through every C identity consumer and the shared JavaScript oracle, permanent and transient bottom-level identity faults, signal-time recovery, parent reconcile/watch, independent liveness HUP, timeout reporting, post-TERM grace, permanent census failure, fail-closed SIGKILL of a previously observed owner, and final clean recovery.
 
 ## Containment rerun
 

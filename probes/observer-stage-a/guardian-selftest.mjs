@@ -49,6 +49,20 @@ async function waitForOutput(readOutput, needle, label, timeoutMs = 3000) {
 
 const parentIdentity = identity(process.pid);
 
+const listpidsContract = spawnSync(guardianPath, ['listpids-selftest'], { encoding: 'utf8' });
+assert.equal(listpidsContract.status, 0, listpidsContract.stderr || listpidsContract.stdout);
+const listpidsContractEvent = events(listpidsContract.stdout)[0];
+assert.equal(listpidsContractEvent.result, 'pass');
+assert.equal(listpidsContractEvent.normalCount, 2);
+assert.equal(listpidsContractEvent.permanentZeroErrno, 5);
+assert.equal(listpidsContractEvent.temporaryZeroErrno, 5);
+assert.equal(listpidsContractEvent.temporaryRecovered, true);
+assert.equal(listpidsContractEvent.saturationFillCalls, 2);
+assert.equal(listpidsContractEvent.saturationSecondBytes, listpidsContractEvent.saturationFirstBytes * 2);
+assert.equal(listpidsContractEvent.boundaryErrno, 84);
+assert.equal(listpidsContractEvent.misalignedErrno, 5);
+assert.equal(listpidsContractEvent.knownBadFalseEmpty, true);
+
 const unrelated = spawn('/bin/sleep', ['60'], { stdio: 'ignore' });
 const identityOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
 await waitForOwned(identityOwned.pid);
@@ -213,6 +227,71 @@ const [collapsedWatchCode] = collapsedWatchParent.exitCode === null && collapsed
 assert.equal(collapsedWatchCode, 0,
   `known-bad parent watch did not falsely complete: ${collapsedWatchOutput}`);
 
+const listpidsOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
+await waitForOwned(listpidsOwned.pid);
+const listpidsReconcileArgs = [
+  'reconcile', String(process.pid), String(absentParentStartSec), String(absentParentStartUsec), marker, '500',
+];
+const permanentListpidsFailure = spawnSync(guardianPath, listpidsReconcileArgs, {
+  encoding: 'utf8',
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_LISTPIDS: 'fill:always' },
+});
+assert.equal(permanentListpidsFailure.status, 3, permanentListpidsFailure.stderr || permanentListpidsFailure.stdout);
+const permanentListpidsEvents = events(permanentListpidsFailure.stdout);
+assert.ok(permanentListpidsEvents.some((event) => event.event === 'census-error' && event.errno === 5));
+assert.ok(!permanentListpidsEvents.some((event) => event.event === 'clean'),
+  'fill 0/EIO advanced stable-zero');
+assert.equal(listpidsOwned.exitCode, null, 'fill failure signaled an undiscovered process');
+
+const collapsedListpidsFailure = spawnSync(guardianPath, [...listpidsReconcileArgs.slice(0, -1), '2000'], {
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    ZYLOS_GUARDIAN_TEST_FAIL_LISTPIDS: 'fill:always',
+    ZYLOS_GUARDIAN_TEST_COLLAPSE_LISTPIDS_ZERO: '1',
+  },
+});
+assert.equal(collapsedListpidsFailure.status, 0, collapsedListpidsFailure.stderr || collapsedListpidsFailure.stdout);
+assert.match(collapsedListpidsFailure.stdout, /"event":"clean"/,
+  'known-bad listpids collapse did not falsely report stable-zero');
+assert.equal(listpidsOwned.exitCode, null, 'known-bad listpids control unexpectedly removed its survivor');
+listpidsOwned.kill('SIGKILL');
+await once(listpidsOwned, 'exit');
+
+const transientListpidsOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
+await waitForOwned(transientListpidsOwned.pid);
+const transientListpidsGuardian = spawn(guardianPath, [
+  'watch', '3', String(process.pid), String(parentIdentity.startSec), String(parentIdentity.startUsec), marker, '8000',
+], {
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_LISTPIDS: 'fill:1-3' },
+  stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+});
+let transientListpidsOutput = '';
+let transientListpidsError = '';
+transientListpidsGuardian.stdout.setEncoding('utf8');
+transientListpidsGuardian.stderr.setEncoding('utf8');
+transientListpidsGuardian.stdout.on('data', (chunk) => { transientListpidsOutput += chunk; });
+transientListpidsGuardian.stderr.on('data', (chunk) => { transientListpidsError += chunk; });
+await waitForOutput(() => transientListpidsOutput, '"event":"watching"', 'listpids transient watch');
+transientListpidsGuardian.stdio[3].end();
+const [transientListpidsCode] = await once(transientListpidsGuardian, 'exit');
+assert.equal(transientListpidsCode, 0, transientListpidsError || transientListpidsOutput);
+const transientListpidsEvents = events(transientListpidsOutput);
+const transientListpidsErrorIndex = transientListpidsEvents.findIndex((event) =>
+  event.event === 'census-error' && event.errno === 5);
+const transientListpidsOwnedIndex = transientListpidsEvents.findIndex((event) =>
+  event.event === 'owned' && event.pid === transientListpidsOwned.pid);
+const transientListpidsKillIndex = transientListpidsEvents.findIndex((event) =>
+  event.event === 'kill' && event.pid === transientListpidsOwned.pid);
+assert.ok(transientListpidsErrorIndex >= 0 && transientListpidsOwnedIndex > transientListpidsErrorIndex &&
+  transientListpidsKillIndex > transientListpidsOwnedIndex,
+  'transient listpids failure did not fail closed, recover, and kill the exact owner');
+assert.ok(!transientListpidsEvents.slice(0, transientListpidsOwnedIndex).some((event) => event.event === 'clean'),
+  'transient listpids failure advanced stable-zero before recovery');
+if (transientListpidsOwned.exitCode === null && transientListpidsOwned.signalCode === null) {
+  await once(transientListpidsOwned, 'exit');
+}
+
 const survivorOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
 await waitForOwned(survivorOwned.pid);
 const survivorArgs = [
@@ -355,6 +434,14 @@ const report = {
   ownedPid: owned.pid,
   unrelatedPid: unrelated.pid,
   guardianEvents,
+  listpidsContract: listpidsContractEvent,
+  listpidsFailure: {
+    permanentExitCode: permanentListpidsFailure.status,
+    permanentEvents: permanentListpidsEvents,
+    knownBadExitCode: collapsedListpidsFailure.status,
+    knownBadEvents: events(collapsedListpidsFailure.stdout),
+    transientEvents: transientListpidsEvents,
+  },
   identityTriState: {
     identityCliExitCode: identityCliFailure.status,
     oracleExitCode: oracleFailure.status,
