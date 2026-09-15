@@ -763,7 +763,9 @@ test('API key migration v11 preserves ids, sessions, and active-name uniqueness'
   try {
     db.exec(`
       DELETE FROM api_sessions;
-      DELETE FROM schema_migrations WHERE version = 11;
+      -- Migrations gate on MAX(version), so every row at or above 11 must go or
+      -- migration 11 is treated as already applied and never retried.
+      DELETE FROM schema_migrations WHERE version >= 11;
       DROP INDEX IF EXISTS idx_api_keys_active_name;
       DROP TABLE api_keys;
       CREATE TABLE api_keys (
@@ -790,7 +792,9 @@ test('API key migration v11 preserves ids, sessions, and active-name uniqueness'
 
   const store = new Store(dbPath);
   try {
-    assert.equal(store.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 11);
+    // Assert the v11 migration ran, not that it is the newest one — later
+    // migrations must not require editing this test.
+    assert.ok(store.db.prepare('SELECT 1 FROM schema_migrations WHERE version = 11').get());
     assert.deepEqual(
       store.db.prepare('SELECT id, name FROM api_keys ORDER BY id').all(),
       [
@@ -825,7 +829,9 @@ test('API key migration v11 rolls back failed rebuild and can retry', () => {
     db.pragma('foreign_keys = OFF');
     db.exec(`
       DELETE FROM api_sessions;
-      DELETE FROM schema_migrations WHERE version = 11;
+      -- Migrations gate on MAX(version), so every row at or above 11 must go or
+      -- migration 11 is treated as already applied and never retried.
+      DELETE FROM schema_migrations WHERE version >= 11;
       DROP INDEX IF EXISTS idx_api_keys_active_name;
       DROP TABLE api_keys;
       CREATE TABLE api_keys (
