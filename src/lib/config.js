@@ -136,6 +136,9 @@ export function loadConfig() {
       password: null,
       allowUrlTokenOnLocalhost: false
     },
+    observer: {
+      enabled: false
+    },
     runtimeModelPrices: DEFAULT_RUNTIME_MODEL_PRICES,
     runtimeServiceTierModelPrices: DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
     runtimeFastModeMultipliers: DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS
@@ -196,6 +199,10 @@ export function loadConfig() {
     auth: {
       ...defaults.auth,
       ...(loaded.auth || {})
+    },
+    observer: {
+      ...defaults.observer,
+      ...(loaded.observer || {})
     },
     runtimeModelPrices,
     runtimeServiceTierModelPrices,
