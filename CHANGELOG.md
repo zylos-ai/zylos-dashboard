@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Add GPT-5.6 Sol/Terra/Luna, GPT-6 Astra and the GPT-5.6 alias to standard and Priority cost estimates, including cache writes and request-level long-context rates. Unknown future model names no longer inherit GPT-5 prices.
+- Add Claude Mythos 5/5.1 prices and model-specific Opus 5/4.8 Fast rates while preserving explicit operator overrides. Stored usage is not repriced.
+
 ## [0.5.4] - 2026-07-15
 
 ### Security

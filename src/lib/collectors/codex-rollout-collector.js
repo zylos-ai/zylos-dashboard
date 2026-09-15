@@ -315,7 +315,12 @@ export class CodexRolloutCollector {
     if (totalInput > 0) {
       tokenDims.cache_hit_rate = tokenDims.cache_read / totalInput;
       const price = this._resolveModelPrice(model, serviceTier);
-      const cost = this._calculateCost(tokenDims, price);
+      // Cumulative usage cannot establish an individual request's context tier.
+      const hasRequestUsage = Object.keys(lastUsage).length > 0;
+      const cost = this._calculateCost(tokenDims, price, hasRequestUsage);
+      if (price?.longContext && !hasRequestUsage) {
+        tokenDims.cost_estimation_note = 'cannot_determine_request_context';
+      }
       if (cost != null) {
         tokenDims.cost = cost;
         tokenDims.cost_confidence = 'estimated';
@@ -768,14 +773,19 @@ export class CodexRolloutCollector {
   _resolveModelPrice(model, serviceTier = 'standard') {
     if (!model) return null;
     const prices = modelPricesForRuntime(this.config, 'codex', serviceTier);
-    for (const [prefix, price] of Object.entries(prices)) {
-      if (model.startsWith(prefix)) return price;
-    }
-    return null;
+    // Exact model IDs and dated snapshots only. A family prefix must not price
+    // an unknown future model (for example gpt-5.7 as gpt-5).
+    const matches = Object.keys(prices).filter(prefix => model === prefix ||
+      (model.startsWith(`${prefix}-`) && /^\d{4}-\d{2}-\d{2}$/.test(model.slice(prefix.length + 1))));
+    matches.sort((a, b) => b.length - a.length);
+    return matches.length ? prices[matches[0]] : null;
   }
 
-  _calculateCost(usage, price) {
+  _calculateCost(usage, price, hasRequestUsage = true) {
     if (!price) return null;
+    if (hasRequestUsage && price.longContext && usage.input > price.longContext.inputTokenThreshold) {
+      price = price.longContext;
+    }
     const uncachedInput = Math.max(usage.input - usage.cache_read - usage.cache_creation, 0);
     const input = uncachedInput * price.input / PER_MTOK;
     const output = usage.output * price.output / PER_MTOK;
@@ -933,8 +943,8 @@ function normalizeUsage(usage) {
   return {
     input: numberOrNull(usage.input_tokens) || 0,
     output: numberOrNull(usage.output_tokens) || 0,
-    cache_read: numberOrNull(usage.cached_input_tokens ?? usage.cache_read_input_tokens) || 0,
-    cache_creation: numberOrNull(usage.cache_creation_input_tokens) || 0,
+    cache_read: numberOrNull(usage.cached_input_tokens ?? usage.input_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens) || 0,
+    cache_creation: numberOrNull(usage.cache_write_input_tokens ?? usage.input_tokens_details?.cache_write_tokens ?? usage.cache_creation_input_tokens) || 0,
     reasoning: numberOrNull(usage.reasoning_output_tokens ?? usage.reasoning_tokens) || 0
   };
 }

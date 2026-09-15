@@ -148,6 +148,7 @@ test('settings validation: uses Codex built-ins for Codex runtime', () => {
 
 test('settings validation: accepts valid prices', () => {
   const prices = {
+    ...DEFAULT_RUNTIME_MODEL_PRICES.claude,
     'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 20 },
     'claude-fable-5': { input: 10, output: 50, cacheRead: 1.00, cacheCreation: 20 },
     'claude-opus-5': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
@@ -387,3 +388,56 @@ function validateFastMultiplier(fm) {
   }
   return errors;
 }
+
+test('settings roundtrip preserves current tariff metadata and marks only explicit Fast overrides', async () => {
+  const server = await makeSettingsServer('claude');
+  try {
+    const current = await (await fetch(`${server.origin}/api/settings`)).json();
+    assert.equal(current.fastMode.configuredMultiplier, null);
+    assert.equal(current.modelPrices['claude-opus-5'].fastModeMultiplier, 2);
+    const put = body => fetch(`${server.origin}/api/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    assert.equal((await put({ modelPrices: current.modelPrices })).status, 200);
+    const unchanged = await (await fetch(`${server.origin}/api/settings`)).json();
+    assert.equal(unchanged.fastMode.configuredMultiplier, null);
+    assert.equal(parseConfigFile(server.configPath).fastModeMultiplier, undefined);
+    assert.equal((await put({ fastModeMultiplier: 6 })).status, 200);
+    const changed = await (await fetch(`${server.origin}/api/settings`)).json();
+    assert.equal(changed.fastMode.configuredMultiplier, 6); // same running instance
+    assert.equal(parseConfigFile(server.configPath).runtimeFastModeMultipliers.claude, 6);
+    assert.equal((await put({ fastModeMultiplier: null })).status, 200);
+    const reset = await (await fetch(`${server.origin}/api/settings`)).json();
+    assert.equal(reset.fastMode.configuredMultiplier, null);
+    assert.equal(reset.fastMode.multiplier, 6);
+    const persisted = parseConfigFile(server.configPath);
+    assert.equal(persisted.runtimeFastModeMultipliers.claude, undefined);
+    assert.equal(persisted.fastModeMultiplier, undefined);
+  } finally { await server.close(); }
+});
+
+test('settings preserves long-context rates and rejects invalid tariff metadata', async () => {
+  const server = await makeSettingsServer('codex');
+  try {
+    const current = await (await fetch(`${server.origin}/api/settings`)).json();
+    const put = body => fetch(`${server.origin}/api/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const body = { modelPrices: current.modelPrices, priorityModelPrices: current.priorityModelPrices };
+    assert.ok(Buffer.byteLength(JSON.stringify(body)) < 16 * 1024);
+    assert.equal((await put(body)).status, 200);
+    const roundtrip = await (await fetch(`${server.origin}/api/settings`)).json();
+    assert.deepEqual(roundtrip.modelPrices, current.modelPrices);
+    assert.deepEqual(roundtrip.priorityModelPrices, current.priorityModelPrices);
+    const persisted = parseConfigFile(server.configPath);
+    assert.deepEqual(persisted.runtimeModelPrices.codex['gpt-6-astra'].longContext, current.modelPrices['gpt-6-astra'].longContext);
+    for (const bad of [null, [], { inputTokenThreshold: -1 }, { inputTokenThreshold: 272000, input: -1, output: 1, cacheRead: 1, cacheCreation: 1 }]) {
+      const modelPrices = structuredClone(current.modelPrices);
+      modelPrices['gpt-6-astra'].longContext = bad;
+      assert.equal((await put({ modelPrices })).status, 400);
+    }
+    const modelPrices = structuredClone(current.modelPrices);
+    modelPrices['gpt-6-astra'].fastModeMultiplier = -2;
+    assert.equal((await put({ modelPrices })).status, 400);
+  } finally { await server.close(); }
+});

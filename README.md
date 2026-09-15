@@ -72,6 +72,39 @@ Dashboard password: <hex string>
 Save this — it won't be shown again.
 ```
 
+### Model pricing
+
+`runtimeModelPrices.<runtime>.<model>` replaces a whole default price row. Rates
+are USD per million tokens: `input`, `output`, `cacheRead`, and `cacheCreation`.
+Codex price keys match exact model IDs or their `-YYYY-MM-DD` snapshots, with
+the most specific key winning. Other suffixes require their own configured key;
+an unknown model is left unpriced instead of inheriting a broad family rate.
+For Codex GPT-5.6/Astra, cache writes use a separate replacement rate; they are
+subtracted from total input before ordinary input is priced. For Claude,
+`cacheCreation` is the one-hour rate; five-minute writes use 1.25× input.
+
+Codex rows may include `longContext` with `inputTokenThreshold` and the same four
+rate fields. When a request's total input (including cache reads/writes) is
+**greater than** the threshold, those rates apply to the whole request. A custom
+row without `longContext` stays at its supplied rates. Priority/Fast rows live in
+`runtimeServiceTierModelPrices.codex.priority` and use the same shape. Defaults
+were checked against [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+on 2026-09-15; Sol's promotional price is available at least through 2026-11-21.
+Cumulative-only usage cannot establish a request's context tier: its existing
+base-rate estimate is retained with `cost_estimation_note: cannot_determine_request_context`.
+Stored usage records are not migrated or repriced on replay.
+
+Claude rows may include `fastModeMultiplier`; current Opus 5 and Opus 4.8 use 2
+([Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing)).
+An explicitly configured `runtimeFastModeMultipliers.claude` (or legacy
+`fastModeMultiplier`) wins over the model default. Without an explicit override,
+the model default wins over the legacy fallback of 6. Other models retain their
+previous treatment. Settings exposes this distinction as
+`fastMode.configuredMultiplier` (`null` means no global override); saving prices
+without sending `fastModeMultiplier` leaves the override unchanged. Sending
+`fastModeMultiplier: null` (clearing the field) removes the global override and
+restores model defaults immediately and after restart.
+
 ## Access
 
 The dashboard is served at `/dashboard/` through the Caddy reverse proxy:

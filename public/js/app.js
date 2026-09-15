@@ -2,6 +2,7 @@ import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
+import { priceWithEditedBaseRates } from './pricing-form.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -3247,6 +3248,7 @@ function createSettingsModal() {
         </button>
         <div class="tip-popover" id="pricing-popover" hidden>
           <p>${t('tip.pricing')}</p>
+          <p>${esc(t('settings.base_rates_note'))}</p>
         </div>
       </span>
       <div class="settings-table-scroll">
@@ -3274,12 +3276,13 @@ function createSettingsModal() {
     <div class="action-group" id="settings-fast-mode-group">
       <span class="action-group-label">${esc(t('settings.fast_mode'))}</span>
       <div class="action-field">
-        <label class="action-field-label">${esc(t('settings.price_multiplier'))}</label>
+        <label class="action-field-label">${esc(t('settings.fast_override'))}</label>
         <div class="action-threshold-wrap">
           <input id="settings-fast-multiplier" class="action-input action-threshold-input" type="number" min="0.1" step="0.1" />
           <span class="action-threshold-unit">x</span>
         </div>
       </div>
+      <p class="modal-status">${esc(t('settings.fast_defaults_note'))}</p>
     </div>
   </div>
   <div class="modal-status" id="settings-readonly-note" hidden></div>
@@ -3327,6 +3330,7 @@ function applySettingsReadOnly(readOnly) {
 function addPriceRow(prefix, prices, builtIn, rowsId = 'settings-price-rows') {
   const tbody = document.getElementById(rowsId);
   const tr = document.createElement('tr');
+  tr._originalPrice = prices;
   tr.innerHTML = `
     <td><input class="settings-input settings-prefix" type="text" value="${esc(prefix)}" ${builtIn ? 'readonly' : ''} /></td>
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.input}" /></td>
@@ -3378,7 +3382,13 @@ async function openSettingsModal() {
     const fastModeGroup = document.getElementById('settings-fast-mode-group');
     if (fastModeGroup) fastModeGroup.hidden = data.fastMode?.mode !== 'multiplier';
     const fastInput = document.getElementById('settings-fast-multiplier');
-    if (fastInput) fastInput.value = data.fastMode?.multiplier ?? data.fastModeMultiplier ?? 6;
+    if (fastInput) {
+      const configured = data.fastMode?.configuredMultiplier;
+      fastInput.value = configured === null ? '' : configured ?? data.fastMode?.multiplier ?? data.fastModeMultiplier ?? 6;
+      fastInput.dataset.initialValue = fastInput.value;
+      fastInput.placeholder = t('settings.model_defaults');
+      fastInput.disabled = readOnly;
+    }
     applySettingsReadOnly(readOnly);
   } catch (err) {
     status.textContent = err.message;
@@ -3403,12 +3413,7 @@ async function saveSettings() {
     const inputs = row.querySelectorAll('input');
     const prefix = inputs[0].value.trim();
     if (!prefix) continue;
-    modelPrices[prefix] = {
-      input: Number(inputs[1].value),
-      output: Number(inputs[2].value),
-      cacheRead: Number(inputs[3].value),
-      cacheCreation: Number(inputs[4].value)
-    };
+    modelPrices[prefix] = priceWithEditedBaseRates(row._originalPrice, [...inputs].slice(1, 5).map(input => input.value));
   }
 
   const fastModeGroup = document.getElementById('settings-fast-mode-group');
@@ -3421,17 +3426,15 @@ async function saveSettings() {
       const inputs = row.querySelectorAll('input');
       const prefix = inputs[0].value.trim();
       if (!prefix) continue;
-      priorityModelPrices[prefix] = {
-        input: Number(inputs[1].value),
-        output: Number(inputs[2].value),
-        cacheRead: Number(inputs[3].value),
-        cacheCreation: Number(inputs[4].value)
-      };
+      priorityModelPrices[prefix] = priceWithEditedBaseRates(row._originalPrice, [...inputs].slice(1, 5).map(input => input.value));
     }
     body.priorityModelPrices = priorityModelPrices;
   }
   if (!fastModeGroup?.hidden) {
-    body.fastModeMultiplier = Number(document.getElementById('settings-fast-multiplier').value);
+    const fastInput = document.getElementById('settings-fast-multiplier');
+    if (fastInput.value !== fastInput.dataset.initialValue) {
+      body.fastModeMultiplier = fastInput.value === '' ? null : Number(fastInput.value);
+    }
   }
 
   try {
