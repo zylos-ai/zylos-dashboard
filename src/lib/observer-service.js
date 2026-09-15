@@ -319,7 +319,8 @@ export class ObserverService {
       stream.downstream.on('pong', () => { stream.awaitingPong = false; });
       stream.downstream.sendText(JSON.stringify({ type: 'preset', preset: stream.lease.preset }));
       for (const payload of stream.startupDisplay) {
-        if (!stream.downstream.sendBinary(payload)) break;
+        stream.downstream.sendBinary(payload);
+        if (stream.downstream.closed || stream.downstream.closing) break;
       }
       stream.startupDisplay = [];
       stream.startupDisplayBytes = 0;

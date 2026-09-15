@@ -112,7 +112,7 @@ async function findFreePort() {
   return port;
 }
 
-async function listenerOpen(port, timeoutMs = COMMAND_TIMEOUT_MS) {
+async function listenerState(port, timeoutMs = COMMAND_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
     let settled = false;
@@ -122,9 +122,9 @@ async function listenerOpen(port, timeoutMs = COMMAND_TIMEOUT_MS) {
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(Math.max(1, timeoutMs), () => finish(false));
-    socket.once('connect', () => finish(true));
-    socket.once('error', () => finish(false));
+    socket.setTimeout(Math.max(1, timeoutMs), () => finish('inconclusive'));
+    socket.once('connect', () => finish('open'));
+    socket.once('error', (error) => finish(error?.code === 'ECONNREFUSED' ? 'closed' : 'inconclusive'));
   });
 }
 
@@ -413,7 +413,7 @@ export class DarwinObserverContainment extends EventEmitter {
         'web', '--start', '--ip', '127.0.0.1', '--port', String(port),
       ], { env, stdio: 'ignore' });
       this._monitorChild(active, 'web', active.web);
-      await waitFor(() => listenerOpen(port), 'Observer loopback listener');
+      await waitFor(async () => (await listenerState(port)) === 'open', 'Observer loopback listener');
       persisted.state = 'active';
       persisted.guardianPid = guardian.pid;
       persisted.clientPid = active.client.pid;
@@ -535,8 +535,12 @@ export class DarwinObserverContainment extends EventEmitter {
     await this._confirmStableEmpty(active, deadline);
     const listenerBudget = remainingMs(deadline);
     if (listenerBudget <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
-    if (await listenerOpen(active.port, listenerBudget)) {
+    const state = await listenerState(active.port, listenerBudget);
+    if (state === 'open') {
       throw new ObserverContainmentError('listener_survived', 'Observer loopback listener survived cleanup');
+    }
+    if (state !== 'closed') {
+      throw new ObserverContainmentError('listener_inconclusive', 'Observer loopback listener closure could not be confirmed');
     }
     await validatePersistedSocketRoot(active);
     await fs.promises.rm(active.socketRoot, { recursive: true, force: true });
@@ -584,7 +588,9 @@ export class DarwinObserverContainment extends EventEmitter {
         await this._confirmStableEmpty(state, deadline);
         const listenerBudget = remainingMs(deadline);
         if (listenerBudget <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
-        if (await listenerOpen(Number(state.port), listenerBudget)) throw new Error('listener survived reconciliation');
+        const listener = await listenerState(Number(state.port), listenerBudget);
+        if (listener === 'open') throw new Error('listener survived reconciliation');
+        if (listener !== 'closed') throw new Error('listener closure could not be confirmed');
         await fs.promises.rm(state.socketRoot, { recursive: true, force: true });
         await fs.promises.rm(root, { recursive: true, force: true });
         results.push({ generation: state.generation, reconciled: true });

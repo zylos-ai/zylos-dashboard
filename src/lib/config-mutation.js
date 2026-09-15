@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 
 const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
 const DEFAULT_STALE_LOCK_MS = 10_000;
@@ -37,7 +38,7 @@ async function readLockOwner(lockPath) {
   }
 }
 
-async function recoverStaleLock(lockPath, staleLockMs, now = Date.now()) {
+async function recoverLegacyStaleLock(lockPath, staleLockMs, now = Date.now()) {
   let stat;
   try {
     stat = await fs.promises.lstat(lockPath);
@@ -48,19 +49,10 @@ async function recoverStaleLock(lockPath, staleLockMs, now = Date.now()) {
   if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
   if (now - stat.mtimeMs < staleLockMs) return false;
   const owner = await readLockOwner(lockPath);
-  if (!owner || isProcessAlive(Number(owner.pid))) return false;
+  if (owner && isProcessAlive(Number(owner.pid))) return false;
   const quarantinePath = `${lockPath}.stale-${crypto.randomBytes(12).toString('hex')}`;
   try {
     await fs.promises.rename(lockPath, quarantinePath);
-    const [movedStat, movedOwner] = await Promise.all([
-      fs.promises.lstat(quarantinePath),
-      readLockOwner(quarantinePath),
-    ]);
-    if (movedStat.dev !== stat.dev || movedStat.ino !== stat.ino ||
-        movedOwner?.nonce !== owner.nonce || isProcessAlive(Number(movedOwner.pid))) {
-      try { await fs.promises.rename(quarantinePath, lockPath); } catch {}
-      return false;
-    }
     await fs.promises.rm(quarantinePath, { recursive: true });
     return true;
   } catch (error) {
@@ -69,33 +61,73 @@ async function recoverStaleLock(lockPath, staleLockMs, now = Date.now()) {
   }
 }
 
+function sqliteBusy(error) {
+  return error?.code === 'SQLITE_BUSY' || error?.code === 'SQLITE_LOCKED';
+}
+
+async function ensurePrivateLockDatabase(lockPath) {
+  try {
+    const handle = await fs.promises.open(lockPath, 'wx', 0o600);
+    await handle.close();
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+  const before = await fs.promises.lstat(lockPath);
+  if (!before.isFile() || before.isSymbolicLink() ||
+      (typeof process.getuid === 'function' && before.uid !== process.getuid())) {
+    throw new Error('config lock database is not an owned regular file');
+  }
+  await fs.promises.chmod(lockPath, 0o600);
+  const after = await fs.promises.lstat(lockPath);
+  if (!after.isFile() || after.isSymbolicLink() || after.dev !== before.dev || after.ino !== before.ino ||
+      (after.mode & 0o077) !== 0 ||
+      (typeof process.getuid === 'function' && after.uid !== process.getuid())) {
+    throw new Error('config lock database changed during validation');
+  }
+}
+
 async function acquireLock(configPath, options) {
-  const lockPath = `${configPath}.lock`;
+  const legacyLockPath = `${configPath}.lock`;
+  const lockPath = `${configPath}.lock.sqlite`;
   const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
   const retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
   const deadline = Date.now() + timeoutMs;
-  const owner = {
-    pid: process.pid,
-    createdAt: Date.now(),
-    nonce: crypto.randomBytes(12).toString('hex'),
-  };
+  await fs.promises.mkdir(path.dirname(configPath), { recursive: true, mode: 0o700 });
+  try {
+    await ensurePrivateLockDatabase(lockPath);
+  } catch (error) {
+    throw new ConfigMutationError('lock_failed', `Failed to prepare config lock database: ${error.message}`, error);
+  }
 
   while (true) {
+    let database;
     try {
-      await fs.promises.mkdir(lockPath, { mode: 0o700 });
-      await fs.promises.writeFile(
-        path.join(lockPath, 'owner.json'),
-        `${JSON.stringify(owner)}\n`,
-        { flag: 'wx', mode: 0o600 },
-      );
-      return { lockPath, owner };
+      database = new Database(lockPath, { timeout: 0 });
+      database.pragma('busy_timeout = 0');
+      database.exec('BEGIN IMMEDIATE');
+      const legacyExists = await fs.promises.lstat(legacyLockPath).then(() => true).catch((error) => {
+        if (error?.code === 'ENOENT') return false;
+        throw error;
+      });
+      if (legacyExists && !await recoverLegacyStaleLock(legacyLockPath, staleLockMs)) {
+        database.exec('ROLLBACK');
+        database.close();
+        database = null;
+        if (Date.now() >= deadline) {
+          throw new ConfigMutationError('lock_timeout', `Timed out waiting for legacy config lock: ${configPath}`);
+        }
+        await delay(Math.min(retryMs, Math.max(1, deadline - Date.now())));
+        continue;
+      }
+      return { database };
     } catch (error) {
-      if (error?.code !== 'EEXIST') {
-        try { await fs.promises.rm(lockPath, { recursive: true }); } catch {}
+      try { if (database?.inTransaction) database.exec('ROLLBACK'); } catch {}
+      try { database?.close(); } catch {}
+      if (error instanceof ConfigMutationError) throw error;
+      if (!sqliteBusy(error)) {
         throw new ConfigMutationError('lock_failed', `Failed to acquire config lock: ${error.message}`, error);
       }
-      await recoverStaleLock(lockPath, staleLockMs);
       if (Date.now() >= deadline) {
         throw new ConfigMutationError('lock_timeout', `Timed out waiting for config lock: ${configPath}`);
       }
@@ -105,13 +137,8 @@ async function acquireLock(configPath, options) {
 }
 
 async function releaseLock(lock) {
-  const current = await readLockOwner(lock.lockPath);
-  if (current?.nonce !== lock.owner.nonce) return;
-  try {
-    await fs.promises.rm(lock.lockPath, { recursive: true });
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
+  try { if (lock.database.inTransaction) lock.database.exec('ROLLBACK'); }
+  finally { lock.database.close(); }
 }
 
 async function readConfig(configPath) {

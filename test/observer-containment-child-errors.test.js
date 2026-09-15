@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -178,4 +179,157 @@ test('persisted reconciliation refuses an unowned external socket directory', as
 
   await assert.rejects(containment.reconcilePersisted(), (error) => error?.code === 'reconcile_failed');
   assert.equal(fs.readFileSync(sentinel, 'utf8'), 'keep');
+});
+
+test('listener probe timeout is inconclusive and preserves recovery state', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-listener-timeout-'));
+  const root = path.join(dataDir, 'generation');
+  fs.mkdirSync(root, { mode: 0o700 });
+  const socketRoot = path.join('/tmp', `zobs-${process.pid}-${'a'.repeat(10)}`);
+  fs.mkdirSync(socketRoot, { mode: 0o700 });
+  const marker = `fdpath:${path.join(root, 'ownership.marker')}`;
+  const socketOwnerFile = path.join(socketRoot, '.observer-owner.json');
+  fs.writeFileSync(socketOwnerFile, JSON.stringify({
+    nonce: 'timeout', marker, root, socketRoot,
+  }), { mode: 0o600 });
+  t.after(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(socketRoot, { recursive: true, force: true });
+  });
+  const originalCreateConnection = net.createConnection;
+  net.createConnection = () => {
+    const socket = new EventEmitter();
+    socket.destroy = () => {};
+    socket.setTimeout = (timeoutMs, callback) => {
+      setTimeout(callback, timeoutMs);
+      return socket;
+    };
+    return socket;
+  };
+  t.after(() => { net.createConnection = originalCreateConnection; });
+
+  const guardian = fakeChild();
+  guardian.exitCode = 0;
+  const containment = new DarwinObserverContainment({ dataDir, cleanupTimeoutMs: 50 });
+  containment.active = {
+    generation: 1,
+    parent: { pid: process.pid },
+    root,
+    socketRoot,
+    socketOwnerFile,
+    nonce: 'timeout',
+    marker,
+    port: 12345,
+    guardian,
+  };
+  containment._confirmStableEmpty = async () => {};
+
+  await assert.rejects(
+    containment.stopGeneration(),
+    (error) => error?.code === 'listener_inconclusive',
+  );
+  assert.equal(containment.active?.generation, 1);
+  assert.equal(fs.existsSync(root), true);
+  assert.equal(fs.existsSync(socketRoot), true);
+});
+
+test('non-refusal listener error is inconclusive and preserves active recovery state', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-listener-error-'));
+  const root = path.join(dataDir, 'generation');
+  fs.mkdirSync(root, { mode: 0o700 });
+  const socketRoot = path.join('/tmp', `zobs-${process.pid}-${'b'.repeat(10)}`);
+  fs.mkdirSync(socketRoot, { mode: 0o700 });
+  const marker = `fdpath:${path.join(root, 'ownership.marker')}`;
+  const socketOwnerFile = path.join(socketRoot, '.observer-owner.json');
+  fs.writeFileSync(socketOwnerFile, JSON.stringify({
+    nonce: 'error', marker, root, socketRoot,
+  }), { mode: 0o600 });
+  t.after(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(socketRoot, { recursive: true, force: true });
+  });
+  const originalCreateConnection = net.createConnection;
+  net.createConnection = () => {
+    const socket = new EventEmitter();
+    socket.destroy = () => {};
+    socket.setTimeout = () => socket;
+    queueMicrotask(() => socket.emit('error', Object.assign(new Error('permission denied'), { code: 'EACCES' })));
+    return socket;
+  };
+  t.after(() => { net.createConnection = originalCreateConnection; });
+
+  const guardian = fakeChild();
+  guardian.exitCode = 0;
+  const containment = new DarwinObserverContainment({ dataDir, cleanupTimeoutMs: 100 });
+  containment.active = {
+    generation: 1,
+    parent: { pid: process.pid },
+    root,
+    socketRoot,
+    socketOwnerFile,
+    nonce: 'error',
+    marker,
+    port: 12345,
+    guardian,
+  };
+  containment._confirmStableEmpty = async () => {};
+
+  await assert.rejects(
+    containment.stopGeneration(),
+    (error) => error?.code === 'listener_inconclusive',
+  );
+  assert.equal(containment.active?.generation, 1);
+  assert.equal(fs.existsSync(root), true);
+  assert.equal(fs.existsSync(socketRoot), true);
+});
+
+test('persisted reconciliation fails closed on an inconclusive listener probe', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-reconcile-listener-'));
+  const containment = new DarwinObserverContainment({ dataDir, cleanupTimeoutMs: 100 });
+  const root = path.join(containment.runtimeRoot, 'fixture');
+  const socketRoot = path.join('/tmp', `zobs-${process.pid}-${'c'.repeat(10)}`);
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(socketRoot, { mode: 0o700 });
+  const markerFile = path.join(root, 'ownership.marker');
+  const marker = `fdpath:${markerFile}`;
+  const socketOwnerFile = path.join(socketRoot, '.observer-owner.json');
+  fs.writeFileSync(markerFile, 'fixture', { mode: 0o600 });
+  fs.writeFileSync(socketOwnerFile, JSON.stringify({
+    nonce: 'fixture', marker, root, socketRoot,
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(root, 'state.json'), JSON.stringify({
+    schema: 1,
+    generation: 1,
+    nonce: 'fixture',
+    parent: { pid: process.pid, startSec: 1, startUsec: 1 },
+    marker,
+    markerFile,
+    root,
+    socketRoot,
+    socketOwnerFile,
+    port: 12345,
+  }), { mode: 0o600 });
+  t.after(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(socketRoot, { recursive: true, force: true });
+  });
+  const originalCreateConnection = net.createConnection;
+  net.createConnection = () => {
+    const socket = new EventEmitter();
+    socket.destroy = () => {};
+    socket.setTimeout = () => socket;
+    queueMicrotask(() => socket.emit('error', Object.assign(new Error('network down'), { code: 'ENETDOWN' })));
+    return socket;
+  };
+  t.after(() => { net.createConnection = originalCreateConnection; });
+  containment.verifyHelpers = async () => ({});
+  containment._run = async () => ({ stdout: '', stderr: '' });
+  containment._confirmStableEmpty = async () => {};
+
+  await assert.rejects(
+    containment.reconcilePersisted(),
+    (error) => error?.code === 'reconcile_failed' && /closure could not be confirmed/.test(error.message),
+  );
+  assert.equal(fs.existsSync(root), true);
+  assert.equal(fs.existsSync(socketRoot), true);
 });

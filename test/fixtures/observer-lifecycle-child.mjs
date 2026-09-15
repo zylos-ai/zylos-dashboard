@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import readline from 'node:readline';
 import { DarwinObserverContainment } from '../../src/lib/observer-containment-darwin.js';
 import { ObserverControlServer, runObserverPreUninstall } from '../../src/lib/observer-control.js';
 import { ObserverCoordinator } from '../../src/lib/observer-coordinator.js';
@@ -71,9 +72,18 @@ await new Promise((resolve, reject) => {
   downstream.activate();
 });
 const active = containment.active;
-process.stdout.write(`${JSON.stringify({ event: 'ready', action, marker: active.marker, port: active.port })}\n`);
+process.stdout.write(`${JSON.stringify({
+  event: 'ready', action, marker: active.marker, port: active.port,
+  producerPid: process.pid,
+  guardianPid: active.guardian?.pid,
+  clientPid: active.client?.pid,
+  webPid: active.web?.pid,
+})}\n`);
 
 if (action === 'abrupt') await new Promise(() => {});
+
+const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+await new Promise((resolve) => input.once('line', resolve));
 
 const startedAt = Date.now();
 if (action === 'last-lease') {

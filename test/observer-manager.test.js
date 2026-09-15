@@ -196,6 +196,50 @@ for (const action of ['disable', 'uninstall']) {
 }
 
 for (const action of ['disable', 'uninstall']) {
+  test(`${action} preserves teardown and fencing persistence failures without a second cleanup`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `observer-manager-dual-failure-${action}-`));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const configPath = path.join(directory, 'config.json');
+    fs.writeFileSync(configPath, `${JSON.stringify({ observer: { enabled: true, generation: 1 } })}\n`);
+    let stops = 0;
+    const cleanupError = Object.assign(new Error('cleanup deadline'), { code: 'cleanup_timeout' });
+    const containment = {
+      active: { generation: 1 },
+      async stopGeneration() {
+        stops += 1;
+        fs.writeFileSync(configPath, '{invalid json');
+        throw cleanupError;
+      },
+    };
+    const coordinator = new ObserverCoordinator({
+      configPath,
+      installer: {
+        async verify() { return { state: 'installed' }; },
+        async removeInstalledArtifacts() { throw new Error('must not remove'); },
+      },
+      teardown: (options) => containment.stopGeneration(options),
+    });
+    const manager = new ObserverManager({
+      coordinator, containment, authGate: { revalidateAuthContext: (value) => value },
+    });
+    manager.generation = 1;
+
+    await assert.rejects(
+      action === 'disable' ? manager.invalidateAndDisable() : manager.invalidateAndUninstall(),
+      (error) => {
+        assert.equal(error.cleanupAttempted, true);
+        assert.equal(error.cause, cleanupError);
+        assert.equal(error.persistenceError?.code, 'invalid_config');
+        return true;
+      },
+    );
+    assert.equal(stops, 1);
+    assert.equal(manager._runtimeError, cleanupError);
+    assert.equal(containment.active?.generation, 1);
+  });
+}
+
+for (const action of ['disable', 'uninstall']) {
   test(`${action} preserves config failure but still tears down the revoked generation`, async (t) => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), `observer-manager-${action}-`));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -263,3 +307,44 @@ test('lifecycle persistence error remains primary while cleanup failure stays vi
   });
   assert.equal(f.manager._runtimeError, cleanupError);
 });
+
+for (const action of ['disable', 'uninstall']) {
+  test(`${action} does not start a second cleanup after coordinator teardown was attempted`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `observer-manager-single-cleanup-${action}-`));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const configPath = path.join(directory, 'config.json');
+    fs.writeFileSync(configPath, `${JSON.stringify({ observer: { enabled: true, generation: 1 } })}\n`);
+    let stops = 0;
+    const cleanupError = Object.assign(new Error('cleanup deadline'), { code: 'cleanup_timeout' });
+    const containment = {
+      active: { generation: 1 },
+      async stopGeneration() {
+        stops += 1;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        throw cleanupError;
+      },
+    };
+    const coordinator = new ObserverCoordinator({
+      configPath,
+      installer: {
+        async verify() { return { state: 'installed' }; },
+        async removeInstalledArtifacts() { throw new Error('must not remove'); },
+      },
+      teardown: (options) => containment.stopGeneration(options),
+    });
+    const manager = new ObserverManager({
+      coordinator, containment, authGate: { revalidateAuthContext: (value) => value },
+    });
+    manager.generation = 1;
+
+    const started = Date.now();
+    await assert.rejects(
+      action === 'disable' ? manager.invalidateAndDisable() : manager.invalidateAndUninstall(),
+      (error) => error?.cleanupAttempted === true,
+    );
+    assert.equal(stops, 1);
+    assert.ok(Date.now() - started < 100, 'lifecycle reset the cleanup budget');
+    assert.equal(manager._runtimeError, cleanupError);
+    assert.equal(containment.active?.generation, 1);
+  });
+}

@@ -293,6 +293,10 @@ export class ObserverManager {
   }
 
   async _cleanupAfterLifecycleFailure(originalError, reason) {
+    if (originalError?.cleanupAttempted === true) {
+      this._runtimeError = originalError.cause || originalError;
+      throw originalError;
+    }
     try {
       await this.containment.stopGeneration({ reason });
       this.generation = null;

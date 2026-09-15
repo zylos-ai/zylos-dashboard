@@ -124,8 +124,18 @@ export class ObserverCoordinator {
       try {
         await this.teardown({ reason, generation: ticket });
       } catch (error) {
-        await this._persist({ enabled: false, generation: ticket, teardownFence: true, lastError: 'teardown_failed' });
-        throw new ObserverLifecycleError('teardown_failed', 'Observer teardown did not prove zero owned survivors', error);
+        let persistenceError;
+        try {
+          await this._persist({ enabled: false, generation: ticket, teardownFence: true, lastError: 'teardown_failed' });
+        } catch (persistError) {
+          persistenceError = persistError;
+        }
+        const lifecycleError = new ObserverLifecycleError(
+          'teardown_failed', 'Observer teardown did not prove zero owned survivors', error,
+        );
+        lifecycleError.cleanupAttempted = true;
+        if (persistenceError) lifecycleError.persistenceError = persistenceError;
+        throw lifecycleError;
       }
       return { ...(await this.installer.verify()), enabled: false, generation: ticket };
     });
@@ -141,7 +151,9 @@ export class ObserverCoordinator {
         removalState: 'pending',
         lastError: null,
       });
+      let cleanupAttempted = false;
       try {
+        cleanupAttempted = true;
         await this.teardown({ reason: 'uninstall', generation: ticket });
         const removed = await this.installer.removeInstalledArtifacts();
         await this._persist({
@@ -153,14 +165,24 @@ export class ObserverCoordinator {
         });
         return { ...removed, enabled: false, generation: ticket };
       } catch (error) {
-        await this._persist({
-          enabled: false,
-          generation: ticket,
-          teardownFence: true,
-          removalState: 'failed',
-          lastError: 'removal_failed',
-        });
-        throw new ObserverLifecycleError('removal_failed', 'Observer removal failed and remains durably fenced', error);
+        let persistenceError;
+        try {
+          await this._persist({
+            enabled: false,
+            generation: ticket,
+            teardownFence: true,
+            removalState: 'failed',
+            lastError: 'removal_failed',
+          });
+        } catch (persistError) {
+          persistenceError = persistError;
+        }
+        const lifecycleError = new ObserverLifecycleError(
+          'removal_failed', 'Observer removal failed and remains durably fenced', error,
+        );
+        lifecycleError.cleanupAttempted = cleanupAttempted;
+        if (persistenceError) lifecycleError.persistenceError = persistenceError;
+        throw lifecycleError;
       }
     });
   }

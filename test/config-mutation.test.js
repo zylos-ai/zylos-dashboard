@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -88,6 +89,56 @@ test('config lock serializes separate producer processes', async (t) => {
   assert.deepEqual(saved.untouched, { value: 1 });
 });
 
+test('config lock is private and a killed holder releases it for the next writer', async (t) => {
+  const { directory, configPath } = fixture();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const moduleUrl = new URL('../src/lib/config-mutation.js', import.meta.url).href;
+  const enteredPath = path.join(directory, 'entered');
+  const script = `
+    import fs from 'node:fs';
+    const [moduleUrl, configPath, enteredPath] = process.argv.slice(1);
+    const { mutateConfig } = await import(moduleUrl);
+    await mutateConfig(configPath, async () => {
+      fs.writeFileSync(enteredPath, 'entered');
+      setInterval(() => {}, 1_000);
+      await new Promise(() => {});
+    });
+  `;
+  const holder = spawn(process.execPath, [
+    '--input-type=module', '--eval', script, moduleUrl, configPath, enteredPath,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL'); });
+  await waitForPath(enteredPath);
+  const lockPath = `${configPath}.lock.sqlite`;
+  const lockStat = fs.lstatSync(lockPath);
+  assert.equal(lockStat.isFile(), true);
+  assert.equal(lockStat.isSymbolicLink(), false);
+  assert.equal(lockStat.mode & 0o777, 0o600);
+
+  if (holder.exitCode === null && holder.signalCode === null) {
+    holder.kill('SIGKILL');
+    await once(holder, 'exit');
+  }
+  await mutateConfig(configPath, (config) => { config.afterCrash = true; }, {
+    lockTimeoutMs: 500, retryMs: 5,
+  });
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).afterCrash, true);
+});
+
+test('config lock database rejects a symlink instead of changing its target', async (t) => {
+  const { directory, configPath } = fixture();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const target = path.join(directory, 'outside');
+  fs.writeFileSync(target, 'keep', { mode: 0o644 });
+  fs.symlinkSync(target, `${configPath}.lock.sqlite`);
+  await assert.rejects(
+    mutateConfig(configPath, () => {}),
+    (error) => error?.code === 'lock_failed',
+  );
+  assert.equal(fs.readFileSync(target, 'utf8'), 'keep');
+  assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+});
+
 test('dead stale lock is recovered but a live lock times out', async (t) => {
   const { directory, configPath } = fixture();
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -108,7 +159,27 @@ test('dead stale lock is recovered but a live lock times out', async (t) => {
   );
 });
 
-test('competing stale-lock recoverers in separate processes cannot remove a successor lock', async (t) => {
+test('stale ownerless config lock is recovered but a fresh initializer is preserved', async (t) => {
+  const { directory, configPath } = fixture();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const lockPath = `${configPath}.lock`;
+  fs.mkdirSync(lockPath, { mode: 0o700 });
+  const stale = new Date(Date.now() - 60_000);
+  fs.utimesSync(lockPath, stale, stale);
+  await mutateConfig(configPath, (config) => { config.recoveredOwnerless = true; }, {
+    staleLockMs: 5, lockTimeoutMs: 200,
+  });
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).recoveredOwnerless, true);
+
+  fs.mkdirSync(lockPath, { mode: 0o700 });
+  await assert.rejects(
+    mutateConfig(configPath, () => {}, { staleLockMs: 100, lockTimeoutMs: 30, retryMs: 5 }),
+    (error) => error?.code === 'lock_timeout',
+  );
+  assert.equal(fs.existsSync(lockPath), true);
+});
+
+test('three stale-lock contenders cannot displace a live successor or lose a field', async (t) => {
   const { directory, configPath } = fixture();
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const lockPath = `${configPath}.lock`;
@@ -152,14 +223,14 @@ test('competing stale-lock recoverers in separate processes cannot remove a succ
   await waitForPath(pausedPath);
   args[2] = 'second';
   const second = execFileAsync(process.execPath, ['--input-type=module', '--eval', script, ...args]);
-  await Promise.race([
-    waitForPath(secondEnteredPath, 250).catch(() => {}),
-    new Promise((resolve) => setTimeout(resolve, 250)),
-  ]);
+  args[2] = 'third';
+  const third = execFileAsync(process.execPath, ['--input-type=module', '--eval', script, ...args]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(fs.existsSync(secondEnteredPath), false, 'a successor entered while stale recovery was paused');
   fs.writeFileSync(allowPath, 'go');
-  await Promise.all([first, second]);
+  await Promise.all([first, second, third]);
   assert.equal(fs.existsSync(overlapPath), false);
   assert.deepEqual(JSON.parse(fs.readFileSync(configPath, 'utf8')), {
-    untouched: { value: 1 }, first: true, second: true,
+    untouched: { value: 1 }, first: true, second: true, third: true,
   });
 });

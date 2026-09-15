@@ -49,7 +49,9 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
       closed: false,
       async connect(callbacks) {
         this.callbacks = callbacks;
-        if (initialDisplay) callbacks.onDisplay(Buffer.from(initialDisplay));
+        if (Array.isArray(initialDisplay)) {
+          for (const payload of initialDisplay) callbacks.onDisplay(Buffer.from(payload));
+        } else if (initialDisplay) callbacks.onDisplay(Buffer.from(initialDisplay));
         if (connectGate) await connectGate;
         return this;
       },
@@ -172,6 +174,38 @@ test('display received before downstream admission is delivered after activation
     socket.activate();
     await waitUntil(() => messages.some((value) => Buffer.isBuffer(value)));
     assert.ok(messages.some((value) => Buffer.isBuffer(value) && value.toString() === 'INITIAL SNAPSHOT'));
+  } finally {
+    await service.shutdown();
+    socket?.destroy();
+    await app.close();
+  }
+});
+
+test('startup display flush keeps the queued tail when the first accepted write backpressures', async () => {
+  const { service } = fixture({ initialDisplay: [Buffer.alloc(256 * 1024, 65), Buffer.from('TAIL')] });
+  const app = await startHttp(service);
+  app.server.on('connection', (serverSocket) => {
+    const originalWrite = serverSocket._write;
+    serverSocket._write = function delayedWrite(chunk, encoding, callback) {
+      originalWrite.call(this, chunk, encoding, (error) => setTimeout(() => callback(error), 20));
+    };
+  });
+  let socket;
+  try {
+    socket = await connectObserverWebSocket({
+      port: app.server.address().port,
+      path: '/observer/stream',
+      headers: {
+        Cookie: 'admin=1', Origin: app.origin,
+        'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+      },
+    });
+    const messages = [];
+    socket.on('message', (value) => messages.push(value));
+    socket.activate();
+    await waitUntil(() => messages.some((value) => Buffer.isBuffer(value) && value.toString() === 'TAIL'));
+    assert.equal(messages.filter(Buffer.isBuffer).reduce((sum, value) => sum + value.length, 0), 262148);
+    assert.equal([...service.streams][0]?.closed, false);
   } finally {
     await service.shutdown();
     socket?.destroy();

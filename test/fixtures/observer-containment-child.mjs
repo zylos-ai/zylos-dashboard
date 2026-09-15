@@ -10,5 +10,9 @@ process.stdout.write(`${JSON.stringify({
   port: active.port,
   root: active.root,
   socketRoot: active.socketRoot,
+  producerPid: process.pid,
+  guardianPid: active.guardian?.pid,
+  clientPid: active.client?.pid,
+  webPid: active.web?.pid,
 })}\n`);
 await new Promise(() => {});

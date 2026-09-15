@@ -8,6 +8,11 @@ import readline from 'node:readline';
 import test from 'node:test';
 import { DarwinObserverContainment } from '../src/lib/observer-containment-darwin.js';
 import { OBSERVER_ARTIFACTS } from '../src/lib/observer-artifacts.js';
+import {
+  captureOriginalIdentities,
+  classifyOriginalIdentities,
+  originalIdentitiesGone,
+} from './fixtures/observer-process-identity.mjs';
 
 const runAcceptance = process.env.OBSERVER_ACCEPTANCE === '1' && process.platform === 'darwin' && process.arch === 'arm64';
 const CHILD = path.resolve('test/fixtures/observer-lifecycle-child.mjs');
@@ -73,7 +78,7 @@ for (const action of ['last-lease', 'disable', 'pre-uninstall', 'restart', 'abru
     const fixture = prepareCase(t, action);
     const child = spawn(process.execPath, [
       CHILD, action, fixture.dataDir, fixture.configPath, fixture.tmux, fixture.tmuxSocket,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -88,6 +93,18 @@ for (const action of ['last-lease', 'disable', 'pre-uninstall', 'restart', 'abru
     const verifierFile = path.join(fixture.verifierDir, 'ownership.marker');
     fs.linkSync(ready.marker.slice('fdpath:'.length), verifierFile);
     const verifierMarker = `fdpath:${verifierFile}`;
+    const probe = new DarwinObserverContainment({
+      dataDir: fixture.dataDir,
+      tmuxPath: fixture.tmux,
+      tmuxSocket: fixture.tmuxSocket,
+    });
+    const helpers = await probe.verifyHelpers();
+    const originalIdentities = captureOriginalIdentities(helpers.guardian, {
+      producer: ready.producerPid,
+      guardian: ready.guardianPid,
+      client: ready.clientPid,
+      web: ready.webPid,
+    });
     const startedAt = Date.now();
 
     let done = null;
@@ -95,6 +112,7 @@ for (const action of ['last-lease', 'disable', 'pre-uninstall', 'restart', 'abru
       child.kill('SIGKILL');
       await new Promise((resolve) => child.once('exit', resolve));
     } else {
+      child.stdin.end('go\n');
       const doneLine = await iterator.next();
       assert.equal(doneLine.done, false, stderr);
       done = JSON.parse(doneLine.value);
@@ -104,12 +122,6 @@ for (const action of ['last-lease', 'disable', 'pre-uninstall', 'restart', 'abru
       assert.equal(child.exitCode, 0, stderr);
     }
 
-    const probe = new DarwinObserverContainment({
-      dataDir: fixture.dataDir,
-      tmuxPath: fixture.tmux,
-      tmuxSocket: fixture.tmuxSocket,
-    });
-    const helpers = await probe.verifyHelpers();
     let emptySince = null;
     const zero = await waitUntil(() => {
       try {
@@ -124,6 +136,8 @@ for (const action of ['last-lease', 'disable', 'pre-uninstall', 'restart', 'abru
     assert.equal(zero, true, `owned process census did not reach zero: ${stderr}`);
     fixture.cleanupState.zeroVerified = true;
     assert.equal(await listenerOpen(ready.port), false, 'Observer listener survived lifecycle teardown');
+    const identityResults = classifyOriginalIdentities(helpers.guardian, originalIdentities);
+    assert.equal(originalIdentitiesGone(identityResults), true, JSON.stringify(identityResults));
     assert.ok(Date.now() - startedAt < 10_000, `${action} whole oracle exceeded 10 seconds`);
     execFileSync(fixture.tmux, ['-S', fixture.tmuxSocket, 'has-session', '-t', 'codex-main']);
     if (action === 'abrupt') await probe.reconcilePersisted();

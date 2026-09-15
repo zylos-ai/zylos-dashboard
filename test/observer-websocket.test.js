@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import test from 'node:test';
-import { connectObserverWebSocket } from '../src/lib/observer-websocket.js';
+import { connectObserverWebSocket, ObserverWebSocket } from '../src/lib/observer-websocket.js';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -83,6 +84,32 @@ test('pre-activation response data is bounded and fails closed on activation', a
     socket?.destroy();
     await peer.close();
   }
+});
+
+test('outbound queue overflow explicitly closes a slow consumer', () => {
+  const socket = new EventEmitter();
+  const writes = [];
+  socket.destroyed = false;
+  socket.writableEnded = false;
+  socket.writableLength = 5;
+  socket.setNoDelay = () => {};
+  socket.write = (value) => { writes.push(Buffer.from(value)); return true; };
+  socket.end = () => { socket.writableEnded = true; };
+  socket.destroy = () => { socket.destroyed = true; };
+  const websocket = new ObserverWebSocket(socket, {
+    maskedInbound: true,
+    maskOutbound: false,
+    maxQueuedBytes: 5,
+    closeTimeoutMs: 50,
+  });
+
+  assert.equal(websocket.sendBinary(Buffer.from('x')), false);
+  assert.equal(websocket.closing, true);
+  assert.equal(socket.writableEnded, true);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][0], 0x88);
+  assert.equal(writes[0].readUInt16BE(2), 1009);
+  websocket.destroy();
 });
 
 test('close enters a terminal closing state and destroys a half-open socket by deadline', async () => {

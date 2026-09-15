@@ -7,6 +7,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DarwinObserverContainment } from '../src/lib/observer-containment-darwin.js';
+import {
+  captureOriginalIdentities,
+  classifyOriginalIdentities,
+  originalIdentitiesGone,
+  processIdentity,
+} from './fixtures/observer-process-identity.mjs';
 
 const runAcceptance = process.env.OBSERVER_ACCEPTANCE === '1' && process.platform === 'darwin' && process.arch === 'arm64';
 
@@ -169,4 +175,36 @@ test('known-bad producer-owned guardian pipes leave a detected survivor before e
   assert.deepEqual(await probe.reconcilePersisted(), [{ generation: 7, reconciled: true }]);
   execFileSync(tmux, ['-S', tmuxSocket, 'has-session', '-t', 'codex-main']);
   cleanupSafe = true;
+});
+
+test('identity oracle detects a held guardian that marker census cannot see', {
+  skip: !runAcceptance ? 'set OBSERVER_ACCEPTANCE=1 on accepted darwin-arm64 fixture' : false,
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-held-guardian-'));
+  const markerFile = path.join(root, 'ownership.marker');
+  fs.writeFileSync(markerFile, 'held-guardian', { mode: 0o600 });
+  const containment = new DarwinObserverContainment({ dataDir: root });
+  const helpers = await containment.verifyHelpers();
+  const parent = processIdentity(helpers.guardian, process.pid);
+  assert.equal(parent.result, 'present');
+  const guardian = spawn(helpers.guardian, [
+    'watch', '3', String(process.pid), String(parent.identity.startSec),
+    String(parent.identity.startUsec), `fdpath:${markerFile}`, '9000',
+  ], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+  t.after(() => {
+    try { guardian.stdio[3]?.end(); } catch {}
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await readJsonLine(guardian.stdout);
+  const originals = captureOriginalIdentities(helpers.guardian, { guardian: guardian.pid });
+  execFileSync(helpers.guardian, ['census', `fdpath:${markerFile}`], { stdio: 'ignore', timeout: 2_000 });
+  const held = classifyOriginalIdentities(helpers.guardian, originals);
+  assert.equal(held.guardian.result, 'survivor');
+  assert.equal(originalIdentitiesGone(held), false);
+
+  guardian.stdio[3].end();
+  await once(guardian, 'exit');
+  assert.equal(guardian.exitCode, 0);
+  const released = classifyOriginalIdentities(helpers.guardian, originals);
+  assert.equal(originalIdentitiesGone(released), true);
 });
