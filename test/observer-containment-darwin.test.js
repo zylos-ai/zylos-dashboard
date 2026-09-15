@@ -52,9 +52,10 @@ test('Darwin product containment starts read-only target and proves zero owned s
   assert.ok(zellij && fs.existsSync(zellij), 'OBSERVER_ZELLIJ_PATH must name the accepted binary');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-product-containment-'));
   const tmuxSocket = path.join(os.tmpdir(), `observer-product-${process.pid}.sock`);
+  let cleanupSafe = false;
   t.after(() => {
     try { execFileSync(tmux, ['-S', tmuxSocket, 'kill-server'], { timeout: 3_000 }); } catch {}
-    fs.rmSync(root, { recursive: true, force: true });
+    if (cleanupSafe) fs.rmSync(root, { recursive: true, force: true });
   });
   execFileSync(tmux, [
     '-S', tmuxSocket, '-f', '/dev/null', 'new-session', '-d', '-s', 'codex-main', '-x', '80', '-y', '21',
@@ -78,6 +79,7 @@ test('Darwin product containment starts read-only target and proves zero owned s
   assert.equal(stopped.count, 0);
   assert.ok(stopped.elapsedMs < 10_000);
   execFileSync(tmux, ['-S', tmuxSocket, 'has-session', '-t', 'codex-main']);
+  cleanupSafe = true;
 });
 
 test('Darwin product guardian cleans the whole owned set after abrupt producer death', {
@@ -89,10 +91,11 @@ test('Darwin product guardian cleans the whole owned set after abrupt producer d
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-product-abrupt-'));
   const tmuxSocket = path.join('/tmp', `observer-abrupt-${process.pid}.sock`);
   let child;
+  let cleanupSafe = false;
   t.after(() => {
     if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGKILL');
     try { execFileSync(tmux, ['-S', tmuxSocket, 'kill-server'], { timeout: 3_000 }); } catch {}
-    fs.rmSync(root, { recursive: true, force: true });
+    if (cleanupSafe) fs.rmSync(root, { recursive: true, force: true });
   });
   execFileSync(tmux, [
     '-S', tmuxSocket, '-f', '/dev/null', 'new-session', '-d', '-s', 'codex-main', '-x', '80', '-y', '21',
@@ -121,4 +124,41 @@ test('Darwin product guardian cleans the whole owned set after abrupt producer d
   const reconciled = await probe.reconcilePersisted();
   assert.deepEqual(reconciled, [{ generation: 7, reconciled: true }]);
   execFileSync(tmux, ['-S', tmuxSocket, 'has-session', '-t', 'codex-main']);
+  cleanupSafe = true;
+});
+
+test('known-bad producer-owned guardian pipes leave a detected survivor before exact reconciliation', {
+  skip: !runAcceptance ? 'set OBSERVER_ACCEPTANCE=1 on accepted darwin-arm64 fixture' : false,
+}, async (t) => {
+  const zellij = process.env.OBSERVER_ZELLIJ_PATH;
+  const tmux = process.env.OBSERVER_TMUX_PATH || '/opt/homebrew/bin/tmux';
+  assert.ok(zellij && fs.existsSync(zellij), 'OBSERVER_ZELLIJ_PATH must name the accepted binary');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-product-pipe-mutant-'));
+  const tmuxSocket = path.join('/tmp', `observer-pipe-mutant-${process.pid}.sock`);
+  let child;
+  let cleanupSafe = false;
+  t.after(() => {
+    if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGKILL');
+    try { execFileSync(tmux, ['-S', tmuxSocket, 'kill-server'], { timeout: 3_000 }); } catch {}
+    if (cleanupSafe) fs.rmSync(root, { recursive: true, force: true });
+  });
+  execFileSync(tmux, [
+    '-S', tmuxSocket, '-f', '/dev/null', 'new-session', '-d', '-s', 'codex-main', '-x', '80', '-y', '21',
+  ]);
+  child = spawn(process.execPath, [
+    path.resolve('test/fixtures/observer-containment-child.mjs'), root, zellij, tmux, tmuxSocket, 'producer-pipe',
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const ready = await readJsonLine(child.stdout);
+  child.kill('SIGKILL');
+  await once(child, 'exit');
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  const probe = new DarwinObserverContainment({ dataDir: root, tmuxPath: tmux, tmuxSocket });
+  const helpers = await probe.verifyHelpers();
+  assert.throws(() => execFileSync(helpers.guardian, ['census', ready.marker], {
+    stdio: 'ignore', timeout: 2_000,
+  }), (error) => error?.status === 2, 'known-bad pipe wiring did not leave a detectable owner');
+  assert.deepEqual(await probe.reconcilePersisted(), [{ generation: 7, reconciled: true }]);
+  execFileSync(tmux, ['-S', tmuxSocket, 'has-session', '-t', 'codex-main']);
+  cleanupSafe = true;
 });

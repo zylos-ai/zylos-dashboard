@@ -279,6 +279,7 @@ function nextTarget(req, base) {
 }
 
 function needsAdminApiAccess(pathname, method) {
+  if (pathname === '/api/observer' || pathname.startsWith('/api/observer/')) return true;
   if (pathname.startsWith('/api/actions')) return true;
   if (pathname === '/api/settings' && method === 'PUT') return true;
   if (pathname === '/api/fleet/agents' || pathname.startsWith('/api/fleet/agents/')) return true;
@@ -427,8 +428,9 @@ export class AuthGate {
     }
 
     const apiAuth = authContext?.kind === 'api' ? authContext : null;
-    if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/'))) {
-      const needsAdmin = needsAdminApiAccess(pathname, req.method);
+    const observerResource = pathname === '/observer/frame' || pathname === '/observer/stream';
+    if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/') || observerResource)) {
+      const needsAdmin = observerResource || needsAdminApiAccess(pathname, req.method);
       if (needsAdmin && apiAuth.scope !== 'admin') {
         sendJson(res, 403, { error: 'insufficient_scope', required: 'admin' });
         return true;
@@ -441,7 +443,7 @@ export class AuthGate {
       return false;
     }
 
-    if (pathname.startsWith('/api/')) {
+    if (pathname.startsWith('/api/') || observerResource) {
       sendJson(res, 401, { error: 'unauthorized' });
       return true;
     }

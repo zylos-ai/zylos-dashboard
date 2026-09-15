@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -9,6 +10,8 @@ const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 5_000;
 const START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 10_000;
+const OWNERSHIP_QUIET_MS = 1_000;
+const OWNERSHIP_POLL_MS = 100;
 const MAX_OUTPUT = 128 * 1024;
 
 export class ObserverContainmentError extends Error {
@@ -103,17 +106,28 @@ function captureChild(child) {
 }
 
 function waitForCleanExit(child, timeoutMs) {
+  const observed = childProcessState.get(child);
+  if (observed?.error) return Promise.reject(observed.error);
   if (child.exitCode !== null || child.signalCode !== null) {
     return child.exitCode === 0
       ? Promise.resolve()
       : Promise.reject(new Error(`guardian exit ${child.exitCode ?? child.signalCode}`));
   }
   return new Promise((resolve, reject) => {
+    let settled = false;
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error('guardian cleanup timeout'));
     }, timeoutMs);
+    const onError = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
     const onExit = (code, signal) => {
+      if (settled) return;
+      settled = true;
       cleanup();
       if (code === 0) resolve();
       else reject(new Error(`guardian exit ${code ?? signal}`));
@@ -121,12 +135,16 @@ function waitForCleanExit(child, timeoutMs) {
     const cleanup = () => {
       clearTimeout(timeout);
       child.off('exit', onExit);
+      child.off('error', onError);
     };
     child.once('exit', onExit);
+    child.once('error', onError);
   });
 }
 
-export class DarwinObserverContainment {
+const childProcessState = new WeakMap();
+
+export class DarwinObserverContainment extends EventEmitter {
   constructor({
     dataDir,
     helperDir = path.resolve(new URL('../../assets/observer/darwin-arm64', import.meta.url).pathname),
@@ -137,7 +155,9 @@ export class DarwinObserverContainment {
     spawnImpl = spawn,
     platform = process.platform,
     arch = process.arch,
+    guardianOutput = 'managed-file',
   }) {
+    super();
     this.runtimeRoot = path.join(dataDir, 'observer', 'runtime', 'generations');
     this.helperDir = helperDir;
     this.zellijConfig = zellijConfig;
@@ -147,7 +167,9 @@ export class DarwinObserverContainment {
     this.spawn = spawnImpl;
     this.platform = platform;
     this.arch = arch;
+    this.guardianOutput = guardianOutput;
     this.active = null;
+    this._stopping = null;
   }
 
   get helperPaths() {
@@ -227,6 +249,32 @@ export class DarwinObserverContainment {
     };
   }
 
+  _monitorChild(active, role, child) {
+    const state = { error: null, reported: false };
+    childProcessState.set(child, state);
+    const report = (error) => {
+      if (state.reported) return;
+      state.reported = true;
+      state.error = error;
+      if (this.active === active && !active.stopping) this.emit('failure', error);
+    };
+    child.on('error', (error) => {
+      report(new ObserverContainmentError(
+        'child_error', `Observer ${role} process failed: ${error.message}`, error,
+      ));
+    });
+    child.once('exit', (code, signal) => {
+      report(new ObserverContainmentError(
+        'child_exit', `Observer ${role} exited unexpectedly: ${code ?? signal}`,
+      ));
+    });
+    return child;
+  }
+
+  _waitForCleanExit(child, timeoutMs) {
+    return waitForCleanExit(child, timeoutMs);
+  }
+
   async startGeneration({ generation, binaryPath, runtime }) {
     if (this.active) {
       if (this.active.generation === generation) return this.active;
@@ -262,20 +310,26 @@ export class DarwinObserverContainment {
     };
     await writeJsonAtomic(stateFile, persisted);
 
-    const guardianLogFd = fs.openSync(guardianLog, 'a', 0o600);
+    const guardianLogFd = this.guardianOutput === 'managed-file' ? fs.openSync(guardianLog, 'a', 0o600) : null;
     let guardian;
     try {
       guardian = this.spawn(this.helperPaths.guardian, [
         'watch', '3', String(process.pid), String(parent.startSec), String(parent.startUsec), marker, '9000',
-      ], { env: cleanGuardianEnvironment(), stdio: ['ignore', guardianLogFd, guardianLogFd, 'pipe'] });
+      ], {
+        env: cleanGuardianEnvironment(),
+        stdio: this.guardianOutput === 'managed-file'
+          ? ['ignore', guardianLogFd, guardianLogFd, 'pipe']
+          : ['ignore', 'pipe', 'pipe', 'pipe'],
+      });
     } finally {
-      fs.closeSync(guardianLogFd);
+      if (guardianLogFd !== null) fs.closeSync(guardianLogFd);
     }
     const active = {
       ...persisted, stateFile, tokenFile, env, guardian, guardianLiveness: guardian.stdio[3],
-      client: null, web: null,
+      client: null, web: null, stopping: false,
     };
     this.active = active;
+    this._monitorChild(active, 'guardian', guardian);
     try {
       await delay(250);
       if (guardian.exitCode !== null || guardian.signalCode !== null) {
@@ -285,6 +339,7 @@ export class DarwinObserverContainment {
         markerFile, binaryPath, '--data-dir', path.join(root, 'data'), '--config', this.zellijConfig,
         '--new-session-with-layout', layoutFile, '--session', sessionName,
       ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      this._monitorChild(active, 'client', active.client);
       const clientOutput = captureChild(active.client);
       await waitFor(async () => {
         if (active.client.exitCode !== null) {
@@ -306,6 +361,7 @@ export class DarwinObserverContainment {
         markerFile, binaryPath, '--data-dir', path.join(root, 'data'), '--config', this.zellijConfig,
         'web', '--start', '--ip', '127.0.0.1', '--port', String(port),
       ], { env, stdio: 'ignore' });
+      this._monitorChild(active, 'web', active.web);
       await waitFor(() => listenerOpen(port), 'Observer loopback listener');
       persisted.state = 'active';
       persisted.guardianPid = guardian.pid;
@@ -340,16 +396,57 @@ export class DarwinObserverContainment {
     }
   }
 
-  async stopGeneration({ reason = 'stop' } = {}) {
+  async _fallbackCleanup(active) {
+    const guardian = this.spawn(this.helperPaths.guardian, [
+      'watch', '3', String(process.pid), String(active.parent.startSec), String(active.parent.startUsec),
+      active.marker, '9000',
+    ], { env: cleanGuardianEnvironment(), stdio: ['ignore', 'ignore', 'ignore', 'pipe'] });
+    this._monitorChild(active, 'fallback guardian', guardian);
+    guardian.stdio[3].end();
+    await this._waitForCleanExit(guardian, CLEANUP_TIMEOUT_MS);
+  }
+
+  async _confirmStableEmpty(active) {
+    const deadline = Date.now() + CLEANUP_TIMEOUT_MS;
+    let emptySince = null;
+    let lastCount = 0;
+    while (Date.now() < deadline) {
+      const census = await this._census(active.marker);
+      lastCount = census.count;
+      if (census.count === 0) {
+        emptySince ??= Date.now();
+        if (Date.now() - emptySince >= OWNERSHIP_QUIET_MS) return;
+      } else {
+        emptySince = null;
+        await this._fallbackCleanup(active);
+      }
+      await delay(OWNERSHIP_POLL_MS);
+    }
+    throw new ObserverContainmentError(
+      'owned_survivors',
+      `Observer cleanup did not hold a stable empty ownership census (last count: ${lastCount})`,
+    );
+  }
+
+  stopGeneration(options = {}) {
+    if (this._stopping) return this._stopping;
+    this._stopping = this._stopGeneration(options).finally(() => { this._stopping = null; });
+    return this._stopping;
+  }
+
+  async _stopGeneration({ reason = 'stop' } = {}) {
     const active = this.active;
     if (!active) return { stopped: true, reason, count: 0 };
+    active.stopping = true;
     const startedAt = Date.now();
     try { active.guardianLiveness?.end(); } catch {}
-    if (active.guardian) await waitForCleanExit(active.guardian, CLEANUP_TIMEOUT_MS);
-    const census = await this._census(active.marker);
-    if (census.count !== 0) {
-      throw new ObserverContainmentError('owned_survivors', `Observer cleanup left ${census.count} owned process(es)`);
+    if (active.guardian) {
+      try { await this._waitForCleanExit(active.guardian, CLEANUP_TIMEOUT_MS); }
+      catch { await this._fallbackCleanup(active); }
+    } else {
+      await this._fallbackCleanup(active);
     }
+    await this._confirmStableEmpty(active);
     if (await listenerOpen(active.port)) {
       throw new ObserverContainmentError('listener_survived', 'Observer loopback listener survived cleanup');
     }
@@ -391,8 +488,7 @@ export class DarwinObserverContainment {
           if (error?.code !== 4) throw error;
           throw new Error('recorded producer is still alive');
         }
-        const census = await this._census(state.marker);
-        if (census.count !== 0) throw new Error(`owned survivors: ${census.count}`);
+        await this._confirmStableEmpty(state);
         if (await listenerOpen(Number(state.port))) throw new Error('listener survived reconciliation');
         await fs.promises.rm(state.socketRoot, { recursive: true, force: true });
         await fs.promises.rm(root, { recursive: true, force: true });

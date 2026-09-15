@@ -38,6 +38,12 @@ import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
+import { DarwinObserverContainment } from './lib/observer-containment-darwin.js';
+import { ObserverCoordinator } from './lib/observer-coordinator.js';
+import { ObserverControlServer } from './lib/observer-control.js';
+import { ObserverInstaller } from './lib/observer-installer.js';
+import { ObserverManager } from './lib/observer-manager.js';
+import { ObserverService } from './lib/observer-service.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
@@ -116,6 +122,39 @@ try {
 
 const auth = new AuthGate(config, store);
 const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
+const observerInstaller = new ObserverInstaller({ dataDir: config.dataDir });
+const observerContainment = new DarwinObserverContainment({ dataDir: config.dataDir });
+const observerCoordinator = new ObserverCoordinator({
+  configPath: config.configPath,
+  installer: observerInstaller,
+  teardown: ({ reason }) => observerContainment.stopGeneration({ reason }),
+  start: ({ generation, binaryPath }) => observerContainment.startGeneration({
+    generation,
+    binaryPath,
+    runtime: activeRuntime,
+  }),
+});
+const observerManager = new ObserverManager({
+  coordinator: observerCoordinator,
+  containment: observerContainment,
+  authGate: auth,
+  runtime: activeRuntime,
+  maxViewers: config.observer.maxViewers,
+  leaseTtlMs: config.observer.leaseTtlMs,
+  idleGraceMs: config.observer.idleGraceMs,
+  defaultPreset: config.observer.defaultPreset,
+});
+const observerService = new ObserverService({
+  coordinator: observerCoordinator,
+  containment: observerContainment,
+  manager: observerManager,
+  authGate: auth,
+});
+const observerControl = new ObserverControlServer({
+  dataDir: config.dataDir,
+  onPreUninstall: () => observerService.preUninstall(),
+});
+observerService.ensureCoordinatorOwnership = () => observerControl.start();
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
@@ -1501,7 +1540,7 @@ export function createServer() {
     sendHtml(res, 200, html);
   }
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     let pathname = url.pathname;
 
@@ -1538,6 +1577,10 @@ export function createServer() {
     }
 
     if (await auth.handle(req, res, url)) {
+      return;
+    }
+
+    if (await observerService.handle(req, res, url)) {
       return;
     }
 
@@ -1643,6 +1686,10 @@ export function createServer() {
       sendText(res, 404, 'not found');
     }
   });
+  server.on('upgrade', (req, socket, head) => {
+    observerService.handleUpgrade(req, socket, head).catch(() => socket.destroy());
+  });
+  return server;
 }
 
 const isMain = (
@@ -1663,6 +1710,11 @@ if (isMain && process.argv.includes('--smoke')) {
   }, null, 2));
   store.close();
 } else if (isMain) {
+  const observerStartupStatus = await observerService.startup();
+  if (observerStartupStatus && (['installed', 'failed'].includes(observerStartupStatus.state) ||
+      observerStartupStatus.desired?.enabled || observerStartupStatus.desired?.removalState)) {
+    await observerControl.start();
+  }
   const server = createServer();
   server.on('error', (err) => {
     console.error(`[dashboard] Failed to start: ${err.message}`);
@@ -1715,8 +1767,22 @@ if (isMain && process.argv.includes('--smoke')) {
     }, 15_000).unref();
   });
 
+  let shuttingDown = false;
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, () => {
+    process.on(signal, async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      const httpDrain = new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          server.closeAllConnections?.();
+          resolve({ timedOut: true });
+        }, 10_000);
+        timeout.unref?.();
+        server.close((error) => {
+          clearTimeout(timeout);
+          resolve({ error: error || null, timedOut: false });
+        });
+      });
       pm2Collector.stop();
       systemCollector.stop();
       if (statuslineCollector) statuslineCollector.stop();
@@ -1729,11 +1795,22 @@ if (isMain && process.argv.includes('--smoke')) {
       if (retentionTimer) clearInterval(retentionTimer);
       fleetPoller.stop();
       sse.closeAll();
-      server.close(() => {
-        c4Reader.close();
-        store.close();
-        process.exit(0);
-      });
+      let exitCode = 0;
+      const drain = await httpDrain;
+      if (drain.error || drain.timedOut) {
+        exitCode = 1;
+        process.stderr.write(`[dashboard] HTTP drain ${drain.timedOut ? 'timed out' : 'failed'} during shutdown\n`);
+      }
+      try {
+        await observerService.shutdown('dashboard_shutdown');
+      } catch (error) {
+        exitCode = 1;
+        process.stderr.write(`[observer] shutdown failed: ${error.code || 'observer_shutdown_failed'}\n`);
+      }
+      try { await observerControl.close(); } catch {}
+      c4Reader.close();
+      store.close();
+      process.exit(exitCode);
     });
   }
 }

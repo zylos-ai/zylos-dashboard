@@ -4,7 +4,7 @@ const DEFAULT_MAX_VIEWERS = 4;
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_IDLE_GRACE_MS = 5_000;
 const DEFAULT_REVALIDATE_MS = 10_000;
-const PRESETS = new Set(['80x21', '110x30', '140x40']);
+const PRESETS = new Set(['standard', 'wide', 'large']);
 
 export class ObserverManagerError extends Error {
   constructor(code, message) {
@@ -30,6 +30,7 @@ export class ObserverManager {
     leaseTtlMs = DEFAULT_LEASE_TTL_MS,
     idleGraceMs = DEFAULT_IDLE_GRACE_MS,
     revalidateMs = DEFAULT_REVALIDATE_MS,
+    defaultPreset = 'standard',
     now = () => Date.now(),
   }) {
     this.coordinator = coordinator;
@@ -44,10 +45,16 @@ export class ObserverManager {
     this.now = now;
     this.leases = new Map();
     this.generation = null;
-    this.currentPreset = '80x21';
+    this.currentPreset = PRESETS.has(defaultPreset) ? defaultPreset : 'standard';
     this._starting = null;
+    this._pendingLeases = 0;
+    this._epoch = 0;
     this._idleTimer = null;
+    this._idleStopping = null;
     this._revalidationTimer = null;
+    this._runtimeError = null;
+    this._shuttingDown = false;
+    this._lifecycleTransitions = 0;
   }
 
   _requireAdmin(context) {
@@ -57,6 +64,11 @@ export class ObserverManager {
   }
 
   async _ensureGeneration(context) {
+    if (this._idleStopping) await this._idleStopping;
+    if (this._shuttingDown || this._lifecycleTransitions > 0) {
+      throw new ObserverManagerError('operation_obsolete', 'Observer lifecycle is changing');
+    }
+    if (this._runtimeError) throw new ObserverManagerError('teardown_failed', 'Observer cleanup requires administrator recovery');
     if (this.containment.active && this.generation !== null) return this.containment.active;
     if (this._starting) return this._starting;
     this._starting = this.coordinator.firstLease(context).then((active) => {
@@ -86,15 +98,19 @@ export class ObserverManager {
   }
 
   _scheduleIdleStop() {
-    if (this.leases.size > 0 || this._idleTimer || !this.containment.active) return;
+    if (this.leases.size > 0 || this._pendingLeases > 0 || this._starting || this._shuttingDown ||
+        this._lifecycleTransitions > 0 ||
+        this._idleTimer || !this.containment.active) return;
     const expectedGeneration = this.generation;
     this._idleTimer = setTimeout(() => {
       this._idleTimer = null;
-      if (this.leases.size > 0 || this.generation !== expectedGeneration) return;
-      this.containment.stopGeneration({ reason: 'last_lease' }).then(() => {
+      if (this.leases.size > 0 || this._pendingLeases > 0 || this._starting || this._shuttingDown ||
+          this._lifecycleTransitions > 0 ||
+          this.generation !== expectedGeneration) return;
+      this._idleStopping = this.containment.stopGeneration({ reason: 'last_lease' }).then(() => {
         if (this.generation === expectedGeneration) this.generation = null;
         this._stopRevalidation();
-      }).catch(() => {});
+      }).catch((error) => { this._runtimeError = error; }).finally(() => { this._idleStopping = null; });
     }, this.idleGraceMs);
     this._idleTimer.unref?.();
   }
@@ -102,23 +118,41 @@ export class ObserverManager {
   async createLease(context, { target = this.target } = {}) {
     this._requireAdmin(context);
     if (target !== this.target) throw new ObserverManagerError('target_mismatch', 'Observer target is not this producer');
+    if (this._shuttingDown || this._lifecycleTransitions > 0) {
+      throw new ObserverManagerError('operation_obsolete', 'Observer lifecycle is changing');
+    }
     this._clearIdleTimer();
-    await this.revalidate();
-    if (this.leases.size >= this.maxViewers) throw new ObserverManagerError('capacity_exceeded', 'Observer viewer capacity reached');
-    const active = await this._ensureGeneration(context);
-    const id = crypto.randomBytes(24).toString('base64url');
-    const createdAt = this.now();
-    const lease = {
-      id,
-      principal: context,
-      target,
-      generation: active.generation,
-      createdAt,
-      expiresAt: createdAt + this.leaseTtlMs,
-      preset: this.currentPreset,
-    };
-    this.leases.set(id, lease);
-    return this.publicLease(lease);
+    const epoch = this._epoch;
+    this._pendingLeases += 1;
+    try {
+      await this.revalidate();
+      if (epoch !== this._epoch || this._shuttingDown || this._lifecycleTransitions > 0) {
+        throw new ObserverManagerError('operation_obsolete', 'Observer lease start was superseded');
+      }
+      if (this.leases.size + this._pendingLeases > this.maxViewers) {
+        throw new ObserverManagerError('capacity_exceeded', 'Observer viewer capacity reached');
+      }
+      const active = await this._ensureGeneration(context);
+      if (epoch !== this._epoch || active !== this.containment.active || active.generation !== this.generation) {
+        throw new ObserverManagerError('operation_obsolete', 'Observer lease start was superseded');
+      }
+      const id = crypto.randomBytes(24).toString('base64url');
+      const createdAt = this.now();
+      const lease = {
+        id,
+        principal: context,
+        target,
+        generation: active.generation,
+        createdAt,
+        expiresAt: createdAt + this.leaseTtlMs,
+        preset: this.currentPreset,
+      };
+      this.leases.set(id, lease);
+      return this.publicLease(lease);
+    } finally {
+      this._pendingLeases -= 1;
+      this._scheduleIdleStop();
+    }
   }
 
   publicLease(lease) {
@@ -174,9 +208,12 @@ export class ObserverManager {
   async revalidate() {
     const now = this.now();
     for (const [id, lease] of this.leases) {
-      if (lease.expiresAt <= now || !this.authGate.revalidateAuthContext(lease.principal) ||
+      const refreshed = this.authGate.revalidateAuthContext(lease.principal);
+      if (lease.expiresAt <= now || !refreshed ||
           lease.generation !== this.generation || lease.generation !== this.containment.active?.generation) {
         this.leases.delete(id);
+      } else {
+        lease.principal = refreshed;
       }
     }
     this._scheduleIdleStop();
@@ -184,28 +221,79 @@ export class ObserverManager {
   }
 
   async invalidateAndDisable(reason = 'disabled') {
+    this._lifecycleTransitions += 1;
+    this._epoch += 1;
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
     this.generation = null;
-    return this.coordinator.disable({ reason });
+    try {
+      if (this._idleStopping) await this._idleStopping;
+      const starting = this._starting;
+      if (starting) {
+        try { await starting; } catch {}
+      }
+      this._stopRevalidation();
+      const result = await this.coordinator.disable({ reason });
+      this.generation = null;
+      this._runtimeError = null;
+      return result;
+    } finally {
+      this._lifecycleTransitions -= 1;
+    }
   }
 
   async invalidateAndUninstall() {
+    this._lifecycleTransitions += 1;
+    this._epoch += 1;
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
     this.generation = null;
-    return this.coordinator.uninstall();
+    try {
+      if (this._idleStopping) await this._idleStopping;
+      const starting = this._starting;
+      if (starting) {
+        try { await starting; } catch {}
+      }
+      this._stopRevalidation();
+      const result = await this.coordinator.uninstall();
+      this.generation = null;
+      this._runtimeError = null;
+      return result;
+    } finally {
+      this._lifecycleTransitions -= 1;
+    }
   }
 
   async shutdown(reason = 'dashboard_shutdown') {
+    this._shuttingDown = true;
+    this._epoch += 1;
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
+    if (this._idleStopping) await this._idleStopping;
+    const starting = this._starting;
+    if (starting) {
+      try { await starting; } catch {}
+    }
+    this._stopRevalidation();
     const result = await this.containment.stopGeneration({ reason });
     this.generation = null;
+    this._runtimeError = null;
     return result;
+  }
+
+  async handleContainmentFailure(error) {
+    this._epoch += 1;
+    this._clearIdleTimer();
+    this._stopRevalidation();
+    this.leases.clear();
+    this._runtimeError = error || new Error('Observer containment failed');
+    try { await this.containment.stopGeneration({ reason: 'child_failure' }); } catch (cleanupError) {
+      this._runtimeError = cleanupError;
+    }
+    this.generation = null;
   }
 }
 

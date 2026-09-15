@@ -64,11 +64,76 @@ test('lease capacity, preset allowlist, renewal, and expiry fail closed', async 
   const lease = await f.manager.createLease(admin);
   await assert.rejects(f.manager.createLease(admin), (error) => error?.code === 'capacity_exceeded');
   assert.throws(() => f.manager.setPreset(lease.id, admin, '200x100'), (error) => error?.code === 'invalid_preset');
-  assert.equal(f.manager.setPreset(lease.id, admin, '110x30').preset, '110x30');
+  assert.equal(f.manager.setPreset(lease.id, admin, 'wide').preset, 'wide');
   f.advance(20);
   assert.equal(f.manager.renewLease(lease.id, admin).expiresAt, 1_050);
   f.advance(31);
   assert.throws(() => f.manager.validateLease(lease.id, admin), (error) => error?.code === 'lease_expired');
+  assert.ok(await f.manager.createLease(admin), 'an expired lease must not consume reserved capacity');
+});
+
+test('concurrent lease reservations cannot exceed capacity', async () => {
+  const f = fixture({ maxViewers: 1 });
+  const attempts = await Promise.allSettled([
+    f.manager.createLease(context('admin')),
+    f.manager.createLease(context('admin')),
+  ]);
+  assert.equal(attempts.filter((result) => result.status === 'fulfilled').length, 1);
+  const rejected = attempts.find((result) => result.status === 'rejected');
+  assert.equal(rejected.reason.code, 'capacity_exceeded');
+});
+
+test('pending leases prevent idle teardown while the first generation is still starting', async () => {
+  let finishStart;
+  const f = fixture({ idleGraceMs: 5 });
+  f.coordinator.firstLease = () => {
+    f.containment.active = { generation: 5 };
+    return new Promise((resolve) => {
+      finishStart = () => resolve(f.containment.active);
+    });
+  };
+
+  const first = f.manager.createLease(context('admin'));
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = f.manager.createLease(context('admin'));
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.equal(f.counts().stops, 0);
+  finishStart();
+  const leases = await Promise.all([first, second]);
+  assert.equal(leases.length, 2);
+  assert.equal(f.manager.leases.size, 2);
+  assert.equal(f.counts().stops, 0);
+});
+
+test('shutdown waits for an in-flight first lease start and tears down its generation', async () => {
+  let finishStart;
+  const f = fixture();
+  f.coordinator.firstLease = () => new Promise((resolve) => {
+    finishStart = () => {
+      f.containment.active = { generation: 5 };
+      resolve(f.containment.active);
+    };
+  });
+
+  const lease = f.manager.createLease(context('admin'));
+  await new Promise((resolve) => setImmediate(resolve));
+  let shutdownFinished = false;
+  const shutdown = f.manager.shutdown().then((result) => {
+    shutdownFinished = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownFinished, false);
+
+  finishStart();
+  await assert.rejects(lease, (error) => error?.code === 'operation_obsolete');
+  await shutdown;
+  assert.equal(f.counts().stops, 1);
+  assert.equal(f.containment.active, null);
+  assert.equal(f.manager.generation, null);
+  assert.equal(f.manager._revalidationTimer, null);
+  await assert.rejects(f.manager.createLease(context('admin')), (error) => error?.code === 'operation_obsolete');
 });
 
 test('10-second policy revalidation revokes a lease and last lease stops after grace', async () => {
@@ -91,3 +156,37 @@ test('disable invalidates every lease before entering lifecycle teardown', async
   assert.equal(f.manager.generation, null);
   assert.throws(() => f.manager.validateLease(lease.id, context('admin')), (error) => error?.code === 'lease_not_found');
 });
+
+for (const action of ['disable', 'uninstall']) {
+  test(`${action} waits for an in-flight first lease start before teardown`, async () => {
+    let finishStart;
+    const f = fixture();
+    f.coordinator.firstLease = () => new Promise((resolve) => {
+      finishStart = () => {
+        f.containment.active = { generation: 5 };
+        resolve(f.containment.active);
+      };
+    });
+
+    const lease = f.manager.createLease(context('admin'));
+    await new Promise((resolve) => setImmediate(resolve));
+    let lifecycleFinished = false;
+    const lifecycle = (action === 'disable'
+      ? f.manager.invalidateAndDisable()
+      : f.manager.invalidateAndUninstall()).then((result) => {
+      lifecycleFinished = true;
+      return result;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(lifecycleFinished, false);
+    await assert.rejects(f.manager.createLease(context('admin')), (error) => error?.code === 'operation_obsolete');
+
+    finishStart();
+    await assert.rejects(lease, (error) => error?.code === 'operation_obsolete');
+    await lifecycle;
+    assert.equal(f.counts().stops, 1);
+    assert.equal(f.containment.active, null);
+    assert.equal(f.manager.generation, null);
+    assert.equal(f.manager._revalidationTimer, null);
+  });
+}
