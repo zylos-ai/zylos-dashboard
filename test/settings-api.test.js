@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { CodexRolloutCollector } from '../src/lib/collectors/codex-rollout-collector.js';
 import {
   DEFAULT_CODEX_MODEL_PRICES,
   DEFAULT_CODEX_PRIORITY_MODEL_PRICES,
@@ -439,5 +440,46 @@ test('settings preserves long-context rates and rejects invalid tariff metadata'
     const modelPrices = structuredClone(current.modelPrices);
     modelPrices['gpt-6-astra'].fastModeMultiplier = -2;
     assert.equal((await put({ modelPrices })).status, 400);
+  } finally { await server.close(); }
+});
+
+test('ordinary Settings save preserves custom prefixes without broadening built-in Codex IDs', async () => {
+  const standard = { input: 9, output: 8, cacheRead: 7, cacheCreation: 6 };
+  const priority = { input: 18, output: 16, cacheRead: 14, cacheCreation: 12 };
+  const server = await makeSettingsServer('codex', {
+    runtimeModelPrices: { codex: { 'vendor-model': standard } },
+    runtimeServiceTierModelPrices: { codex: { priority: { 'vendor-model': priority } } }
+  });
+  function verify(config) {
+    const collector = new CodexRolloutCollector({}, config);
+    for (const [tier, expected] of [['standard', standard], ['priority', priority]]) {
+      assert.deepEqual(collector._resolveModelPrice('vendor-model-pro', tier), expected);
+      assert.equal(collector._resolveModelPrice('gpt-5.7', tier), null);
+      const builtIn = collector._resolveModelPrice('gpt-6-astra', tier);
+      assert.ok(builtIn);
+      assert.deepEqual(collector._resolveModelPrice('gpt-6-astra-2026-09-15', tier), builtIn);
+      assert.equal(collector._resolveModelPrice('gpt-6-astra-pro', tier), null);
+    }
+  }
+  function reload() {
+    const previous = process.env.ZYLOS_DIR;
+    process.env.ZYLOS_DIR = server.dir;
+    try { return loadConfig(); } finally {
+      if (previous === undefined) delete process.env.ZYLOS_DIR;
+      else process.env.ZYLOS_DIR = previous;
+    }
+  }
+  try {
+    verify(reload());
+    const current = await (await fetch(`${server.origin}/api/settings`)).json();
+    const response = await fetch(`${server.origin}/api/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPrices: current.modelPrices, priorityModelPrices: current.priorityModelPrices })
+    });
+    assert.equal(response.status, 200);
+    const saved = await (await fetch(`${server.origin}/api/settings`)).json();
+    verify({ runtimeModelPrices: { codex: saved.modelPrices }, runtimeServiceTierModelPrices: { codex: { priority: saved.priorityModelPrices } } });
+    assert.ok(parseConfigFile(server.configPath).runtimeModelPrices.codex['gpt-5']);
+    verify(reload());
   } finally { await server.close(); }
 });

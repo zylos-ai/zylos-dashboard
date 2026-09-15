@@ -111,6 +111,33 @@ test('configured price rows replace defaults, including long-context treatment',
     closeTo(collector._calculateCost({ input: 500000, output: 0, cache_read: 0, cache_creation: 0 }, collector._resolveModelPrice('gpt-6-astra', 'priority')), 1.5);
   });
 });
+for (const tier of ['standard', 'priority']) {
+  test(`legacy custom Codex prefixes still match suffixes (${tier})`, () => {
+    const custom = { input: 9, output: 8, cacheRead: 7, cacheCreation: 6 };
+    const specific = { ...custom, input: 3 };
+    withConfig({
+      runtimeModelPrices: { codex: { 'vendor-model': custom, 'vendor-model-pro': specific } },
+      runtimeServiceTierModelPrices: { codex: { priority: { 'vendor-model': custom, 'vendor-model-pro': specific } } }
+    }, config => {
+      const collector = new CodexRolloutCollector({}, config);
+      assert.deepEqual(collector._resolveModelPrice('vendor-model-lite', tier), custom);
+      assert.deepEqual(collector._resolveModelPrice('vendor-model-pro', tier), specific);
+      assert.deepEqual(collector._resolveModelPrice('vendor-model-pro-next', tier), specific);
+    });
+  });
+  test(`built-in Codex IDs stay exact/date even when overridden (${tier})`, () => {
+    const custom = { input: 9, output: 8, cacheRead: 7, cacheCreation: 6 };
+    withConfig({
+      runtimeModelPrices: { codex: { 'gpt-5': custom } },
+      runtimeServiceTierModelPrices: { codex: { priority: { 'gpt-5': custom } } }
+    }, config => {
+      const collector = new CodexRolloutCollector({}, config);
+      assert.deepEqual(collector._resolveModelPrice('gpt-5', tier), custom);
+      assert.deepEqual(collector._resolveModelPrice('gpt-5-2026-09-15', tier), custom);
+      assert.equal(collector._resolveModelPrice('gpt-5.7', tier), null);
+    });
+  });
+}
 test('replaying an already stored usage row does not reprice history', t => {
   const old = { ...defaults, runtimeModelPrices: { codex: { 'gpt-6-astra': { input: 1, output: 1, cacheRead: 1, cacheCreation: 1 } } } };
   const { store, info, mapping, row } = ingest(t, { config: old, usage: { input_tokens: 300000, cache_write_input_tokens: 100000 } });

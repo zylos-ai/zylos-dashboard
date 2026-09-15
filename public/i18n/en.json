@@ -165,7 +165,7 @@
   "tip.cost": "Estimated cost based on token pricing for the current model. Calculated from actual input/output token consumption.",
   "tip.latency": "Latest completed turn latency. First token is time until the assistant starts responding; Full turn is total turn duration including tools, tests, and deploys.",
   "tip.projects": "Ranked by output tokens per project in the selected period.",
-  "tip.pricing": "Each entry matches API model names by prefix. E.g. claude-opus-4 matches claude-opus-4-6, claude-opus-4-7, etc. If a model doesn't match any prefix, token metrics are still recorded but cost is not calculated.",
+  "tip.pricing": "Claude entries and custom Codex keys match model names by prefix. Built-in Codex keys match only exact IDs or dated snapshots, even with edited rates. Unmatched models retain token usage without a cost estimate.",
   "tip.threshold": "The context level at which the agent should start a new session to avoid degraded performance. Recommended: 200K context → 70%, 1M context → ≤40%.",
   "action.logout": "Logout",
   "btn.actions": "Actions",

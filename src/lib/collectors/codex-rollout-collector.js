@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { modelPricesForRuntime, normalizeServiceTier } from '../config.js';
+import { DEFAULT_CODEX_MODEL_PRICES, DEFAULT_CODEX_PRIORITY_MODEL_PRICES, modelPricesForRuntime, normalizeServiceTier } from '../config.js';
 import { Sanitizer } from '../sanitizer.js';
 
 const PER_MTOK = 1_000_000;
 const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 const DEFAULT_MAX_OVERSIZED_LINE_SKIP_BYTES = 8 * 1024 * 1024;
+const BUILTIN_CODEX_MODEL_IDS = new Set([
+  ...Object.keys(DEFAULT_CODEX_MODEL_PRICES),
+  ...Object.keys(DEFAULT_CODEX_PRIORITY_MODEL_PRICES)
+]);
 
 export class CodexRolloutCollector {
   constructor(store, config) {
@@ -773,9 +777,10 @@ export class CodexRolloutCollector {
   _resolveModelPrice(model, serviceTier = 'standard') {
     if (!model) return null;
     const prices = modelPricesForRuntime(this.config, 'codex', serviceTier);
-    // Exact model IDs and dated snapshots only. A family prefix must not price
-    // an unknown future model (for example gpt-5.7 as gpt-5).
+    // Built-in IDs stay exact/date even after Settings materializes their rows
+    // in config. Custom keys retain the legacy prefix contract in either tier.
     const matches = Object.keys(prices).filter(prefix => model === prefix ||
+      (!BUILTIN_CODEX_MODEL_IDS.has(prefix) && model.startsWith(prefix)) ||
       (model.startsWith(`${prefix}-`) && /^\d{4}-\d{2}-\d{2}$/.test(model.slice(prefix.length + 1))));
     matches.sort((a, b) => b.length - a.length);
     return matches.length ? prices[matches[0]] : null;

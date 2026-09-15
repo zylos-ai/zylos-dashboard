@@ -76,9 +76,12 @@ Save this — it won't be shown again.
 
 `runtimeModelPrices.<runtime>.<model>` replaces a whole default price row. Rates
 are USD per million tokens: `input`, `output`, `cacheRead`, and `cacheCreation`.
-Codex price keys match exact model IDs or their `-YYYY-MM-DD` snapshots, with
-the most specific key winning. Other suffixes require their own configured key;
-an unknown model is left unpriced instead of inheriting a broad family rate.
+Built-in Codex price keys match exact model IDs or their `-YYYY-MM-DD` snapshots,
+even when their rates are overridden or saved through Settings. Custom keys
+outside the built-in model list retain prefix matching (for example,
+`vendor-model` covers `vendor-model-pro`). The longest matching key wins in both
+standard and Priority tables. Unknown generations such as `gpt-5.7` remain
+unpriced unless a custom key covers them.
 For Codex GPT-5.6/Astra, cache writes use a separate replacement rate; they are
 subtracted from total input before ordinary input is priced. For Claude,
 `cacheCreation` is the one-hour rate; five-minute writes use 1.25× input.
