@@ -28,10 +28,13 @@ cc -std=c11 -Wall -Wextra -Werror -O2 probes/observer-stage-a/pty-marked-exec.c 
 node --check probes/observer-stage-a/darwin-containment-probe.mjs
 node --check probes/observer-stage-a/observer-broker-probe.mjs
 node --check probes/observer-stage-a/cdp-trust-domain-audit.mjs
-node probes/observer-stage-a/structured-clone-bound-control.mjs
+node probes/observer-stage-a/structured-clone-bound-control.mjs "$runtime_root/structured-clone-control-rerun.json"
+node probes/observer-stage-a/guardian-selftest.mjs \
+  "$runtime_root/bin/darwin-guardian" "$runtime_root/bin/marked-exec" "$runtime_root" \
+  "$runtime_root/guardian-selftest-rerun.json"
 ```
 
-The last command is the requested bounded-clone-size before/after control. It recreates the rejected JSON-text estimator and the final structured-clone estimator against the same 5,000-byte `ArrayBuffer`. The JSON estimator stays below 4 KiB and fails to reject; the corrected estimator crosses the bound and rejects. The retained browser report independently records `frameOversizeRejected: 1` and `frameRateLimited: 9` for the final source.
+The clone command recreates both rejected estimators and their replacements: JSON text vs a 5,000-byte `ArrayBuffer`, and view length vs a one-byte view over a 1 MiB backing buffer. The guardian self-test covers exact-owner selection, unrelated-reader exclusion, permanent census failure, fail-closed SIGKILL of the previously observed owner, and clean recovery.
 
 ## Containment rerun
 
@@ -44,18 +47,34 @@ node probes/observer-stage-a/darwin-containment-probe.mjs \
   --guardian "$runtime_root/bin/darwin-guardian" \
   --marked-exec "$runtime_root/bin/marked-exec" \
   --pty-marked-exec "$runtime_root/bin/pty-marked-exec" \
+  --pty-spawn "$PWD/probes/observer-stage-a/pty-spawn.exp" \
   --config-file "$PWD/probes/observer-stage-a/zellij-probe-config.kdl" \
   --tmux /opt/homebrew/bin/tmux \
   --evidence-file "$runtime_root/containment-rerun.json"
 ```
 
-This executes the four real Zellij cases: abrupt parent SIGKILL, graceful stop, guardian restart followed by parent SIGKILL, and guardian-disabled known-bad escape followed by exact reconciliation. Each case also starts an unrelated exact-socket tmux sentinel and asserts that it survives.
+This executes six real Zellij cases: abrupt parent SIGKILL, graceful stop, guardian restart followed by parent SIGKILL, guardian-disabled known-bad escape followed by exact reconciliation, wrapper-marker retention, and the old wrapper-marker behavior mutant. Every case proves active terminal content before cleanup, both upstream sockets close, the whole recorded Observer topology disappears, the listener closes, and exact unrelated Zellij plus tmux identities survive.
 
 ## Browser/protocol rerun contract
 
-The retained browser run used a live isolated Zellij 0.45.1 listener and an already-existing Zellij session containing a read-only tmux client. It was not a stub. The broker is probe-owned JavaScript, not product lifecycle wiring.
+The retained paired browser runs used live isolated Zellij 0.45.1 listeners and already-existing Zellij sessions containing read-only and writable tmux clients. Neither was a stub. The broker is probe-owned JavaScript, not product lifecycle wiring.
 
-Start the isolated Zellij session/listener with the same private-root and marker-FD launch sequence used by `darwin-containment-probe.mjs` child mode, retain the emitted `port`, `sessionName`, and `tokenFile`, then start the broker:
+Start the isolated Zellij session/listener once with `--session-mode read-only` and once with `--session-mode writable` (use a distinct case name each time). Retain each emitted `port`, `sessionName`, `tokenFile`, `tmuxSocket`, and `tmuxTarget`:
+
+```sh
+node probes/observer-stage-a/darwin-containment-probe.mjs --child \
+  --case-name "$case_name" --session-mode "$session_mode" \
+  --runtime-root "$runtime_root" \
+  --zellij "$runtime_root/extracted/zellij" \
+  --guardian "$runtime_root/bin/darwin-guardian" \
+  --marked-exec "$runtime_root/bin/marked-exec" \
+  --pty-marked-exec "$runtime_root/bin/pty-marked-exec" \
+  --pty-spawn "$PWD/probes/observer-stage-a/pty-spawn.exp" \
+  --config-file "$PWD/probes/observer-stage-a/zellij-probe-config.kdl" \
+  --tmux /opt/homebrew/bin/tmux
+```
+
+Then start the broker with matching expectations:
 
 ```sh
 node probes/observer-stage-a/observer-broker-probe.mjs \
@@ -64,10 +83,14 @@ node probes/observer-stage-a/observer-broker-probe.mjs \
   --token-file "$token_file" \
   --xterm-js "$zellij_source/zellij-client/assets/xterm.js" \
   --xterm-css "$zellij_source/zellij-client/assets/xterm.css" \
+  --tmux /opt/homebrew/bin/tmux \
+  --tmux-socket "$tmux_socket" \
+  --tmux-target "$tmux_target" \
+  --expected-upstream-readonly "$expected_readonly" \
   --public-port 0
 ```
 
-Open the emitted `publicUrl` in a fresh Chrome profile with a dedicated remote-debugging port. Exercise the authenticated positive-control, attempted upstream-input, and preset controls, then run:
+Open the emitted `publicUrl` in a fresh Chrome profile with a dedicated remote-debugging port; the retained run used `--force-device-scale-factor=1 --window-size=1280,900`. Then run:
 
 ```sh
 node probes/observer-stage-a/cdp-trust-domain-audit.mjs \
@@ -75,12 +98,12 @@ node probes/observer-stage-a/cdp-trust-domain-audit.mjs \
   "$runtime_root/trust-domain-rerun.json" "$runtime_root/trust-domain-rerun"
 ```
 
-The audit exercises the positive/input controls itself and refuses success unless the opaque/CSP boundary, cookie/network absence, forged-message rejection, `ArrayBuffer` oversize rejection, burst limiter, authenticated mutation positive control, real upstream read-only connection, and exact 1280x900 plus 390x844 viewport overflow checks all pass. When given the optional prefix it captures both screenshots through the same CDP session. The screenshot pixels are supporting visual evidence; the JSON is the machine-checked result.
+The audit exercises the positive/input controls itself and refuses success unless the opaque/CSP boundary, cookie/network absence, forged-message rejection, both backing-allocation oversize controls, burst limiter, authenticated mutation positive control, exact tmux client mode, real-CR oracle, and exact 1280x900 plus 390x844 viewport overflow checks all pass. Read-only must preserve the pane hash with no marker; writable must change the hash and show the marker in both the pane and render bytes. Writable is only the discriminating positive oracle. When given the optional prefix the audit captures both screenshots through the same CDP session.
 
 ## Evidence classification
 
-- **Real upstream round trip:** official Zellij 0.45.1 archive/binary; `/command/login`; `/session?session=<existing>&welcome=false`; upstream control and terminal WebSockets; terminal display bytes rendered by xterm; read-only tmux client; positive `tmux send-keys` visibility; attempted terminal input through the upstream read-only watcher.
-- **Isolated harness:** Darwin launcher/guardian, private roots, ownership-set census, liveness pipe, exact tmux sentinel, broker HTTP server, opaque iframe, browser cookie/mutation sentinel, CDP assertions, screenshots, and clone-size control.
+- **Real upstream round trip:** official Zellij 0.45.1 archive/binary; `/command/login`; `/session?session=<existing>&welcome=false`; upstream control and terminal WebSockets; terminal display bytes rendered by xterm; exact read-only and writable tmux clients; a harmless command sent with a real CR and checked against the pane plus terminal bytes.
+- **Isolated harness:** Darwin launcher/guardian, private roots, device+inode+offset ownership census, liveness pipe, exact unrelated Zellij and tmux controls, broker HTTP server, opaque iframe, browser cookie/mutation sentinel, CDP assertions, screenshots, and clone-size controls.
 - **Stubbed:** no Zellij HTTP or WebSocket protocol was stubbed. Dashboard auth was represented by the probe's random HttpOnly `probe_admin` cookie and mutation sentinel; product principal/lease/lifecycle/Fleet code was not present.
 
 ## Explicitly unproved constraints
@@ -88,5 +111,6 @@ The audit exercises the positive/input controls itself and refuses success unles
 - No Stage B/C product code or real lifecycle wiring: last lease, disable, uninstall, component pre-uninstall, Dashboard restart, config transactions, generation fencing, install races, and failed-uninstall durability remain unproved.
 - No canonical production principal, API-key/Fleet token refresh, lease expiry/revocation, or 10-second active-stream reauthorization implementation was tested.
 - No public Dashboard root/base-path × local/Fleet routing implementation was tested.
+- The 4 KiB frame gate limits post-clone processing/retention only. It cannot prevent the browser from allocating a structured clone before the handler runs, so compromised-iframe clone-time memory pressure remains unproved and must not be described as solved.
 - No archive download/extraction bounds, MIT packaging, dual-hash install verification, online update, or active-generation artifact identity implementation was tested.
 - No Linux, Darwin x64, Windows, multi-user load, sustained resource-bound, or production Agent-session evidence exists. The result applies only to the tested Darwin arm64 environment.

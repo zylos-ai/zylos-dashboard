@@ -6,10 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #include <util.h>
+
+#define MARKER_OFFSET_BIAS ((off_t)0x5a170000)
 
 static volatile sig_atomic_t child_pid = -1;
 
@@ -21,6 +24,12 @@ static void forward_signal(int signal_number) {
 
 static void usage(const char *program) {
     fprintf(stderr, "usage: %s <marker-file> <command> [args...]\n", program);
+}
+
+static void linger_for_retention_control(void) {
+    if (getenv("ZYLOS_PTY_MARKER_TEST_LINGER_WRAPPER") != NULL) {
+        for (;;) pause();
+    }
 }
 
 int main(int argc, char **argv) {
@@ -37,6 +46,18 @@ int main(int argc, char **argv) {
     int flags = fcntl(marker_fd, F_GETFD);
     if (flags < 0 || fcntl(marker_fd, F_SETFD, flags & ~FD_CLOEXEC) != 0) {
         fprintf(stderr, "clear marker FD_CLOEXEC failed: %s\n", strerror(errno));
+        close(marker_fd);
+        return 2;
+    }
+    struct stat marker_stat;
+    if (fstat(marker_fd, &marker_stat) != 0) {
+        fprintf(stderr, "stat marker failed: %s\n", strerror(errno));
+        close(marker_fd);
+        return 2;
+    }
+    off_t marker_position = MARKER_OFFSET_BIAS + (off_t)(marker_stat.st_ino & 0xfffff);
+    if (lseek(marker_fd, marker_position, SEEK_SET) != marker_position) {
+        fprintf(stderr, "prime marker offset failed: %s\n", strerror(errno));
         close(marker_fd);
         return 2;
     }
@@ -79,7 +100,13 @@ int main(int argc, char **argv) {
     signal(SIGTERM, forward_signal);
     signal(SIGINT, forward_signal);
     signal(SIGHUP, forward_signal);
-    close(marker_fd);
+    /* Keep the marker descriptor in the wrapper as well as the child.  The
+       wrapper is part of the owned topology and must remain discoverable even
+       after its child daemonizes or reparents. */
+    if (getenv("ZYLOS_PTY_MARKER_TEST_CLOSE_WRAPPER") != NULL) {
+        close(marker_fd);
+        marker_fd = -1;
+    }
 
     char buffer[8192];
     char last_output[8192];
@@ -107,6 +134,8 @@ int main(int argc, char **argv) {
         pid_t wait_result = waitpid(pid, &status, WNOHANG);
         if (wait_result == pid) {
             close(master_fd);
+            linger_for_retention_control();
+            if (marker_fd >= 0) close(marker_fd);
             if (WIFEXITED(status)) {
                 int exit_code = WEXITSTATUS(status);
                 if (exit_code != 0 && last_output_size > 0) {
@@ -125,6 +154,8 @@ int main(int argc, char **argv) {
     close(master_fd);
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    linger_for_retention_control();
+    if (marker_fd >= 0) close(marker_fd);
     if (WIFEXITED(status)) {
         int exit_code = WEXITSTATUS(status);
         if (exit_code != 0 && last_output_size > 0) write(STDERR_FILENO, last_output, (size_t)last_output_size);

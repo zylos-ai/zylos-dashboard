@@ -44,11 +44,11 @@ const exercise = await send('Runtime.evaluate', {
       throw new Error(label + ' timed out');
     };
     const status = () => JSON.parse(document.getElementById('status').textContent);
-    await waitFor(() => status().frameReady && status().directNetworkBlocked === true && status().frameOversizeRejected >= 1 && status().frameRateLimited >= 1, 'frame controls');
+    await waitFor(() => status().frameReady && status().directNetworkBlocked === true && status().frameOversizeRejected >= 2 && status().frameLargeBackingRejected >= 1 && status().frameRateLimited >= 1, 'frame controls');
     document.getElementById('positive').click();
     await waitFor(() => status().sentinel === 1, 'positive mutation control');
     document.getElementById('input').click();
-    await waitFor(() => status().inputProbeSent === true, 'read-only input control');
+    await waitFor(() => status().inputProbe?.result === 'pass', 'real upstream CR oracle');
     return status();
   })()`,
   awaitPromise: true,
@@ -103,12 +103,25 @@ const report = { result: 'pass', pagePort, upstreamPort, ...browser, desktop, mo
 assert.equal(browser.status.directNetworkBlocked, true);
 assert.ok(browser.status.forgedWindowRejected >= 1);
 assert.ok(browser.status.forgedPortRejected >= 1);
-assert.ok(browser.status.frameOversizeRejected >= 1);
+assert.ok(browser.status.frameOversizeRejected >= 2);
+assert.ok(browser.status.frameLargeBackingRejected >= 1);
 assert.ok(browser.status.frameRateLimited >= 1);
 assert.equal(browser.status.frameReady, true);
 assert.equal(browser.status.sentinel, 1);
 assert.equal(browser.status.inputProbeSent, true);
-assert.equal(browser.status.upstreamReadOnly, true);
+assert.equal(browser.status.inputProbe.actualCrByteSent, true);
+assert.equal(browser.status.inputProbe.expectedReadOnly, browser.status.upstreamReadOnly);
+assert.equal(browser.status.inputProbe.actualClientReadOnly, browser.status.upstreamReadOnly);
+assert.equal(browser.status.inputProbe.result, 'pass');
+if (browser.status.upstreamReadOnly) {
+  assert.equal(browser.status.inputProbe.paneHashAfter, browser.status.inputProbe.paneHashBefore);
+  assert.equal(browser.status.inputProbe.paneApplied, false);
+  assert.equal(browser.status.inputProbe.rendered, false);
+} else {
+  assert.notEqual(browser.status.inputProbe.paneHashAfter, browser.status.inputProbe.paneHashBefore);
+  assert.equal(browser.status.inputProbe.paneApplied, true);
+  assert.equal(browser.status.inputProbe.rendered, true);
+}
 assert.equal(browser.status.upstreamConnected, true);
 assert.equal(browser.sandbox, 'allow-scripts');
 assert.equal(browser.opaque, true);

@@ -21,7 +21,7 @@ The terminal parser/renderer runs in `sandbox="allow-scripts"` without `allow-sa
 - `{type: "preset", preset: "80x21" | "110x30" | "140x40"}`.
 - `{type: "shutdown"}`.
 
-The frame-to-parent schema is limited to `ready` and the isolated probe result. The parent processes at most 20 frame messages/second and rejects messages over 4 KiB using an explicit bounded structured-clone size walk (including `ArrayBuffer` and typed-view `byteLength`), rather than JSON text length. Unknown window or port messages are ignored and counted. Terminal bytes enter only `xterm.write(Uint8Array)` inside the opaque frame; the parent never inserts terminal content as HTML.
+The frame-to-parent schema is limited to `ready` and the isolated probe result. The parent processes at most 20 frame messages/second and rejects messages over 4 KiB using an explicit bounded structured-clone size walk. It counts an `ArrayBuffer` at its full `byteLength` and an `ArrayBufferView` at the full size of its backing buffer, rather than the view slice or JSON text length. Unknown window or port messages are ignored and counted. Terminal bytes enter only `xterm.write(Uint8Array)` inside the opaque frame; the parent never inserts terminal content as HTML. This is a post-structured-clone processing and retention gate: the browser has already allocated the clone before the handler runs, so a compromised frame can still cause transient clone-time allocation pressure. Stage B must not claim that this gate alone prevents iframe-originated memory denial of service.
 
 The initial upstream 403 was not a cookie or Origin failure. Starting the pinned upstream page at `/` made a read-only principal select a new, nonexistent generated session. Zellij correctly rejected session creation, removed that `web_client_id`, and the following control upgrade returned 403. Targeting the already-existing allowlisted session produced 101 for both terminal and control sockets. The product broker must always pass the resolved existing `claude-main` or `codex-main` session and must never use upstream's root/welcome-session path.
 
@@ -31,47 +31,52 @@ The Stage B active-stream policy is a 10-second canonical-principal and lease re
 
 ## Darwin containment mechanism
 
-Each generation owns a unique mode-0600 marker file. Every owned launcher inherits an open descriptor for that same device/inode across exec. The Darwin guardian uses `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, and `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` to census that marker, records PID plus microsecond start identity, closes over observed descendants, and revalidates identities before every signal. It watches both a dedicated parent-liveness pipe and the parent's PID/start identity. Cleanup sends TERM, then KILL if required, and requires three stable-zero censuses. Restart reconciliation uses the same exact marker and identities. It never searches by process name or kills an unresolved PID.
+Each generation owns a unique mode-0600 marker file. Every owned launcher inherits an open descriptor for that same device/inode across exec. The launcher primes that descriptor to a deterministic inode-derived offset, and the Darwin guardian requires the device, inode, and offset together. This excludes unrelated readers that happen to open the marker path. The guardian uses dynamically sized `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, and `proc_pidfdinfo(PROC_PIDLISTFDS/PROC_PIDFDVNODEPATHINFO)` censuses; saturated or unstable enumeration fails closed rather than silently truncating the owned set. It records PID plus microsecond start identity, closes over observed descendants, and revalidates identities before every signal. It watches both a dedicated parent-liveness pipe and the parent's PID/start identity. Cleanup sends TERM, then KILL if required, and requires three stable-zero censuses. Restart reconciliation uses the same exact marker and identities. It never searches by process name or kills an unresolved PID.
 
 Every generation supplies private mode-0700 process `HOME`, config, plugin data, cache/data, `TMPDIR` log, and `ZELLIJ_SOCKET_DIR` roots. The socket root is a short `/tmp/zo297-<pid>` directory because macOS Unix socket path length rejects the longer workspace path. Token metadata, cache metadata, sockets, and logs were observed only under these controlled roots. The generation marker, token material, and sensitive metadata are mode 0600. No terminal content or credential appeared in the inspected Zellij log.
 
-Final four-case rerun after the child-`close` logging fix:
+The final harness starts both an exact unrelated Zellij session and an exact unrelated tmux sentinel. It records the unrelated Zellij expect/client PID, PPID, process group, session, microsecond start identity, and session line, then requires those identities to survive unchanged. Before teardown it opens real upstream control and terminal WebSockets and waits until a unique tmux pane marker appears in the terminal stream. The 10-second deadline covers child close, census/reconcile, watcher/control closure, whole recorded topology disappearance, listener closure, Observer tmux cleanup, and both unrelated-survivor checks.
 
-| Case | Result | Full owned-set cleanup | Listener | Unrelated exact-socket tmux |
+Fresh six-case rerun after the P2 repairs:
+
+| Case | Result | End-to-end cleanup | Active watcher | Unrelated Zellij + tmux |
 | --- | --- | ---: | --- | --- |
-| abrupt parent SIGKILL | pass | 1093 ms | closed | survived |
-| graceful stop | pass | 1109 ms | closed | survived |
-| guardian restart, then parent SIGKILL | pass | 1108 ms | closed | survived |
-| guardian disabled (known-bad), then exact reconcile | escaped set detected; reconcile pass | 1124 ms | closed | survived |
+| abrupt parent SIGKILL | pass | 1100 ms | marker received; both sockets closed | survived unchanged |
+| graceful stop | pass | 1224 ms | marker received; both sockets closed | survived unchanged |
+| guardian restart, then parent SIGKILL | pass | 1371 ms | marker received; both sockets closed | survived unchanged |
+| guardian disabled (known-bad), then exact reconcile | escaped set detected; reconcile pass | 1168 ms | marker received; both sockets closed | survived unchanged |
+| wrapper retains marker after child exit | pass | 2220 ms, wrapper required SIGKILL | marker received; both sockets closed | survived unchanged |
+| old wrapper behavior closes its own marker | mutant detected; exact cleanup pass | 1195 ms | marker received; both sockets closed | survived unchanged |
 
-All timings are below 10 seconds and ended with zero marker-owned survivors. Only tested `darwin-arm64` is supported by this A record; Linux, Darwin x64, and Windows remain unsupported until they have their own artifact, root, containment, known-bad, and real-browser evidence.
+All timings are below 10 seconds and ended with zero marker-owned survivors, no recorded Observer topology, and a closed listener. The permanent guardian census-error self-test also proves a previously observed, SIGTERM-ignoring owner is SIGKILLed while subsequent enumerations fail, while an unrelated process survives. A forced child-startup census failure separately proved the standalone browser harness cleans its exact marker set, unrelated Zellij session, private tmux server, sockets, and listener before returning the expected failure. Only tested `darwin-arm64` is supported by this A record; Linux, Darwin x64, and Windows remain unsupported until they have their own artifact, root, containment, known-bad, and real-browser evidence.
 
 ## Browser controls and retained evidence
 
 ### Self-review finding and correction
 
-The first implementation of the 4 KiB frame-to-parent audit bound used `JSON.stringify(message).length`. Self-review rejected that mechanism because JSON serialization collapses an `ArrayBuffer` to an empty object, so the check can undercount the actual structured-clone payload. The final source uses a bounded structured-clone size walk that counts `ArrayBuffer` and typed-view `byteLength`, strings by encoded bytes, primitive widths, object keys, and nested values; cycles and unsupported prototypes fail closed. A 5,000-byte `ArrayBuffer` negative control and a 25-message burst now run from the opaque frame, and the final CDP audit requires both the oversize rejection and the 20/s rate limiter to fire while valid traffic still succeeds.
+The first implementation of the 4 KiB frame-to-parent audit bound used `JSON.stringify(message).length`. Self-review rejected that mechanism because JSON serialization collapses an `ArrayBuffer` to an empty object, so the check can undercount the actual structured-clone payload. A second known-bad estimator counted only `view.byteLength`; a one-byte `Uint8Array` over a 1 MiB backing buffer bypassed it. The final source counts the full backing allocation, strings by encoded bytes, primitive widths, object keys, and nested values; cycles and unsupported prototypes fail closed. A 5,000-byte `ArrayBuffer`, the one-byte/1 MiB view, and a 25-message burst run from the opaque frame. The final CDP audit requires both oversize controls and the 20/s rate limiter to fire while valid traffic still succeeds.
 
 In a fresh isolated Chrome profile, the final trust-domain audit recorded:
 
 - opaque frame: true; sandbox is exactly `allow-scripts`;
 - iframe direct `POST /admin/sentinel`: blocked by frame CSP;
 - forged window message: rejected; forged MessagePort mutation: rejected;
-- a 5,000-byte `ArrayBuffer` MessagePort payload was rejected by the 4 KiB bound, and a 25-message burst exercised the 20/s limiter without blocking the valid `ready` or CSP probe result;
+- a 5,000-byte `ArrayBuffer` and a one-byte view over a 1 MiB backing buffer were both rejected by the 4 KiB bound; a 25-message burst exercised the 20/s limiter without blocking the valid `ready` or CSP probe result;
 - browser requests to the upstream Zellij port: zero;
 - browser `session_token` cookies: zero; only the probe's HttpOnly, SameSite=Strict admin cookie existed;
 - unauthenticated direct mutation: HTTP 401;
 - authenticated parent mutation changed the sentinel from 0 to 1, proving the mutation control can detect a breach;
-- raw input sent to the real upstream terminal socket through the read-only watcher did not add `__OBSERVER_INPUT_LEAK__` to the sentinel pane;
-- the exact tmux client reported `read-only=1`; an intentional direct `tmux send-keys` positive control did add `__INTERACTIVE_POSITIVE_FINAL__` and appeared in the rendered terminal;
-- desktop 1280×900 and mobile 390×844 had no document-level horizontal overflow.
+- the exact read-only tmux client reported `client_readonly=1`; a unique harmless command sent with a real `0x0d` left the captured pane SHA256 byte-identical and appeared in neither the pane nor the actual terminal render stream;
+- the paired writable upstream used the same browser/CDP/broker path with `client_readonly=0`; the same real-CR oracle changed the pane SHA256 and found the unique marker in both the pane and terminal render stream. This is a positive oracle only, not an allowed Observer policy;
+- desktop 1280×900 and mobile 390×844 had no document-level horizontal overflow. The first repair run exposed that long unbroken SHA256 strings made Chrome widen its mobile layout viewport to 549px; `overflow-wrap:anywhere` plus border-box iframe sizing closed that false-green path, and the retained run asserts the exact 390×844 layout viewport.
 
 Retained under the isolated runtime root:
 
-- `final-containment-exact-20260916.json`: final-source full process identities, roots, events, timings, listener checks, and known-bad control.
-- `final-trust-domain-arraybuffer-exact-20260916.json`: final exact-source redacted browser/frame/cookie/network results, including the discriminating `ArrayBuffer` oversize control, rate-limit control, and exact desktop/mobile viewport checks; it contains cookie metadata only, never values.
-- `structured-clone-bound-control-20260916.json`: standalone before/after result for the rejected JSON-text estimator and corrected structured-clone estimator.
-- `containment/browser-final-arraybuffer-20260916/final-arraybuffer-desktop.png` and `final-arraybuffer-mobile.png`.
+- `containment-six-case-repair-final2-20260916.json`: fresh final-source full process identities, roots, active-watcher content/closure, whole-topology checks, timings, unrelated identities, and both known-bad controls.
+- `browser-ro-final2-20260916.json` and `browser-rw-final2-20260916.json`: paired exact-source browser/frame/cookie/network and real-CR oracle results; they contain cookie metadata only, never values.
+- `browser-ro-final2-20260916-{desktop,mobile}.png` and `browser-rw-final2-20260916-{desktop,mobile}.png`.
+- `structured-clone-control-final2-20260916.json`: both rejected estimators and their corrected results.
+- `guardian-selftest-final2-20260916.json`: exact-owner/unrelated identities, transient failure events, tracked SIGKILL, permanent failure result, and final clean state.
 - `containment/browser-repro-continue/existing-session-live.png`: pinned upstream existing-session protocol confirmation.
 
 Probe sources are deliberately outside production modules. Stage B must translate these mechanisms into the lifecycle coordinator and repeat the full ownership-set oracle against real last-lease, disable, component pre-uninstall, and Dashboard restart paths before claiming product coverage.

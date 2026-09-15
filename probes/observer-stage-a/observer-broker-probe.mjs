@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -25,8 +26,52 @@ function parseArgs(argv) {
 function readAuthToken(file) {
   const text = fs.readFileSync(file, 'utf8');
   const match = text.match(/^token_[0-9]+:\s*([0-9a-f-]{36})(?:\s|$)/m);
-  assert.ok(match, 'read-only auth token file did not contain the expected token record');
+  assert.ok(match, 'auth token file did not contain the expected token record');
   return match[1];
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitFor(check, description, timeoutMs = 5000) {
+  const deadline = performance.now() + timeoutMs;
+  let lastError;
+  while (performance.now() < deadline) {
+    try {
+      const value = check();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(50);
+  }
+  throw new Error(`${description} timed out${lastError ? `: ${lastError.message}` : ''}`);
+}
+
+function tmuxRun(args, options = {}) {
+  const result = spawnSync(args.tmux, ['-S', args['tmux-socket'], ...options.argv], {
+    encoding: options.encoding ?? 'utf8',
+    timeout: 3000,
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+function tmuxClients(args) {
+  const output = tmuxRun(args, {
+    argv: ['list-clients', '-t', args['tmux-target'], '-F', '#{client_pid}\t#{client_readonly}\t#{session_name}'],
+  });
+  return output.trim().split('\n').filter(Boolean).map((line) => {
+    const [pid, readOnly, session] = line.split('\t');
+    return { pid: Number(pid), readOnly: readOnly === '1', session };
+  });
+}
+
+function capturePane(args) {
+  return tmuxRun(args, {
+    argv: ['capture-pane', '-p', '-J', '-t', args['tmux-target']],
+  });
 }
 
 async function readBody(request, limit = MAX_BODY_BYTES) {
@@ -82,8 +127,8 @@ function parentDocument() {
   body { margin: 0; padding: 18px; } h1 { margin: 0 0 12px; font-size: 18px; }
   #controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
   button { padding:7px 10px; border:1px solid #3d5268; border-radius:6px; background:#182433; color:inherit; }
-  #status { white-space:pre-wrap; padding:10px; background:#0b1118; border:1px solid #243447; border-radius:6px; margin-bottom:12px; }
-  iframe { width:100%; height:560px; border:1px solid #3d5268; border-radius:8px; background:#0a0f14; }
+  #status { white-space:pre-wrap; overflow-wrap:anywhere; padding:10px; background:#0b1118; border:1px solid #243447; border-radius:6px; margin-bottom:12px; }
+  iframe { box-sizing:border-box; width:100%; height:560px; border:1px solid #3d5268; border-radius:8px; background:#0a0f14; }
 </style>
 <h1>Dashboard-owned broker → opaque renderer</h1>
 <div id="controls">
@@ -116,7 +161,10 @@ function structuredCloneSize(value, limit = 4096) {
     if (typeof item !== 'object' || seen.has(item)) return limit + 1;
     seen.add(item);
     if (item instanceof ArrayBuffer) { size += item.byteLength; continue; }
-    if (ArrayBuffer.isView(item)) { size += item.byteLength; continue; }
+    // Structured clone allocates the full backing buffer, not only the view.
+    // Count conservatively: repeated views may overcount, but can never hide an
+    // allocation that the browser already performed before this handler runs.
+    if (ArrayBuffer.isView(item)) { size += item.buffer.byteLength; continue; }
     const prototype = Object.getPrototypeOf(item);
     if (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null) return limit + 1;
     for (const [key, child] of Object.entries(item)) {
@@ -125,6 +173,13 @@ function structuredCloneSize(value, limit = 4096) {
     }
   }
   return size;
+}
+function allowedFrameMessage(message) {
+  const keys = Object.keys(message).sort();
+  if (message.type === 'ready') return keys.length === 1 && keys[0] === 'type';
+  return message.type === 'probe' &&
+    typeof message.directNetworkBlocked === 'boolean' &&
+    keys.length === 2 && keys[0] === 'directNetworkBlocked' && keys[1] === 'type';
 }
 function renderStatus(server = {}) { statusNode.textContent = JSON.stringify({ ...evidence, ...server }, null, 2); }
 window.addEventListener('message', (event) => {
@@ -137,10 +192,16 @@ channel.port1.onmessage = (event) => {
   if (now - frameMessageWindowStart >= 1000) { frameMessageWindowStart = now; frameMessagesThisWindow = 0; }
   if (++frameMessagesThisWindow > 20) { evidence.frameRateLimited = (evidence.frameRateLimited ?? 0) + 1; renderStatus(); return; }
   if (!message || typeof message !== 'object') return;
-  if (structuredCloneSize(message) > 4096) { evidence.frameOversizeRejected = (evidence.frameOversizeRejected ?? 0) + 1; renderStatus(); return; }
+  if (structuredCloneSize(message) > 4096) {
+    evidence.frameOversizeRejected = (evidence.frameOversizeRejected ?? 0) + 1;
+    if (ArrayBuffer.isView(message?.bytes) && message.bytes.byteLength <= 1 && message.bytes.buffer.byteLength >= 1024 * 1024) {
+      evidence.frameLargeBackingRejected = (evidence.frameLargeBackingRejected ?? 0) + 1;
+    }
+    renderStatus(); return;
+  }
+  if (!allowedFrameMessage(message)) { evidence.forgedPortRejected++; renderStatus(); return; }
   if (message.type === 'ready') evidence.frameReady = true;
   else if (message.type === 'probe' && typeof message.directNetworkBlocked === 'boolean') evidence.directNetworkBlocked = message.directNetworkBlocked;
-  else { evidence.forgedPortRejected++; }
   channel.port1.postMessage({ type: 'probeResult', forgedRejected: evidence.forgedPortRejected > 0 });
   renderStatus();
 };
@@ -212,6 +273,7 @@ function initialize(event) {
   parent.postMessage({type:'admin_mutation'}, '*');
   port.postMessage({type:'admin_mutation', path:'/admin/sentinel', method:'POST'});
   port.postMessage({type:'oversized', bytes:new ArrayBuffer(5000)});
+  port.postMessage({type:'oversized-view', bytes:new Uint8Array(new ArrayBuffer(1024 * 1024), 0, 1)});
   fetch('/admin/sentinel', {method:'POST', credentials:'include'})
     .then(() => port.postMessage({type:'probe', directNetworkBlocked:false}))
     .catch(() => {
@@ -226,7 +288,12 @@ addEventListener('message', initialize);
 const args = parseArgs(process.argv.slice(2));
 const upstreamPort = Number(args['upstream-port']);
 assert.ok(Number.isInteger(upstreamPort) && upstreamPort > 0, '--upstream-port is required');
-assert.ok(args.session && args['token-file'] && args['xterm-js'] && args['xterm-css'], 'missing required argument');
+assert.ok(args.session && args['token-file'] && args['xterm-js'] && args['xterm-css'] &&
+  args.tmux && args['tmux-socket'] && args['tmux-target'] && args['expected-upstream-readonly'],
+  'missing required argument');
+assert.ok(args['expected-upstream-readonly'] === 'true' || args['expected-upstream-readonly'] === 'false',
+  '--expected-upstream-readonly must be true or false');
+const expectedUpstreamReadOnly = args['expected-upstream-readonly'] === 'true';
 const authToken = readAuthToken(args['token-file']);
 const upstreamOrigin = `http://127.0.0.1:${upstreamPort}`;
 const login = await fetch(`${upstreamOrigin}/command/login`, {
@@ -242,8 +309,13 @@ const sessionResponse = await fetch(`${upstreamOrigin}/session?session=${encodeU
 });
 assert.equal(sessionResponse.status, 200, `upstream session bootstrap failed (${sessionResponse.status})`);
 const boot = await sessionResponse.json();
-assert.equal(boot.is_read_only, true, 'upstream session is not read-only');
+assert.equal(boot.is_read_only, expectedUpstreamReadOnly, 'upstream read-only mode does not match the oracle case');
 assert.equal(boot.session_name, args.session, 'upstream selected an unexpected session');
+const initialClients = tmuxClients(args);
+assert.equal(initialClients.length, 1, `expected one exact tmux client: ${JSON.stringify(initialClients)}`);
+assert.equal(initialClients[0].session, args['tmux-target'], 'tmux client selected an unexpected target');
+assert.equal(initialClients[0].readOnly, expectedUpstreamReadOnly,
+  `tmux client read-only state mismatch: ${JSON.stringify(initialClients[0])}`);
 
 const control = await new WsClient({
   port: upstreamPort,
@@ -263,16 +335,68 @@ let ringBytes = 0;
 let sentinel = 0;
 let preset = '80x21';
 let inputProbeSent = false;
+let inputProbe = null;
 let brokerOrigin = null;
+let renderedProbeBytes = Buffer.alloc(0);
 
 function emitDisplay(message) {
   const payload = Buffer.isBuffer(message) ? message : Buffer.from(message);
   if (payload.length > MAX_DISPLAY_MESSAGE_BYTES) return;
+  renderedProbeBytes = Buffer.concat([renderedProbeBytes, payload]);
+  if (renderedProbeBytes.length > 256 * 1024) renderedProbeBytes = renderedProbeBytes.subarray(renderedProbeBytes.length - 256 * 1024);
   const line = `${JSON.stringify({ type: 'display', data: payload.toString('base64') })}\n`;
   const bytes = Buffer.byteLength(line);
   displayRing.push(line); ringBytes += bytes;
   while (ringBytes > MAX_RING_BYTES && displayRing.length > 1) ringBytes -= Buffer.byteLength(displayRing.shift());
   for (const stream of streams) stream.write(line);
+}
+
+async function runInputOracle() {
+  assert.equal(inputProbe, null, 'input oracle may only run once');
+  const marker = `__OBSERVER_CR_${crypto.randomBytes(8).toString('hex')}__`;
+  const paneBefore = capturePane(args);
+  const paneHashBefore = crypto.createHash('sha256').update(paneBefore).digest('hex');
+  const clientsBefore = tmuxClients(args);
+  assert.equal(clientsBefore.length, 1, `tmux client count changed: ${JSON.stringify(clientsBefore)}`);
+  assert.equal(clientsBefore[0].readOnly, expectedUpstreamReadOnly,
+    `tmux client mode changed before input: ${JSON.stringify(clientsBefore[0])}`);
+
+  terminal.sendText(`printf '${marker}\\n'\r`);
+  inputProbeSent = true;
+
+  if (expectedUpstreamReadOnly) {
+    await delay(750);
+  } else {
+    await waitFor(() => capturePane(args).includes(marker), 'writable pane marker');
+    await waitFor(() => renderedProbeBytes.includes(Buffer.from(marker)), 'writable rendered marker');
+  }
+
+  const paneAfter = capturePane(args);
+  const paneHashAfter = crypto.createHash('sha256').update(paneAfter).digest('hex');
+  const paneApplied = paneAfter.includes(marker);
+  const rendered = renderedProbeBytes.includes(Buffer.from(marker));
+  if (expectedUpstreamReadOnly) {
+    assert.equal(paneHashAfter, paneHashBefore, 'read-only upstream mutated the tmux pane');
+    assert.equal(paneApplied, false, 'read-only upstream applied the marker command');
+    assert.equal(rendered, false, 'read-only upstream rendered the marker command');
+  } else {
+    assert.notEqual(paneHashAfter, paneHashBefore, 'writable upstream did not mutate the tmux pane');
+    assert.equal(paneApplied, true, 'writable upstream did not apply the marker command');
+    assert.equal(rendered, true, 'writable upstream did not render the marker command');
+  }
+  inputProbe = {
+    marker,
+    expectedReadOnly: expectedUpstreamReadOnly,
+    actualClientReadOnly: clientsBefore[0].readOnly,
+    clientPid: clientsBefore[0].pid,
+    paneHashBefore,
+    paneHashAfter,
+    paneApplied,
+    rendered,
+    actualCrByteSent: true,
+    result: 'pass',
+  };
+  return inputProbe;
 }
 terminal.on('message', emitDisplay);
 terminal.on('error', (error) => process.stderr.write(`${JSON.stringify({ event:'upstream-error', channel:'terminal', message:error.message })}\n`));
@@ -301,7 +425,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/status') {
-      sendJson(response, 200, { sentinel, preset, inputProbeSent, upstreamReadOnly: true, upstreamConnected: true }); return;
+      sendJson(response, 200, {
+        sentinel, preset, inputProbeSent, inputProbe,
+        upstreamReadOnly: boot.is_read_only,
+        upstreamConnected: true,
+      }); return;
     }
     const mutationAllowed = request.headers.origin === brokerOrigin;
     if (request.method === 'POST' && url.pathname === '/admin/sentinel') {
@@ -310,7 +438,9 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/probe/upstream-input') {
       if (!mutationAllowed) { sendJson(response, 403, { error:'origin' }); return; }
-      await readBody(request); terminal.sendText("printf '__OBSERVER_INPUT_LEAK__\\n'\\r"); inputProbeSent = true; sendJson(response, 200, { sent:true }); return;
+      await readBody(request);
+      const oracle = await runInputOracle();
+      sendJson(response, 200, { sent:true, oracle }); return;
     }
     if (request.method === 'POST' && url.pathname === '/preset') {
       if (!mutationAllowed) { sendJson(response, 403, { error:'origin' }); return; }
@@ -334,7 +464,11 @@ await new Promise((resolve, reject) => {
 });
 const address = server.address();
 brokerOrigin = `http://127.0.0.1:${address.port}`;
-process.stdout.write(`${JSON.stringify({ event:'ready', publicUrl:brokerOrigin, upstreamPort, session:args.session, upstreamReadOnly:boot.is_read_only, publicRoutes:['/','/frame-document','/events','/status','/admin/sentinel','/probe/upstream-input','/preset'] })}\n`);
+process.stdout.write(`${JSON.stringify({
+  event:'ready', publicUrl:brokerOrigin, upstreamPort, session:args.session,
+  upstreamReadOnly:boot.is_read_only, tmuxClient:initialClients[0],
+  publicRoutes:['/','/frame-document','/events','/status','/admin/sentinel','/probe/upstream-input','/preset'],
+})}\n`);
 
 function shutdown() {
   for (const stream of streams) stream.end();
