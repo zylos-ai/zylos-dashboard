@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, validateApiSession } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import {
+  DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS,
   DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
   DEFAULT_RUNTIME_MODEL_PRICES,
   ensureDataDirs,
@@ -1210,7 +1211,8 @@ function settingsPayload(runtime) {
       available: fastModeAvailable,
       mode: priceRuntime === 'codex' ? 'service_tier' : 'multiplier',
       serviceTier: priceRuntime === 'codex' ? 'priority' : null,
-      multiplier: fastModeMultiplier
+      multiplier: fastModeMultiplier,
+      configuredMultiplier: config.configuredRuntimeFastModeMultipliers?.[priceRuntime] ?? null
     },
     fastModeMultiplier
   };
@@ -1237,6 +1239,25 @@ function validateModelPrices(modelPrices, runtime, requiredModels = builtInModel
       if (v == null || typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
         errors.push(`${prefix}.${field} must be a finite number >= 0`);
       }
+    }
+    if (prices?.longContext !== undefined) {
+      const long = prices.longContext;
+      if (!long || typeof long !== 'object' || Array.isArray(long)) {
+        errors.push(`${prefix}.longContext must be an object`);
+      } else {
+        if (!Number.isFinite(long.inputTokenThreshold) || long.inputTokenThreshold <= 0) {
+          errors.push(`${prefix}.longContext.inputTokenThreshold must be a finite number > 0`);
+        }
+        for (const field of ['input', 'output', 'cacheRead', 'cacheCreation']) {
+          if (!Number.isFinite(long[field]) || long[field] < 0) {
+            errors.push(`${prefix}.longContext.${field} must be a finite number >= 0`);
+          }
+        }
+      }
+    }
+    if (prices?.fastModeMultiplier !== undefined &&
+        (!Number.isFinite(prices.fastModeMultiplier) || prices.fastModeMultiplier <= 0)) {
+      errors.push(`${prefix}.fastModeMultiplier must be a finite number > 0`);
     }
   }
   return errors;
@@ -1276,8 +1297,8 @@ async function handleSettingsUpdate(req, res) {
     const fm = body.fastModeMultiplier;
     if (priceRuntime !== 'claude') {
       errors.push(`fastModeMultiplier is not supported for ${priceRuntime} runtime`);
-    } else if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
-      errors.push('fastModeMultiplier must be a finite number > 0');
+    } else if (fm !== null && (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0)) {
+      errors.push('fastModeMultiplier must be null or a finite number > 0');
     }
   }
 
@@ -1313,6 +1334,10 @@ async function handleSettingsUpdate(req, res) {
         [priceRuntime]: body.fastModeMultiplier
       };
       if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
+      if (body.fastModeMultiplier === null) {
+        delete existing.runtimeFastModeMultipliers[priceRuntime];
+        delete existing.fastModeMultiplier;
+      }
     }
     if (body.priorityModelPrices !== undefined) {
       existing.runtimeServiceTierModelPrices = {
@@ -1340,6 +1365,14 @@ async function handleSettingsUpdate(req, res) {
         ...(config.runtimeFastModeMultipliers || {}),
         [priceRuntime]: body.fastModeMultiplier
       };
+      config.configuredRuntimeFastModeMultipliers = {
+        ...(config.configuredRuntimeFastModeMultipliers || {}),
+        [priceRuntime]: body.fastModeMultiplier
+      };
+      if (body.fastModeMultiplier === null) {
+        config.runtimeFastModeMultipliers[priceRuntime] = DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS[priceRuntime];
+        delete config.configuredRuntimeFastModeMultipliers[priceRuntime];
+      }
       config.fastModeMultiplier = config.runtimeFastModeMultipliers.claude;
     }
     if (body.priorityModelPrices !== undefined) {

@@ -79,7 +79,7 @@ test('getActionsMeta falls back to Codex runtime model and model default effort'
   }));
 
   const meta = getActionsMeta(
-    { runtime: 'codex', codex_new_session_threshold: '75' },
+    { runtime: 'codex', codex_new_session_threshold: '75', zylosDir: dir },
     { model: 'GPT-5.5', model_id: 'gpt-5.5' }
   );
 

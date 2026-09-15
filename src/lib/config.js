@@ -11,16 +11,40 @@ export const DEFAULT_CLAUDE_MODEL_PRICES = {
   // moves both TTL rates with it. Cache-read rates are model-specific.
   'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 20 },
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1.00, cacheCreation: 20 },
-  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
+  'claude-mythos-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 20 },
+  'claude-mythos-5': { input: 10, output: 50, cacheRead: 1, cacheCreation: 20 },
+  // Current Fast mode rates apply only to these models (pricing checked 2026-09-15).
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10, fastModeMultiplier: 2 },
+  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10, fastModeMultiplier: 2 },
   'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
   'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.20, cacheCreation: 4 },
   'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30, cacheCreation: 6 },
   'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.10, cacheCreation: 2 }
 };
 
+// OpenAI API pricing, USD/1M tokens, checked 2026-09-15:
+// https://developers.openai.com/api/docs/pricing
+// GPT-5.6+ writes replace ordinary input at 1.25x. Above 272K total input,
+// the entire request uses long-context prices, including cached/write input.
+// Sol's current promotional price is available at least through 2026-11-21.
+function codexPrice(input, output, cacheRead, cacheCreation) {
+  return {
+    input, output, cacheRead, cacheCreation,
+    longContext: {
+      inputTokenThreshold: 272000,
+      input: input * 2, output: output * 1.5,
+      cacheRead: cacheRead * 2, cacheCreation: cacheCreation * 2
+    }
+  };
+}
+
 export const DEFAULT_CODEX_MODEL_PRICES = {
-  // Standard API pricing per 1M tokens. OpenAI bills uncached/cache-write input
-  // at input price and cached input at the cached-input price.
+  'gpt-6-astra': codexPrice(10, 50, 1, 12.5),
+  'gpt-5.6-sol': codexPrice(4, 20, 0.4, 5),
+  'gpt-5.6-terra': codexPrice(2, 12, 0.2, 2.5),
+  'gpt-5.6-luna': codexPrice(0.2, 1.2, 0.02, 0.25),
+  'gpt-5.6': codexPrice(4, 20, 0.4, 5),
+  // Earlier models have no separate cache-write surcharge.
   'gpt-5.5': { input: 5, output: 30, cacheRead: 0.50, cacheCreation: 5 },
   'gpt-5.4-mini': { input: 0.75, output: 4.50, cacheRead: 0.075, cacheCreation: 0.75 },
   'gpt-5.4-nano': { input: 0.20, output: 1.25, cacheRead: 0.02, cacheCreation: 0.20 },
@@ -43,6 +67,11 @@ export const DEFAULT_CODEX_MODEL_PRICES = {
 };
 
 export const DEFAULT_CODEX_PRIORITY_MODEL_PRICES = {
+  'gpt-6-astra': codexPrice(20, 100, 2, 25),
+  'gpt-5.6-sol': codexPrice(8, 40, 0.8, 10),
+  'gpt-5.6-terra': codexPrice(4, 24, 0.4, 5),
+  'gpt-5.6-luna': codexPrice(0.4, 2.4, 0.04, 0.5),
+  'gpt-5.6': codexPrice(8, 40, 0.8, 10),
   // OpenAI Priority processing prices per 1M tokens. Codex /fast maps to the
   // priority service tier for models that expose a Fast tier in Codex metadata.
   'gpt-5.5': { input: 12.50, output: 75, cacheRead: 1.25, cacheCreation: 12.50 },
@@ -121,6 +150,8 @@ export function loadConfig() {
     loaded = { configError: err.message };
   }
 
+  // Overrides replace whole rows. Custom long-context tariffs must be supplied
+  // in that row; do not silently apply the default surcharge to a custom rate.
   const runtimeModelPrices = {
     claude: {
       ...DEFAULT_CLAUDE_MODEL_PRICES,
@@ -131,6 +162,12 @@ export function loadConfig() {
       ...(loaded.runtimeModelPrices?.codex || {})
     }
   };
+  // Keep explicit values separate: a default 6 must not mask model-specific
+  // defaults, but an operator's explicit 6 (including the legacy key) must win.
+  const configuredRuntimeFastModeMultipliers = { ...(loaded.runtimeFastModeMultipliers || {}) };
+  if (loaded.runtimeFastModeMultipliers?.claude != null || loaded.fastModeMultiplier != null) {
+    configuredRuntimeFastModeMultipliers.claude = Number(loaded.runtimeFastModeMultipliers?.claude ?? loaded.fastModeMultiplier);
+  }
   const runtimeFastModeMultipliers = {
     ...DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS,
     ...(loaded.runtimeFastModeMultipliers || {}),
@@ -163,6 +200,7 @@ export function loadConfig() {
     runtimeModelPrices,
     runtimeServiceTierModelPrices,
     modelPrices: runtimeModelPrices.claude,
+    configuredRuntimeFastModeMultipliers,
     runtimeFastModeMultipliers,
     fastModeMultiplier: runtimeFastModeMultipliers.claude,
     agent: resolveAgentIdentity(loaded, zylosDir),
@@ -185,8 +223,16 @@ export function modelPricesForRuntime(config, runtime = config?.runtime, service
   return config?.runtimeModelPrices?.[rt] || config?.modelPrices || {};
 }
 
-export function fastModeMultiplierForRuntime(config, runtime = config?.runtime) {
+export function fastModeMultiplierForRuntime(config, runtime = config?.runtime, price = null) {
   const rt = runtime === 'codex' ? 'codex' : 'claude';
+  if (price) {
+    const explicit = config?.configuredRuntimeFastModeMultipliers;
+    const override = explicit !== undefined
+      ? explicit[rt]
+      : config?.runtimeFastModeMultipliers?.[rt] ?? (rt === 'claude' ? config?.fastModeMultiplier : null);
+    if (override != null) return override;
+    if (price.fastModeMultiplier != null) return price.fastModeMultiplier;
+  }
   return config?.runtimeFastModeMultipliers?.[rt] ?? (rt === 'claude' ? config?.fastModeMultiplier : null) ?? null;
 }
 

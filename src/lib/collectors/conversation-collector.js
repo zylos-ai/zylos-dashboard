@@ -203,7 +203,7 @@ export class ConversationCollector {
 
   _calculateCost(usage, price, speed) {
     if (!price) return null;
-    const multiplier = speed === 'fast' ? (fastModeMultiplierForRuntime(this.config, 'claude') || 6) : 1;
+    const multiplier = speed === 'fast' ? (fastModeMultiplierForRuntime(this.config, 'claude', price) || 6) : 1;
     const input = (usage.input_tokens || 0) * price.input * multiplier / PER_MTOK;
     const output = (usage.output_tokens || 0) * price.output * multiplier / PER_MTOK;
     const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead * multiplier / PER_MTOK;
