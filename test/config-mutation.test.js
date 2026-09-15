@@ -9,6 +9,15 @@ import { mutateConfig } from '../src/lib/config-mutation.js';
 
 const execFileAsync = promisify(execFile);
 
+async function waitForPath(filePath, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
 function fixture(value = { untouched: { value: 1 } }) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-config-mutation-'));
   const configPath = path.join(directory, 'config.json');
@@ -97,4 +106,60 @@ test('dead stale lock is recovered but a live lock times out', async (t) => {
     mutateConfig(configPath, () => {}, { staleLockMs: 5, lockTimeoutMs: 30, retryMs: 5 }),
     (error) => error?.code === 'lock_timeout',
   );
+});
+
+test('competing stale-lock recoverers in separate processes cannot remove a successor lock', async (t) => {
+  const { directory, configPath } = fixture();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const lockPath = `${configPath}.lock`;
+  fs.mkdirSync(lockPath, { mode: 0o700 });
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: 999_999_999, nonce: 'dead' }));
+  const stale = new Date(Date.now() - 60_000);
+  fs.utimesSync(lockPath, stale, stale);
+  const moduleUrl = new URL('../src/lib/config-mutation.js', import.meta.url).href;
+  const pausedPath = path.join(directory, 'first-paused');
+  const allowPath = path.join(directory, 'allow-first');
+  const secondEnteredPath = path.join(directory, 'second-entered');
+  const criticalPath = path.join(directory, 'critical');
+  const overlapPath = path.join(directory, 'overlap');
+  const script = `
+    import fs from 'node:fs';
+    const [moduleUrl, configPath, role, pausedPath, allowPath, secondEnteredPath, criticalPath, overlapPath] = process.argv.slice(1);
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    let paused = false;
+    if (role === 'first') fs.promises.rename = async (source, destination) => {
+      if (!paused && source === configPath + '.lock' && destination.startsWith(source + '.stale-')) {
+        paused = true;
+        fs.writeFileSync(pausedPath, 'ready');
+        while (!fs.existsSync(allowPath)) await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return originalRename(source, destination);
+    };
+    const { mutateConfig } = await import(moduleUrl);
+    await mutateConfig(configPath, async (config) => {
+      if (role === 'second') fs.writeFileSync(secondEnteredPath, 'entered');
+      try { fs.mkdirSync(criticalPath); } catch (error) {
+        if (error.code === 'EEXIST') fs.writeFileSync(overlapPath, 'overlap');
+        else throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      config[role] = true;
+      try { fs.rmdirSync(criticalPath); } catch {}
+    }, { staleLockMs: 5, lockTimeoutMs: 2_000, retryMs: 5 });
+  `;
+  const args = [moduleUrl, configPath, 'first', pausedPath, allowPath, secondEnteredPath, criticalPath, overlapPath];
+  const first = execFileAsync(process.execPath, ['--input-type=module', '--eval', script, ...args]);
+  await waitForPath(pausedPath);
+  args[2] = 'second';
+  const second = execFileAsync(process.execPath, ['--input-type=module', '--eval', script, ...args]);
+  await Promise.race([
+    waitForPath(secondEnteredPath, 250).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 250)),
+  ]);
+  fs.writeFileSync(allowPath, 'go');
+  await Promise.all([first, second]);
+  assert.equal(fs.existsSync(overlapPath), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(configPath, 'utf8')), {
+    untouched: { value: 1 }, first: true, second: true,
+  });
 });

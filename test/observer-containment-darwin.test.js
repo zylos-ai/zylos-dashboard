@@ -38,10 +38,18 @@ async function waitUntil(check, timeoutMs = 10_000) {
 
 test('packaged Darwin helpers match their pinned manifest', async () => {
   const containment = new DarwinObserverContainment({ dataDir: os.tmpdir() });
-  const helpers = await containment.verifyHelpers();
+  const helpers = await containment.verifyHelperManifest();
   assert.match(helpers.guardian, /darwin-guardian$/);
   assert.match(helpers.markedExec, /marked-exec$/);
   assert.match(helpers.ptyMarkedExec, /pty-marked-exec$/);
+});
+
+test('native helper execution reports unsupported platforms without weakening manifest verification', async () => {
+  const containment = new DarwinObserverContainment({
+    dataDir: os.tmpdir(), platform: 'linux', arch: 'arm64',
+  });
+  await containment.verifyHelperManifest();
+  await assert.rejects(containment.verifyHelpers(), (error) => error?.code === 'unsupported_platform');
 });
 
 test('Darwin product containment starts read-only target and proves zero owned survivors', {

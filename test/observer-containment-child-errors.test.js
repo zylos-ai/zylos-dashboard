@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { DarwinObserverContainment } from '../src/lib/observer-containment-darwin.js';
 
@@ -88,4 +90,92 @@ test('fallback cleanup rejects fail-closed when its guardian cannot spawn', asyn
   containment.active = active;
 
   await assert.rejects(containment._fallbackCleanup(active), (error) => error === spawnError);
+});
+
+test('cleanup phases share one deadline instead of resetting the budget', async () => {
+  const containment = new DarwinObserverContainment({
+    dataDir: os.tmpdir(),
+    cleanupTimeoutMs: 60,
+    ownershipQuietMs: 30,
+    ownershipPollMs: 5,
+  });
+  const guardian = fakeChild();
+  guardian.stdio = [null, null, null, { end() {} }];
+  containment.active = {
+    stopping: false,
+    guardian,
+    guardianLiveness: guardian.stdio[3],
+    marker: 'fdpath:/tmp/observer-deadline-marker',
+    port: 9,
+  };
+  containment._waitForCleanExit = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 45));
+  };
+  containment._census = async () => ({ count: 0, output: '{"event":"count","count":0}\n' });
+
+  const started = Date.now();
+  await assert.rejects(containment.stopGeneration(), (error) => error?.code === 'cleanup_timeout');
+  assert.ok(Date.now() - started < 120, 'cleanup reset its 60ms budget between phases');
+});
+
+test('stable-empty confirmation tolerates a transient census command failure', async () => {
+  const containment = new DarwinObserverContainment({
+    dataDir: os.tmpdir(), cleanupTimeoutMs: 120, ownershipQuietMs: 20, ownershipPollMs: 5,
+  });
+  let calls = 0;
+  containment._census = async () => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error('transient census failure'), { code: 'census_failed' });
+    return { count: 0, output: '{"event":"count","count":0}\n' };
+  };
+  await containment._confirmStableEmpty({ marker: 'fdpath:/tmp/transient-census' });
+  assert.ok(calls >= 2);
+});
+
+test('stable-empty confirmation keeps persistent census failure fail-closed under one deadline', async () => {
+  const containment = new DarwinObserverContainment({
+    dataDir: os.tmpdir(), cleanupTimeoutMs: 35, ownershipQuietMs: 10, ownershipPollMs: 5,
+  });
+  containment._census = async () => {
+    throw Object.assign(new Error('persistent census failure'), { code: 'census_failed' });
+  };
+  const started = Date.now();
+  await assert.rejects(
+    containment._confirmStableEmpty({ marker: 'fdpath:/tmp/persistent-census' }),
+    (error) => error?.code === 'census_failed',
+  );
+  assert.ok(Date.now() - started < 90);
+});
+
+test('persisted reconciliation refuses an unowned external socket directory', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-persisted-path-'));
+  const external = path.join('/tmp', `zobs-123-${'a'.repeat(10)}`);
+  fs.mkdirSync(external, { recursive: true, mode: 0o700 });
+  const sentinel = path.join(external, 'sentinel');
+  fs.writeFileSync(sentinel, 'keep');
+  t.after(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(external, { recursive: true, force: true });
+  });
+  const containment = new DarwinObserverContainment({ dataDir });
+  const generationRoot = path.join(containment.runtimeRoot, 'fixture');
+  fs.mkdirSync(generationRoot, { recursive: true });
+  const markerFile = path.join(generationRoot, 'ownership.marker');
+  fs.writeFileSync(markerFile, 'fixture');
+  fs.writeFileSync(path.join(generationRoot, 'state.json'), JSON.stringify({
+    schema: 1,
+    generation: 1,
+    nonce: 'fixture',
+    parent: { pid: 123, startSec: 1, startUsec: 1 },
+    marker: `fdpath:${markerFile}`,
+    markerFile,
+    root: generationRoot,
+    socketRoot: external,
+    socketOwnerFile: path.join(external, '.observer-owner.json'),
+    port: 9,
+  }));
+  containment.verifyHelpers = async () => ({});
+
+  await assert.rejects(containment.reconcilePersisted(), (error) => error?.code === 'reconcile_failed');
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'keep');
 });

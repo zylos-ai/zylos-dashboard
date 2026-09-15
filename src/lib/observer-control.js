@@ -10,6 +10,7 @@ import { observerPaths } from './observer-paths.js';
 const MAX_MESSAGE_BYTES = 4 * 1024;
 const CONNECT_TIMEOUT_MS = 2_000;
 const OPERATION_TIMEOUT_MS = 15_000;
+const INCOMPLETE_LOCK_STALE_MS = 10_000;
 
 function isProcessAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -18,15 +19,47 @@ function isProcessAlive(pid) {
 
 async function readOwner(lockPath) {
   try {
-    const value = JSON.parse(await fs.promises.readFile(path.join(lockPath, 'owner.json'), 'utf8'));
+    const stat = await fs.promises.lstat(lockPath);
+    const ownerPath = stat.isDirectory() && !stat.isSymbolicLink()
+      ? path.join(lockPath, 'owner.json')
+      : lockPath;
+    const value = JSON.parse(await fs.promises.readFile(ownerPath, 'utf8'));
     return value && typeof value === 'object' ? value : null;
   } catch { return null; }
 }
 
 async function writeOwner(lockPath, owner) {
-  await fs.promises.writeFile(path.join(lockPath, 'owner.json'), `${JSON.stringify(owner)}\n`, {
+  await fs.promises.writeFile(lockPath, `${JSON.stringify(owner)}\n`, {
     flag: 'wx', mode: 0o600,
   });
+}
+
+async function recoverIncompleteLock(lockPath, staleMs, now = Date.now()) {
+  let stat;
+  try { stat = await fs.promises.lstat(lockPath); } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    throw error;
+  }
+  if (stat.isSymbolicLink() || now - stat.mtimeMs < staleMs) return false;
+  const quarantinePath = path.join(path.dirname(lockPath), `.stale-${crypto.randomBytes(12).toString('hex')}`);
+  try {
+    await fs.promises.rename(lockPath, quarantinePath);
+    const movedStat = await fs.promises.lstat(quarantinePath);
+    if (movedStat.dev !== stat.dev || movedStat.ino !== stat.ino) {
+      try { await fs.promises.rename(quarantinePath, lockPath); } catch {}
+      return false;
+    }
+    const movedOwner = await readOwner(quarantinePath);
+    if (movedOwner && isProcessAlive(Number(movedOwner.pid))) {
+      try { await fs.promises.rename(quarantinePath, lockPath); } catch {}
+      return false;
+    }
+    await fs.promises.rm(quarantinePath, { recursive: movedStat.isDirectory(), force: true });
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    return false;
+  }
 }
 
 async function acquireCoordinatorLock(controlRoot, { timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
@@ -37,36 +70,23 @@ async function acquireCoordinatorLock(controlRoot, { timeoutMs = CONNECT_TIMEOUT
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     try {
-      await fs.promises.mkdir(lockPath, { mode: 0o700 });
-      try { await writeOwner(lockPath, owner); } catch (error) {
-        await fs.promises.rm(lockPath, { recursive: true, force: true });
-        throw error;
-      }
+      await writeOwner(lockPath, owner);
       return {
         owner,
         lockPath,
         async release() {
           const current = await readOwner(lockPath);
-          if (current?.nonce === owner.nonce) await fs.promises.rm(lockPath, { recursive: true, force: true });
+          if (current?.nonce === owner.nonce) await fs.promises.unlink(lockPath);
         },
       };
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       const staleOwner = await readOwner(lockPath);
-      if (staleOwner && !isProcessAlive(Number(staleOwner.pid))) {
-        const quarantine = path.join(controlRoot, `.stale-${crypto.randomBytes(12).toString('hex')}`);
-        try {
-          await fs.promises.rename(lockPath, quarantine);
-          const movedOwner = await readOwner(quarantine);
-          if (movedOwner?.nonce === staleOwner.nonce) {
-            await fs.promises.rm(quarantine, { recursive: true, force: true });
-            continue;
-          }
-          try { await fs.promises.rename(quarantine, lockPath); } catch {}
-        } catch (renameError) {
-          if (renameError?.code !== 'ENOENT') throw renameError;
-        }
+      if (staleOwner && isProcessAlive(Number(staleOwner.pid))) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        continue;
       }
+      if (await recoverIncompleteLock(lockPath, INCOMPLETE_LOCK_STALE_MS)) continue;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }

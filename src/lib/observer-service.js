@@ -10,6 +10,7 @@ import {
 const OBSERVER_PROTOCOL = 'zylos-observer-v1';
 const LEASE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const REVALIDATE_MS = 10_000;
+const MAX_STARTUP_DISPLAY_BYTES = 2 * 1024 * 1024;
 
 class ObserverHttpError extends Error {
   constructor(status, code) {
@@ -138,6 +139,8 @@ export class ObserverService {
     if (stream.closed) return;
     stream.closed = true;
     clearInterval(stream.timer);
+    stream.startupDisplay = [];
+    stream.startupDisplayBytes = 0;
     stream.upstream?.close();
     if (stream.downstream) stream.downstream.close(code, reason);
     else stream.socket?.destroy();
@@ -267,6 +270,7 @@ export class ObserverService {
       stream = {
         leaseId, context, lease, upstream, socket,
         downstream: null, timer: null, closed: false, awaitingPong: false,
+        startupDisplay: [], startupDisplayBytes: 0,
       };
       this.streams.add(stream);
       stream.timer = setInterval(() => {
@@ -287,7 +291,20 @@ export class ObserverService {
       stream.timer.unref?.();
       await upstream.connect({
         preset: lease.preset,
-        onDisplay: (payload) => stream.downstream?.sendBinary(payload),
+        onDisplay: (payload) => {
+          if (stream.closed) return;
+          if (stream.downstream) {
+            stream.downstream.sendBinary(payload);
+            return;
+          }
+          const buffered = Buffer.from(payload);
+          stream.startupDisplayBytes += buffered.length;
+          if (stream.startupDisplayBytes > MAX_STARTUP_DISPLAY_BYTES) {
+            this._closeStream(stream, 1009, 'startup_display_overflow');
+            return;
+          }
+          stream.startupDisplay.push(buffered);
+        },
         onClose: () => this._closeStream(stream, 1011, 'upstream_closed'),
       });
       if (stream.closed) throw new Error('Observer upstream closed during handshake');
@@ -301,6 +318,12 @@ export class ObserverService {
       stream.downstream.on('close', () => this._closeStream(stream, 1000, 'client_closed'));
       stream.downstream.on('pong', () => { stream.awaitingPong = false; });
       stream.downstream.sendText(JSON.stringify({ type: 'preset', preset: stream.lease.preset }));
+      for (const payload of stream.startupDisplay) {
+        if (!stream.downstream.sendBinary(payload)) break;
+      }
+      stream.startupDisplay = [];
+      stream.startupDisplayBytes = 0;
+      stream.downstream.activate();
       return true;
     } catch (error) {
       upstream?.close();

@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { ObserverCoordinator } from '../src/lib/observer-coordinator.js';
 import { ObserverManager } from '../src/lib/observer-manager.js';
 
 function context(principalId, credentialId = `${principalId}-session`) {
@@ -190,3 +194,72 @@ for (const action of ['disable', 'uninstall']) {
     assert.equal(f.manager._revalidationTimer, null);
   });
 }
+
+for (const action of ['disable', 'uninstall']) {
+  test(`${action} preserves config failure but still tears down the revoked generation`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `observer-manager-${action}-`));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const configPath = path.join(directory, 'config.json');
+    fs.writeFileSync(configPath, `${JSON.stringify({ observer: { enabled: true, generation: 0 } })}\n`);
+    let stops = 0;
+    const containment = {
+      active: null,
+      async stopGeneration() {
+        stops += 1;
+        this.active = null;
+        return { stopped: true };
+      },
+    };
+    const installer = {
+      async verify() { return { state: 'installed', binaryPath: '/fixture/zellij' }; },
+      async removeInstalledArtifacts() { throw new Error('must not remove after persistence failure'); },
+    };
+    const coordinator = new ObserverCoordinator({
+      configPath,
+      installer,
+      start: async ({ generation }) => {
+        containment.active = { generation };
+        return containment.active;
+      },
+      teardown: ({ reason }) => containment.stopGeneration({ reason }),
+    });
+    const manager = new ObserverManager({
+      coordinator,
+      containment,
+      authGate: { revalidateAuthContext: (value) => value },
+      runtime: 'codex',
+      idleGraceMs: 5,
+      revalidateMs: 60_000,
+    });
+    await manager.createLease(context('admin'));
+    fs.writeFileSync(configPath, '{invalid json');
+
+    const operation = action === 'disable'
+      ? manager.invalidateAndDisable()
+      : manager.invalidateAndUninstall();
+    await assert.rejects(operation, (error) => error?.code === 'invalid_config');
+    assert.equal(containment.active, null);
+    assert.equal(manager.leases.size, 0);
+    assert.equal(manager._idleTimer, null);
+    assert.equal(manager._revalidationTimer, null);
+    assert.equal(manager.generation, null);
+    assert.equal(stops, 1);
+  });
+}
+
+test('lifecycle persistence error remains primary while cleanup failure stays visible', async () => {
+  const persistenceError = Object.assign(new Error('invalid config'), { code: 'invalid_config' });
+  const cleanupError = Object.assign(new Error('owned survivors'), { code: 'owned_survivors' });
+  const f = fixture();
+  f.coordinator.disable = async () => { throw persistenceError; };
+  f.containment.active = { generation: 5 };
+  f.containment.stopGeneration = async () => { throw cleanupError; };
+  f.manager.generation = 5;
+
+  await assert.rejects(f.manager.invalidateAndDisable(), (error) => {
+    assert.equal(error, persistenceError);
+    assert.equal(error.cleanupError, cleanupError);
+    return true;
+  });
+  assert.equal(f.manager._runtimeError, cleanupError);
+});

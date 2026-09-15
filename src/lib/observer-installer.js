@@ -39,6 +39,16 @@ async function ensurePrivateDirectory(directory) {
   await fs.promises.chmod(directory, 0o700);
 }
 
+async function assertPrivateDirectory(directory, code = 'unsafe_managed_root') {
+  const stat = await fs.promises.lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new ObserverInstallError(code, `Observer managed path is not a private directory: ${directory}`);
+  }
+  if ((stat.mode & 0o077) !== 0) {
+    throw new ObserverInstallError(code, `Observer managed path has unsafe permissions: ${directory}`);
+  }
+}
+
 async function writeJsonAtomic(filePath, value) {
   const temporaryPath = `${filePath}.${process.pid}.${crypto.randomBytes(12).toString('hex')}.tmp`;
   let handle;
@@ -150,6 +160,17 @@ function installedRecord(artifact, artifactDirectory) {
   };
 }
 
+function publicationRecord(artifact) {
+  return {
+    schema: 1,
+    platform: artifact.platform,
+    version: artifact.version,
+    archiveSha256: artifact.archiveSha256,
+    binarySha256: artifact.binarySha256,
+    archiveEntry: artifact.archiveEntry,
+  };
+}
+
 export class ObserverInstaller {
   constructor({
     dataDir,
@@ -177,8 +198,40 @@ export class ObserverInstaller {
     }
   }
 
+  async assertArtifactChain(artifactDirectory) {
+    await assertPrivateDirectory(this.paths.root);
+    await assertPrivateDirectory(this.paths.artifacts);
+    await assertPrivateDirectory(artifactDirectory, 'unsafe_artifact_path');
+  }
+
+  async verifyIncompletePublication(artifactDirectory) {
+    try {
+      await this.assertArtifactChain(artifactDirectory);
+      const markerPath = path.join(artifactDirectory, '.publication.json');
+      const markerStat = await fs.promises.lstat(markerPath);
+      if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink !== 1) return false;
+      const marker = JSON.parse(await fs.promises.readFile(markerPath, 'utf8'));
+      const expected = publicationRecord(this.artifact);
+      if (Object.keys(expected).some((key) => marker[key] !== expected[key])) return false;
+      const binaryPath = path.join(artifactDirectory, this.artifact.archiveEntry);
+      const binaryStat = await fs.promises.lstat(binaryPath);
+      if (!binaryStat.isFile() || binaryStat.isSymbolicLink() || binaryStat.nlink !== 1) return false;
+      if (await sha256File(binaryPath) !== this.artifact.binarySha256) return false;
+      const licenseStat = await fs.promises.lstat(path.join(artifactDirectory, 'LICENSE.zellij.md'));
+      return licenseStat.isFile() && !licenseStat.isSymbolicLink() && licenseStat.nlink === 1;
+    } catch {
+      return false;
+    }
+  }
+
   async verify() {
     if (!this.artifact) return { state: 'unsupported', platform: this.platformKey };
+    try {
+      await assertPrivateDirectory(this.paths.root);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { state: 'not_installed', platform: this.platformKey };
+      return { state: 'failed', platform: this.platformKey, reason: 'unsafe_managed_root' };
+    }
     let record;
     try {
       const manifestStat = await fs.promises.lstat(this.paths.installedManifest);
@@ -195,6 +248,7 @@ export class ObserverInstaller {
     }
     const binaryPath = path.join(this.paths.artifacts, record.binary);
     try {
+      await this.assertArtifactChain(artifactDirectory);
       const stat = await fs.promises.lstat(binaryPath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('unsafe binary');
       if (await sha256File(binaryPath) !== this.artifact.binarySha256) throw new Error('digest mismatch');
@@ -217,6 +271,7 @@ export class ObserverInstaller {
     const stageRoot = path.join(this.paths.staging, nonce);
     const archivePath = path.join(stageRoot, 'zellij.tar.gz');
     const extractionPath = path.join(stageRoot, 'extract');
+    let publishDirectory = null;
     await ensurePrivateDirectory(stageRoot);
     try {
       const download = await downloadArchive(this.artifact.url, archivePath, {
@@ -241,11 +296,12 @@ export class ObserverInstaller {
       if (!isCurrent()) throw new ObserverInstallError('operation_obsolete', 'Observer install was superseded');
 
       const artifactDirectory = path.join(this.paths.artifacts, `${this.artifact.version}-${this.artifact.platform}`);
-      const publishDirectory = path.join(this.paths.artifacts, `.publish-${nonce}`);
+      publishDirectory = path.join(this.paths.artifacts, `.publish-${nonce}`);
       await fs.promises.rename(extractionPath, publishDirectory);
       const licenseDestination = path.join(publishDirectory, 'LICENSE.zellij.md');
       await fs.promises.copyFile(this.licensePath, licenseDestination, fs.constants.COPYFILE_EXCL);
       await fs.promises.chmod(licenseDestination, 0o600);
+      await writeJsonAtomic(path.join(publishDirectory, '.publication.json'), publicationRecord(this.artifact));
       if (!isCurrent()) throw new ObserverInstallError('operation_obsolete', 'Observer install was superseded');
 
       try {
@@ -253,11 +309,12 @@ export class ObserverInstaller {
       } catch (error) {
         if (error?.code !== 'EEXIST' && error?.code !== 'ENOTEMPTY') throw error;
         const verified = await this.verify();
-        if (verified.state !== 'installed') {
+        if (verified.state !== 'installed' && !await this.verifyIncompletePublication(artifactDirectory)) {
           throw new ObserverInstallError('artifact_conflict', 'Existing managed artifact failed verification', error);
         }
         await fs.promises.rm(publishDirectory, { recursive: true, force: true });
-        return verified;
+        publishDirectory = null;
+        if (verified.state === 'installed') return verified;
       }
       if (!isCurrent()) throw new ObserverInstallError('operation_obsolete', 'Observer install was superseded');
       await writeJsonAtomic(this.paths.installedManifest, installedRecord(this.artifact, artifactDirectory));
@@ -265,15 +322,23 @@ export class ObserverInstaller {
       if (installed.state !== 'installed') {
         throw new ObserverInstallError('publish_verification_failed', 'Published Observer artifact failed verification');
       }
+      await fs.promises.unlink(path.join(artifactDirectory, '.publication.json'));
       onProgress?.({ phase: 'complete', bytes: download.bytes, total: download.bytes });
       return installed;
     } finally {
       await fs.promises.rm(stageRoot, { recursive: true, force: true });
+      if (publishDirectory) await fs.promises.rm(publishDirectory, { recursive: true, force: true });
     }
   }
 
   async removeInstalledArtifacts() {
     if (!this.artifact) return { state: 'unsupported', platform: this.platformKey };
+    try {
+      await assertPrivateDirectory(this.paths.root);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { state: 'not_installed', platform: this.platformKey };
+      throw new ObserverInstallError('unsafe_removal', 'Observer managed root is not safe to inspect', error);
+    }
     let record;
     try {
       const manifestStat = await fs.promises.lstat(this.paths.installedManifest);
@@ -287,6 +352,11 @@ export class ObserverInstaller {
     const expected = installedRecord(this.artifact, expectedDirectory);
     if (Object.keys(expected).some((key) => record[key] !== expected[key])) {
       throw new ObserverInstallError('unsafe_removal', 'Observer manifest did not resolve to the managed artifact directory');
+    }
+    try {
+      await this.assertArtifactChain(expectedDirectory);
+    } catch (error) {
+      throw new ObserverInstallError('unsafe_removal', 'Observer artifact parent chain is not safe to remove', error);
     }
     await fs.promises.rm(expectedDirectory, { recursive: true, force: true });
     await fs.promises.unlink(this.paths.installedManifest);

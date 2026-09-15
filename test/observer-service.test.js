@@ -3,10 +3,11 @@ import http from 'node:http';
 import test from 'node:test';
 import { ObserverService, OBSERVER_WEBSOCKET_PROTOCOL } from '../src/lib/observer-service.js';
 import { connectObserverWebSocket } from '../src/lib/observer-websocket.js';
+import { shutdownDashboardTransports } from '../src/lib/dashboard-shutdown.js';
 
 const LEASE_ID = 'a'.repeat(32);
 
-function fixture({ authEnabled = true, deferUpstream = false } = {}) {
+function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null } = {}) {
   const context = { kind: 'cookie', principalId: 'browser', scope: 'admin' };
   const apiContext = { kind: 'api', principalId: 'api-admin', scope: 'admin' };
   const readContext = { kind: 'api', principalId: 'api-read', scope: 'read' };
@@ -48,6 +49,7 @@ function fixture({ authEnabled = true, deferUpstream = false } = {}) {
       closed: false,
       async connect(callbacks) {
         this.callbacks = callbacks;
+        if (initialDisplay) callbacks.onDisplay(Buffer.from(initialDisplay));
         if (connectGate) await connectGate;
         return this;
       },
@@ -138,6 +140,7 @@ test('exact Observer upgrade authenticates before upstream and rejects browser i
     assert.equal(upstreams.length, 1);
     const messages = [];
     socket.on('message', (value) => messages.push(value));
+    socket.activate();
     upstreams[0].callbacks.onDisplay(Buffer.from('safe display'));
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.ok(messages.some((value) => Buffer.isBuffer(value) && value.toString() === 'safe display'));
@@ -148,6 +151,110 @@ test('exact Observer upgrade authenticates before upstream and rejects browser i
     await service.shutdown();
     socket?.destroy();
     await app.close();
+  }
+});
+
+test('display received before downstream admission is delivered after activation', async () => {
+  const { service } = fixture({ initialDisplay: 'INITIAL SNAPSHOT' });
+  const app = await startHttp(service);
+  let socket;
+  try {
+    socket = await connectObserverWebSocket({
+      port: app.server.address().port,
+      path: '/observer/stream',
+      headers: {
+        Cookie: 'admin=1', Origin: app.origin,
+        'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+      },
+    });
+    const messages = [];
+    socket.on('message', (value) => messages.push(value));
+    socket.activate();
+    await waitUntil(() => messages.some((value) => Buffer.isBuffer(value)));
+    assert.ok(messages.some((value) => Buffer.isBuffer(value) && value.toString() === 'INITIAL SNAPSHOT'));
+  } finally {
+    await service.shutdown();
+    socket?.destroy();
+    await app.close();
+  }
+});
+
+test('release, close, and reconnect leave no untracked upgraded socket', async () => {
+  const { service, upstreams } = fixture();
+  const app = await startHttp(service);
+  let first;
+  let second;
+  const connect = async () => {
+    const socket = await connectObserverWebSocket({
+      port: app.server.address().port,
+      path: '/observer/stream',
+      headers: {
+        Cookie: 'admin=1', Origin: app.origin,
+        'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+      },
+      closeTimeoutMs: 50,
+    });
+    socket.activate();
+    return socket;
+  };
+  try {
+    first = await connect();
+    const firstClosed = new Promise((resolve) => first.once('close', resolve));
+    const release = await fetch(`${app.origin}/api/observer/leases/${LEASE_ID}/release`, {
+      method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin },
+    });
+    assert.equal(release.status, 200);
+    await firstClosed;
+    await waitUntil(() => service.streams.size === 0);
+    assert.equal(upstreams[0].closed, true);
+
+    second = await connect();
+    assert.equal(service.streams.size, 1);
+    second.close();
+    second.close();
+    await waitUntil(() => service.streams.size === 0);
+    assert.equal(upstreams[1].closed, true);
+  } finally {
+    await service.shutdown();
+    first?.destroy();
+    second?.destroy();
+    await app.close();
+  }
+});
+
+test('Dashboard transport shutdown closes an active upgraded viewer while HTTP drains', async () => {
+  const { service } = fixture();
+  const app = await startHttp(service);
+  let socket;
+  let controlClosed = false;
+  try {
+    socket = await connectObserverWebSocket({
+      port: app.server.address().port,
+      path: '/observer/stream',
+      headers: {
+        Cookie: 'admin=1', Origin: app.origin,
+        'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+      },
+      closeTimeoutMs: 50,
+    });
+    socket.activate();
+    const started = Date.now();
+    const result = await shutdownDashboardTransports({
+      server: app.server,
+      observerService: service,
+      observerControl: { async close() { controlClosed = true; } },
+      timeoutMs: 500,
+    });
+    assert.equal(result.http.timedOut, false);
+    assert.equal(result.http.error, null);
+    assert.equal(result.observer.timedOut, false);
+    assert.equal(result.observer.error, null);
+    assert.equal(controlClosed, true);
+    assert.equal(service.streams.size, 0);
+    assert.ok(Date.now() - started < 500);
+  } finally {
+    socket?.destroy();
+    if (app.server.listening) await app.close();
   }
 });
 
@@ -196,6 +303,7 @@ test('admin bearer uses the explicit no-Origin path while cookie precedence stil
         'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
       },
     });
+    socket.activate();
     assert.equal(socket.closed, false);
   } finally {
     await service.shutdown();

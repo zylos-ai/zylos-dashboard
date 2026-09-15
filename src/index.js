@@ -3,6 +3,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, migratePasswordIfNeeded, validateApiSession } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
@@ -44,6 +45,7 @@ import { ObserverControlServer } from './lib/observer-control.js';
 import { ObserverInstaller } from './lib/observer-installer.js';
 import { ObserverManager } from './lib/observer-manager.js';
 import { ObserverService } from './lib/observer-service.js';
+import { shutdownDashboardTransports } from './lib/dashboard-shutdown.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
@@ -1772,17 +1774,7 @@ if (isMain && process.argv.includes('--smoke')) {
     process.on(signal, async () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      const httpDrain = new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          server.closeAllConnections?.();
-          resolve({ timedOut: true });
-        }, 10_000);
-        timeout.unref?.();
-        server.close((error) => {
-          clearTimeout(timeout);
-          resolve({ error: error || null, timedOut: false });
-        });
-      });
+      const shutdownDeadline = performance.now() + 10_000;
       pm2Collector.stop();
       systemCollector.stop();
       if (statuslineCollector) statuslineCollector.stop();
@@ -1796,18 +1788,20 @@ if (isMain && process.argv.includes('--smoke')) {
       fleetPoller.stop();
       sse.closeAll();
       let exitCode = 0;
-      const drain = await httpDrain;
-      if (drain.error || drain.timedOut) {
+      const shutdown = await shutdownDashboardTransports({
+        server, observerService, observerControl,
+        deadline: shutdownDeadline,
+      });
+      if (shutdown.http.error || shutdown.http.timedOut) {
         exitCode = 1;
-        process.stderr.write(`[dashboard] HTTP drain ${drain.timedOut ? 'timed out' : 'failed'} during shutdown\n`);
+        process.stderr.write(`[dashboard] HTTP drain ${shutdown.http.timedOut ? 'timed out' : 'failed'} during shutdown\n`);
       }
-      try {
-        await observerService.shutdown('dashboard_shutdown');
-      } catch (error) {
+      if (shutdown.observer.error || shutdown.observer.timedOut) {
         exitCode = 1;
-        process.stderr.write(`[observer] shutdown failed: ${error.code || 'observer_shutdown_failed'}\n`);
+        const code = shutdown.observer.error?.code ||
+          (shutdown.observer.timedOut ? 'observer_shutdown_timeout' : 'observer_shutdown_failed');
+        process.stderr.write(`[observer] shutdown failed: ${code}\n`);
       }
-      try { await observerControl.close(); } catch {}
       c4Reader.close();
       store.close();
       process.exit(exitCode);

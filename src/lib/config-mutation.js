@@ -40,16 +40,28 @@ async function readLockOwner(lockPath) {
 async function recoverStaleLock(lockPath, staleLockMs, now = Date.now()) {
   let stat;
   try {
-    stat = await fs.promises.stat(lockPath);
+    stat = await fs.promises.lstat(lockPath);
   } catch (error) {
     if (error?.code === 'ENOENT') return true;
     throw error;
   }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
   if (now - stat.mtimeMs < staleLockMs) return false;
   const owner = await readLockOwner(lockPath);
-  if (owner && isProcessAlive(Number(owner.pid))) return false;
+  if (!owner || isProcessAlive(Number(owner.pid))) return false;
+  const quarantinePath = `${lockPath}.stale-${crypto.randomBytes(12).toString('hex')}`;
   try {
-    await fs.promises.rm(lockPath, { recursive: true });
+    await fs.promises.rename(lockPath, quarantinePath);
+    const [movedStat, movedOwner] = await Promise.all([
+      fs.promises.lstat(quarantinePath),
+      readLockOwner(quarantinePath),
+    ]);
+    if (movedStat.dev !== stat.dev || movedStat.ino !== stat.ino ||
+        movedOwner?.nonce !== owner.nonce || isProcessAlive(Number(movedOwner.pid))) {
+      try { await fs.promises.rename(quarantinePath, lockPath); } catch {}
+      return false;
+    }
+    await fs.promises.rm(quarantinePath, { recursive: true });
     return true;
   } catch (error) {
     if (error?.code === 'ENOENT') return true;

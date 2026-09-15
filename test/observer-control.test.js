@@ -38,3 +38,32 @@ test('component pre-uninstall takes offline ownership only with no live producer
   assert.equal(saved.observer.removalState, null);
   assert.equal(saved.observer.lastError, null);
 });
+
+test('an old ownerless coordinator lock is recovered but a fresh initializer is preserved', async (t) => {
+  const { dataDir } = fixture(t);
+  const lockPath = path.join(dataDir, 'observer', 'runtime', 'control', 'coordinator.lock');
+  fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+  const stale = new Date(Date.now() - 60_000);
+  fs.utimesSync(lockPath, stale, stale);
+  const recovered = new ObserverControlServer({ dataDir, onPreUninstall: async () => {} });
+  await recovered.start();
+  assert.equal(fs.lstatSync(lockPath).isFile(), true);
+  await recovered.close();
+
+  fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+  const contender = new ObserverControlServer({ dataDir, onPreUninstall: async () => {} });
+  await assert.rejects(contender.start(), (error) => error?.code === 'coordinator_active');
+  assert.equal(fs.existsSync(lockPath), true);
+});
+
+test('an old corrupt coordinator owner record is safely recovered', async (t) => {
+  const { dataDir } = fixture(t);
+  const lockPath = path.join(dataDir, 'observer', 'runtime', 'control', 'coordinator.lock');
+  fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), '{broken');
+  const stale = new Date(Date.now() - 60_000);
+  fs.utimesSync(lockPath, stale, stale);
+  const server = new ObserverControlServer({ dataDir, onPreUninstall: async () => {} });
+  await server.start();
+  await server.close();
+});

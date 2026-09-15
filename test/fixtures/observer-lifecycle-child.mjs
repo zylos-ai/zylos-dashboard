@@ -68,6 +68,7 @@ await new Promise((resolve, reject) => {
     clearTimeout(timeout);
     resolve();
   });
+  downstream.activate();
 });
 const active = containment.active;
 process.stdout.write(`${JSON.stringify({ event: 'ready', action, marker: active.marker, port: active.port })}\n`);

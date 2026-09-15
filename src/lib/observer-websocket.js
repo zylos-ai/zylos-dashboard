@@ -5,6 +5,7 @@ import net from 'node:net';
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_QUEUED_BYTES = 2 * 1024 * 1024;
+const DEFAULT_CLOSE_TIMEOUT_MS = 1_000;
 
 function headerHasToken(value, token) {
   return String(value || '').split(',').some((item) => item.trim().toLowerCase() === token);
@@ -51,6 +52,7 @@ export class ObserverWebSocket extends EventEmitter {
     head = Buffer.alloc(0),
     maxMessageBytes = DEFAULT_MAX_MESSAGE_BYTES,
     maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES,
+    closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
   }) {
     super();
     this.socket = socket;
@@ -58,26 +60,48 @@ export class ObserverWebSocket extends EventEmitter {
     this.maskOutbound = maskOutbound;
     this.maxMessageBytes = maxMessageBytes;
     this.maxQueuedBytes = maxQueuedBytes;
+    this.closeTimeoutMs = closeTimeoutMs;
     this.buffer = Buffer.from(head);
     this.fragments = [];
     this.fragmentOpcode = null;
     this.closed = false;
+    this.closing = false;
+    this.active = false;
+    this.closeTimer = null;
     socket.setNoDelay(true);
     socket.on('data', (chunk) => {
+      if (this.closing || this.closed) return;
       this.buffer = Buffer.concat([this.buffer, chunk]);
+      if (!this.active && this.buffer.length > this.maxQueuedBytes) {
+        this._emitError(new Error('WebSocket startup buffer exceeded'));
+        this.destroy();
+        return;
+      }
+      if (!this.active) return;
       try { this._drain(); } catch (error) { this._emitError(error); this.destroy(); }
     });
     socket.on('error', (error) => this._emitError(error));
     socket.on('close', () => {
       if (this.closed) return;
       this.closed = true;
+      this.closing = false;
+      clearTimeout(this.closeTimer);
       this.emit('close');
     });
-    queueMicrotask(() => {
-      if (!this.closed && this.buffer.length) {
-        try { this._drain(); } catch (error) { this._emitError(error); this.destroy(); }
-      }
-    });
+  }
+
+  activate() {
+    if (this.active || this.closing || this.closed) return false;
+    if (this.buffer.length > this.maxQueuedBytes) {
+      this._emitError(new Error('WebSocket startup buffer exceeded'));
+      this.destroy();
+      return false;
+    }
+    this.active = true;
+    if (this.buffer.length) {
+      try { this._drain(); } catch (error) { this._emitError(error); this.destroy(); return false; }
+    }
+    return !this.closed;
   }
 
   sendBinary(payload) { return this._send(0x2, payload); }
@@ -85,18 +109,31 @@ export class ObserverWebSocket extends EventEmitter {
   ping(payload = Buffer.alloc(0)) { return this._send(0x9, payload); }
 
   close(code = 1000, reason = '') {
-    if (this.closed) return;
+    if (this.closed || this.closing) return;
     const reasonBytes = Buffer.from(String(reason));
     const payload = Buffer.allocUnsafe(2 + Math.min(reasonBytes.length, 123));
     payload.writeUInt16BE(code, 0);
     reasonBytes.copy(payload, 2, 0, payload.length - 2);
-    try { this._send(0x8, payload); } catch {}
+    this.closing = true;
+    this.active = false;
+    this.buffer = Buffer.alloc(0);
+    this.fragments = [];
+    this.fragmentOpcode = null;
+    try {
+      if (!this.socket.destroyed && !this.socket.writableEnded) {
+        this.socket.write(encodeFrame(0x8, payload, this.maskOutbound));
+      }
+    } catch {}
+    this.closeTimer = setTimeout(() => this.destroy(), this.closeTimeoutMs);
+    this.closeTimer.unref?.();
     this.socket.end();
   }
 
   destroy() {
     if (this.closed) return;
     this.closed = true;
+    this.closing = false;
+    clearTimeout(this.closeTimer);
     this.socket.destroy();
     this.emit('close');
   }
@@ -106,7 +143,7 @@ export class ObserverWebSocket extends EventEmitter {
   }
 
   _send(opcode, payload) {
-    if (this.closed || this.socket.destroyed || this.socket.writableEnded) return false;
+    if (this.closed || this.closing || this.socket.destroyed || this.socket.writableEnded) return false;
     const frame = encodeFrame(opcode, payload, this.maskOutbound);
     if (this.socket.writableLength + frame.length > this.maxQueuedBytes) {
       this.close(1009, 'slow_consumer');
@@ -148,8 +185,16 @@ export class ObserverWebSocket extends EventEmitter {
       if (mask) for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
 
       if (opcode === 0x8) {
-        if (!this.closed) {
-          try { this._send(0x8, payload); } catch {}
+        if (!this.closed && !this.closing) {
+          this.closing = true;
+          this.active = false;
+          try {
+            if (!this.socket.destroyed && !this.socket.writableEnded) {
+              this.socket.write(encodeFrame(0x8, payload, this.maskOutbound));
+            }
+          } catch {}
+          this.closeTimer = setTimeout(() => this.destroy(), this.closeTimeoutMs);
+          this.closeTimer.unref?.();
           this.socket.end();
         }
         return;
@@ -214,7 +259,10 @@ export function rejectObserverUpgrade(socket, status = 404, code = 'not_found') 
 }
 
 export async function connectObserverWebSocket({
-  host = '127.0.0.1', port, path, headers = {}, timeoutMs = 5_000, signal,
+  host = '127.0.0.1', port, path, headers = {}, timeoutMs = 5_000,
+  closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
+  maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES,
+  signal,
 }) {
   if (signal?.aborted) throw new Error('WebSocket connect aborted');
   const key = crypto.randomBytes(16).toString('base64');
@@ -279,6 +327,8 @@ export async function connectObserverWebSocket({
         maskedInbound: false,
         maskOutbound: true,
         head: remainder,
+        closeTimeoutMs,
+        maxQueuedBytes,
       }));
     };
     socket.on('data', onData);

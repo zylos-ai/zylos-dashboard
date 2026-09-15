@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -60,6 +61,30 @@ function cleanGuardianEnvironment(environment = process.env) {
   return result;
 }
 
+async function validatePersistedSocketRoot(state) {
+  const { socketRoot, socketOwnerFile, parent, nonce, marker, root } = state;
+  const expectedOwnerFile = path.join(socketRoot || '', '.observer-owner.json');
+  if (typeof socketRoot !== 'string' || path.dirname(socketRoot) !== '/tmp' ||
+      path.resolve(socketRoot) !== socketRoot ||
+      !new RegExp(`^zobs-${parent?.pid}-[0-9a-f]{10}$`).test(path.basename(socketRoot)) ||
+      socketOwnerFile !== expectedOwnerFile) {
+    throw new Error('socket root does not match the exact managed /tmp contract');
+  }
+  const [rootStat, ownerStat] = await Promise.all([
+    fs.promises.lstat(socketRoot),
+    fs.promises.lstat(expectedOwnerFile),
+  ]);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || (rootStat.mode & 0o077) !== 0 ||
+      (typeof process.getuid === 'function' && rootStat.uid !== process.getuid()) ||
+      !ownerStat.isFile() || ownerStat.isSymbolicLink() || (ownerStat.mode & 0o077) !== 0) {
+    throw new Error('socket root is not an owned private directory');
+  }
+  const owner = JSON.parse(await fs.promises.readFile(expectedOwnerFile, 'utf8'));
+  if (owner.nonce !== nonce || owner.marker !== marker || owner.root !== root || owner.socketRoot !== socketRoot) {
+    throw new Error('socket root ownership record does not match the generation');
+  }
+}
+
 async function waitFor(check, label, timeoutMs = START_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -87,12 +112,24 @@ async function findFreePort() {
   return port;
 }
 
-async function listenerOpen(port) {
+async function listenerOpen(port, timeoutMs = COMMAND_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
-    socket.once('connect', () => { socket.destroy(); resolve(true); });
-    socket.once('error', () => resolve(false));
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(Math.max(1, timeoutMs), () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
   });
+}
+
+function remainingMs(deadline) {
+  return Math.max(0, Math.floor(deadline - performance.now()));
 }
 
 function captureChild(child) {
@@ -156,6 +193,9 @@ export class DarwinObserverContainment extends EventEmitter {
     platform = process.platform,
     arch = process.arch,
     guardianOutput = 'managed-file',
+    cleanupTimeoutMs = CLEANUP_TIMEOUT_MS,
+    ownershipQuietMs = OWNERSHIP_QUIET_MS,
+    ownershipPollMs = OWNERSHIP_POLL_MS,
   }) {
     super();
     this.runtimeRoot = path.join(dataDir, 'observer', 'runtime', 'generations');
@@ -168,6 +208,9 @@ export class DarwinObserverContainment extends EventEmitter {
     this.platform = platform;
     this.arch = arch;
     this.guardianOutput = guardianOutput;
+    this.cleanupTimeoutMs = cleanupTimeoutMs;
+    this.ownershipQuietMs = ownershipQuietMs;
+    this.ownershipPollMs = ownershipPollMs;
     this.active = null;
     this._stopping = null;
   }
@@ -180,10 +223,7 @@ export class DarwinObserverContainment extends EventEmitter {
     };
   }
 
-  async verifyHelpers() {
-    if (this.platform !== 'darwin' || this.arch !== 'arm64') {
-      throw new ObserverContainmentError('unsupported_platform', `Unsupported containment platform: ${this.platform}-${this.arch}`);
-    }
+  async verifyHelperManifest() {
     const manifestPath = path.join(this.helperDir, 'manifest.json');
     const manifestStat = await fs.promises.lstat(manifestPath);
     if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
@@ -207,6 +247,13 @@ export class DarwinObserverContainment extends EventEmitter {
       }
     }
     return this.helperPaths;
+  }
+
+  async verifyHelpers() {
+    if (this.platform !== 'darwin' || this.arch !== 'arm64') {
+      throw new ObserverContainmentError('unsupported_platform', `Unsupported containment platform: ${this.platform}-${this.arch}`);
+    }
+    return this.verifyHelperManifest();
   }
 
   async _run(file, args, options = {}) {
@@ -296,16 +343,20 @@ export class DarwinObserverContainment extends EventEmitter {
     const layoutFile = path.join(root, 'readonly-tmux.kdl');
     const tokenFile = path.join(root, 'read-only-token');
     const guardianLog = path.join(root, 'guardian.log');
+    const socketOwnerFile = path.join(socketRoot, '.observer-owner.json');
     const marker = `fdpath:${markerFile}`;
     const sessionName = `observer-${nonce}`.slice(0, 40);
     const port = await findFreePort();
     await fs.promises.writeFile(markerFile, `${nonce}\n`, { flag: 'wx', mode: 0o600 });
+    await fs.promises.writeFile(socketOwnerFile, `${JSON.stringify({ nonce, marker, root, socketRoot })}\n`, {
+      flag: 'wx', mode: 0o600,
+    });
     const tmuxArgs = this._tmuxArgs('attach-session', '-r', '-t', target);
     const layout = `layout {\n  pane command=${JSON.stringify(this.tmuxPath)} focus=true {\n    args ${tmuxArgs.map((value) => JSON.stringify(value)).join(' ')}\n  }\n}\n`;
     await fs.promises.writeFile(layoutFile, layout, { flag: 'wx', mode: 0o600 });
     const parent = await this._identity(process.pid);
     const persisted = {
-      schema: 1, generation, nonce, parent, marker, markerFile, root, socketRoot,
+      schema: 1, generation, nonce, parent, marker, markerFile, root, socketRoot, socketOwnerFile,
       sessionName, port, target, state: 'starting',
     };
     await writeJsonAtomic(stateFile, persisted);
@@ -378,10 +429,13 @@ export class DarwinObserverContainment extends EventEmitter {
     }
   }
 
-  async _census(marker) {
+  async _census(marker, deadline = null) {
+    const timeout = deadline === null ? COMMAND_TIMEOUT_MS : remainingMs(deadline);
+    if (timeout <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
     try {
       const result = await this._run(this.helperPaths.guardian, ['census', marker], {
         env: cleanGuardianEnvironment(),
+        timeout: Math.min(COMMAND_TIMEOUT_MS, timeout),
       });
       return { count: 0, output: result.stdout };
     } catch (error) {
@@ -392,39 +446,70 @@ export class DarwinObserverContainment extends EventEmitter {
         }).find((event) => event?.event === 'count')?.count);
         return { count, output };
       }
+      if (deadline !== null && remainingMs(deadline) <= 0) {
+        throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired', error);
+      }
       throw new ObserverContainmentError('census_failed', 'Observer ownership census failed closed', error);
     }
   }
 
-  async _fallbackCleanup(active) {
+  async _fallbackCleanup(active, deadline = performance.now() + this.cleanupTimeoutMs) {
+    const timeout = remainingMs(deadline);
+    if (timeout <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
     const guardian = this.spawn(this.helperPaths.guardian, [
       'watch', '3', String(process.pid), String(active.parent.startSec), String(active.parent.startUsec),
-      active.marker, '9000',
+      active.marker, String(timeout),
     ], { env: cleanGuardianEnvironment(), stdio: ['ignore', 'ignore', 'ignore', 'pipe'] });
     this._monitorChild(active, 'fallback guardian', guardian);
     guardian.stdio[3].end();
-    await this._waitForCleanExit(guardian, CLEANUP_TIMEOUT_MS);
+    try {
+      await this._waitForCleanExit(guardian, Math.max(1, remainingMs(deadline)));
+    } catch (error) {
+      if (remainingMs(deadline) <= 0) {
+        throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired', error);
+      }
+      throw error;
+    }
   }
 
-  async _confirmStableEmpty(active) {
-    const deadline = Date.now() + CLEANUP_TIMEOUT_MS;
+  async _confirmStableEmpty(active, deadline = performance.now() + this.cleanupTimeoutMs) {
     let emptySince = null;
     let lastCount = 0;
-    while (Date.now() < deadline) {
-      const census = await this._census(active.marker);
+    let lastCensusError = null;
+    while (performance.now() < deadline) {
+      let census;
+      try {
+        census = await this._census(active.marker, deadline);
+        lastCensusError = null;
+      } catch (error) {
+        if (error?.code !== 'census_failed') throw error;
+        lastCensusError = error;
+        emptySince = null;
+        const retryPause = Math.min(this.ownershipPollMs, remainingMs(deadline));
+        if (retryPause > 0) await delay(retryPause);
+        continue;
+      }
       lastCount = census.count;
       if (census.count === 0) {
-        emptySince ??= Date.now();
-        if (Date.now() - emptySince >= OWNERSHIP_QUIET_MS) return;
+        emptySince ??= performance.now();
+        if (performance.now() - emptySince >= this.ownershipQuietMs) return;
       } else {
         emptySince = null;
-        await this._fallbackCleanup(active);
+        await this._fallbackCleanup(active, deadline);
       }
-      await delay(OWNERSHIP_POLL_MS);
+      const pause = Math.min(this.ownershipPollMs, remainingMs(deadline));
+      if (pause > 0) await delay(pause);
+    }
+    if (lastCensusError) {
+      throw new ObserverContainmentError(
+        'census_failed',
+        'Observer ownership census did not recover before the cleanup deadline',
+        lastCensusError,
+      );
     }
     throw new ObserverContainmentError(
-      'owned_survivors',
-      `Observer cleanup did not hold a stable empty ownership census (last count: ${lastCount})`,
+      'cleanup_timeout',
+      `Observer cleanup deadline expired before a stable empty ownership census (last count: ${lastCount})`,
     );
   }
 
@@ -438,22 +523,26 @@ export class DarwinObserverContainment extends EventEmitter {
     const active = this.active;
     if (!active) return { stopped: true, reason, count: 0 };
     active.stopping = true;
-    const startedAt = Date.now();
+    const startedAt = performance.now();
+    const deadline = startedAt + this.cleanupTimeoutMs;
     try { active.guardianLiveness?.end(); } catch {}
     if (active.guardian) {
-      try { await this._waitForCleanExit(active.guardian, CLEANUP_TIMEOUT_MS); }
-      catch { await this._fallbackCleanup(active); }
+      try { await this._waitForCleanExit(active.guardian, Math.max(1, remainingMs(deadline))); }
+      catch { await this._fallbackCleanup(active, deadline); }
     } else {
-      await this._fallbackCleanup(active);
+      await this._fallbackCleanup(active, deadline);
     }
-    await this._confirmStableEmpty(active);
-    if (await listenerOpen(active.port)) {
+    await this._confirmStableEmpty(active, deadline);
+    const listenerBudget = remainingMs(deadline);
+    if (listenerBudget <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
+    if (await listenerOpen(active.port, listenerBudget)) {
       throw new ObserverContainmentError('listener_survived', 'Observer loopback listener survived cleanup');
     }
+    await validatePersistedSocketRoot(active);
     await fs.promises.rm(active.socketRoot, { recursive: true, force: true });
     await fs.promises.rm(active.root, { recursive: true, force: true });
     this.active = null;
-    return { stopped: true, reason, count: 0, elapsedMs: Date.now() - startedAt };
+    return { stopped: true, reason, count: 0, elapsedMs: Math.round(performance.now() - startedAt) };
   }
 
   async reconcilePersisted() {
@@ -471,25 +560,31 @@ export class DarwinObserverContainment extends EventEmitter {
       const root = path.join(this.runtimeRoot, entry.name);
       let state;
       try {
+        const deadline = performance.now() + this.cleanupTimeoutMs;
         const statePath = path.join(root, 'state.json');
         const stat = await fs.promises.lstat(statePath);
         if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe state');
         state = JSON.parse(await fs.promises.readFile(statePath, 'utf8'));
         if (state.root !== root || state.markerFile !== path.join(root, 'ownership.marker') ||
-            state.marker !== `fdpath:${state.markerFile}` || !path.basename(state.socketRoot).startsWith('zobs-')) {
+            state.marker !== `fdpath:${state.markerFile}`) {
           throw new Error('state paths do not match managed generation');
         }
+        await validatePersistedSocketRoot(state);
+        const reconcileBudget = remainingMs(deadline);
+        if (reconcileBudget <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
         try {
           await this._run(this.helperPaths.guardian, [
             'reconcile', String(state.parent.pid), String(state.parent.startSec), String(state.parent.startUsec),
-            state.marker, '9000',
-          ], { env: cleanGuardianEnvironment(), timeout: CLEANUP_TIMEOUT_MS });
+            state.marker, String(reconcileBudget),
+          ], { env: cleanGuardianEnvironment(), timeout: reconcileBudget });
         } catch (error) {
           if (error?.code !== 4) throw error;
           throw new Error('recorded producer is still alive');
         }
-        await this._confirmStableEmpty(state);
-        if (await listenerOpen(Number(state.port))) throw new Error('listener survived reconciliation');
+        await this._confirmStableEmpty(state, deadline);
+        const listenerBudget = remainingMs(deadline);
+        if (listenerBudget <= 0) throw new ObserverContainmentError('cleanup_timeout', 'Observer cleanup deadline expired');
+        if (await listenerOpen(Number(state.port), listenerBudget)) throw new Error('listener survived reconciliation');
         await fs.promises.rm(state.socketRoot, { recursive: true, force: true });
         await fs.promises.rm(root, { recursive: true, force: true });
         results.push({ generation: state.generation, reconciled: true });

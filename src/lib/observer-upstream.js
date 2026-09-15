@@ -109,6 +109,8 @@ export class ObserverUpstream {
       const payload = Buffer.isBuffer(message) ? message : Buffer.from(message);
       if (payload.length <= 256 * 1024) onDisplay?.(payload);
     });
+    this.control.activate();
+    this.terminal.activate();
     return this;
   }
 

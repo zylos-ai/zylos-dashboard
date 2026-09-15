@@ -234,10 +234,14 @@ export class ObserverManager {
         try { await starting; } catch {}
       }
       this._stopRevalidation();
-      const result = await this.coordinator.disable({ reason });
-      this.generation = null;
-      this._runtimeError = null;
-      return result;
+      try {
+        const result = await this.coordinator.disable({ reason });
+        this.generation = null;
+        this._runtimeError = null;
+        return result;
+      } catch (error) {
+        await this._cleanupAfterLifecycleFailure(error, `${reason}_failed`);
+      }
     } finally {
       this._lifecycleTransitions -= 1;
     }
@@ -257,10 +261,14 @@ export class ObserverManager {
         try { await starting; } catch {}
       }
       this._stopRevalidation();
-      const result = await this.coordinator.uninstall();
-      this.generation = null;
-      this._runtimeError = null;
-      return result;
+      try {
+        const result = await this.coordinator.uninstall();
+        this.generation = null;
+        this._runtimeError = null;
+        return result;
+      } catch (error) {
+        await this._cleanupAfterLifecycleFailure(error, 'uninstall_failed');
+      }
     } finally {
       this._lifecycleTransitions -= 1;
     }
@@ -282,6 +290,24 @@ export class ObserverManager {
     this.generation = null;
     this._runtimeError = null;
     return result;
+  }
+
+  async _cleanupAfterLifecycleFailure(originalError, reason) {
+    try {
+      await this.containment.stopGeneration({ reason });
+      this.generation = null;
+      this._runtimeError = null;
+    } catch (cleanupError) {
+      this._runtimeError = cleanupError;
+      try {
+        Object.defineProperty(originalError, 'cleanupError', {
+          value: cleanupError,
+          enumerable: false,
+          configurable: true,
+        });
+      } catch {}
+    }
+    throw originalError;
   }
 
   async handleContainmentFailure(error) {

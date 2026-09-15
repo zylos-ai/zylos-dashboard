@@ -147,3 +147,39 @@ test('uninstall refuses a manifest that broadens the owned path', async (t) => {
   fs.writeFileSync(installer.paths.installedManifest, `${JSON.stringify(manifest)}\n`);
   await assert.rejects(installer.removeInstalledArtifacts(), (error) => error?.code === 'unsafe_removal');
 });
+
+test('retry adopts an interrupted owned publication and cleans only its staging directories', async (t) => {
+  const fixture = makeArtifactFixture(t);
+  const installer = installerFor(t, fixture);
+  let checks = 0;
+  await assert.rejects(
+    installer.install({ isCurrent: () => ++checks < 3 }),
+    (error) => error?.code === 'operation_obsolete',
+  );
+  const artifactDirectory = path.join(
+    installer.paths.artifacts,
+    `${fixture.artifact.version}-${fixture.artifact.platform}`,
+  );
+  assert.equal(fs.existsSync(path.join(artifactDirectory, '.publication.json')), true);
+  assert.deepEqual(fs.readdirSync(installer.paths.artifacts).filter((name) => name.startsWith('.publish-')), []);
+  assert.deepEqual(fs.readdirSync(installer.paths.staging), []);
+
+  const installed = await installer.install();
+  assert.equal(installed.state, 'installed');
+  assert.equal(fs.existsSync(path.join(artifactDirectory, '.publication.json')), false);
+  assert.deepEqual(fs.readdirSync(installer.paths.artifacts).filter((name) => name.startsWith('.publish-')), []);
+});
+
+test('verify and uninstall reject a symlinked managed artifacts parent without touching its target', async (t) => {
+  const fixture = makeArtifactFixture(t);
+  const installer = installerFor(t, fixture);
+  await installer.install();
+  const external = path.join(fixture.root, 'external-artifacts');
+  fs.renameSync(installer.paths.artifacts, external);
+  fs.symlinkSync(external, installer.paths.artifacts);
+  const sentinel = path.join(external, `${fixture.artifact.version}-${fixture.artifact.platform}`, 'zellij');
+
+  assert.equal((await installer.verify()).state, 'failed');
+  await assert.rejects(installer.removeInstalledArtifacts(), (error) => error?.code === 'unsafe_removal');
+  assert.equal(fs.existsSync(sentinel), true);
+});
