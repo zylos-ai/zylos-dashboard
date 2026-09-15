@@ -4,8 +4,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, validateApiSession } from './lib/auth.js';
+import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, migratePasswordIfNeeded, validateApiSession } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
+import { mutateConfig } from './lib/config-mutation.js';
 import {
   DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS,
   DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
@@ -96,6 +97,7 @@ function refreshInstalledVersions() {
 
 const config = loadConfig();
 ensureDataDirs(config);
+await migratePasswordIfNeeded(config);
 let zylosUpgradeResult = consumeZylosUpgradeMarker(config.zylosDir, zylosVersion);
 
 const activeRuntime = loadZylosConfig(config.zylosDir).runtime || process.env.ZYLOS_RUNTIME || 'claude';
@@ -498,35 +500,25 @@ function validateAgentName(name, { allowCurrentSelf = false, currentName = null 
   return null;
 }
 
-function readConfigFileForUpdate() {
-  try {
-    if (fs.existsSync(config.configPath)) return JSON.parse(fs.readFileSync(config.configPath, 'utf8'));
-  } catch {
-    return {};
-  }
-  return {};
-}
-
-function writeConfigFileAtomic(nextConfig) {
-  const tmpPath = config.configPath + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(nextConfig, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmpPath, config.configPath);
-}
-
-function persistFleetConfig(mutator) {
-  const existing = readConfigFileForUpdate();
-  const nextFleet = {
-    ...(existing.fleet || {}),
-    agents: Array.isArray(existing.fleet?.agents) ? existing.fleet.agents.map(a => ({ ...a })) : currentFleetAgents().map(a => ({ ...a }))
-  };
-  const nextAgent = {
-    ...(existing.agent || {}),
-    ...(config.agent || {})
-  };
-  const result = mutator({ existing, fleet: nextFleet, agent: nextAgent });
-  existing.fleet = nextFleet;
-  existing.agent = nextAgent;
-  writeConfigFileAtomic(existing);
+async function persistFleetConfig(mutator) {
+  const { config: existing, result } = await mutateConfig(config.configPath, (lockedConfig) => {
+    const nextFleet = {
+      ...(lockedConfig.fleet || {}),
+      agents: Array.isArray(lockedConfig.fleet?.agents)
+        ? lockedConfig.fleet.agents.map(a => ({ ...a }))
+        : currentFleetAgents().map(a => ({ ...a }))
+    };
+    const nextAgent = {
+      ...(lockedConfig.agent || {}),
+      ...(config.agent || {})
+    };
+    const mutationResult = mutator({ existing: lockedConfig, fleet: nextFleet, agent: nextAgent });
+    lockedConfig.fleet = nextFleet;
+    lockedConfig.agent = nextAgent;
+    return mutationResult;
+  });
+  const nextFleet = existing.fleet;
+  const nextAgent = existing.agent;
   config.fleet = {
     ...(config.fleet || {}),
     ...nextFleet,
@@ -614,7 +606,12 @@ async function handleFleetAgents(req, res) {
       sendJson(res, 400, { error: postProbeNameError });
       return;
     }
-    persistFleetConfig(({ fleet }) => {
+    await persistFleetConfig(({ fleet }) => {
+      if (fleet.agents.some((entry) => entry.name === name)) {
+        const error = new Error('duplicate_name');
+        error.code = 'duplicate_name';
+        throw error;
+      }
       fleet.agents.push(agent);
     });
     fleetPoller.addAgent(config.fleet.agents.find(a => a.name === name));
@@ -628,6 +625,10 @@ async function handleFleetAgents(req, res) {
       }
     });
   } catch (err) {
+    if (err?.code === 'duplicate_name') {
+      sendJson(res, 400, { error: 'duplicate_name' });
+      return;
+    }
     process.stderr.write(`[fleet-config] Failed to save fleet agent: ${err.message}\n`);
     sendJson(res, 500, { error: 'failed_to_save_config' });
   }
@@ -678,7 +679,7 @@ async function handleFleetAgentDelete(req, res, pathname) {
     return;
   }
   try {
-    persistFleetConfig(({ fleet }) => {
+    await persistFleetConfig(({ fleet }) => {
       fleet.agents = fleet.agents.filter(a => a.name !== name);
     });
     fleetPoller.removeAgent(name);
@@ -709,7 +710,7 @@ async function handleAgentRename(req, res) {
     return;
   }
   try {
-    persistFleetConfig(({ agent }) => {
+    await persistFleetConfig(({ agent }) => {
       agent.name = name;
     });
     scheduleFleetStateBroadcast();
@@ -1314,44 +1315,35 @@ async function handleSettingsUpdate(req, res) {
   }
 
   try {
-    let existing = {};
-    try {
-      if (fs.existsSync(config.configPath)) {
-        existing = JSON.parse(fs.readFileSync(config.configPath, 'utf8'));
+    await mutateConfig(config.configPath, (existing) => {
+      if (body.modelPrices !== undefined) {
+        existing.runtimeModelPrices = {
+          ...(existing.runtimeModelPrices || {}),
+          [priceRuntime]: body.modelPrices
+        };
+        if (priceRuntime === 'claude') existing.modelPrices = body.modelPrices;
       }
-    } catch { /* start fresh if corrupt */ }
-
-    if (body.modelPrices !== undefined) {
-      existing.runtimeModelPrices = {
-        ...(existing.runtimeModelPrices || {}),
-        [priceRuntime]: body.modelPrices
-      };
-      if (priceRuntime === 'claude') existing.modelPrices = body.modelPrices;
-    }
-    if (body.fastModeMultiplier !== undefined) {
-      existing.runtimeFastModeMultipliers = {
-        ...(existing.runtimeFastModeMultipliers || {}),
-        [priceRuntime]: body.fastModeMultiplier
-      };
-      if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
-      if (body.fastModeMultiplier === null) {
-        delete existing.runtimeFastModeMultipliers[priceRuntime];
-        delete existing.fastModeMultiplier;
-      }
-    }
-    if (body.priorityModelPrices !== undefined) {
-      existing.runtimeServiceTierModelPrices = {
-        ...(existing.runtimeServiceTierModelPrices || {}),
-        codex: {
-          ...(existing.runtimeServiceTierModelPrices?.codex || {}),
-          priority: body.priorityModelPrices
+      if (body.fastModeMultiplier !== undefined) {
+        existing.runtimeFastModeMultipliers = {
+          ...(existing.runtimeFastModeMultipliers || {}),
+          [priceRuntime]: body.fastModeMultiplier
+        };
+        if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
+        if (body.fastModeMultiplier === null) {
+          delete existing.runtimeFastModeMultipliers[priceRuntime];
+          delete existing.fastModeMultiplier;
         }
-      };
-    }
-
-    const tmpPath = config.configPath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n', { mode: 0o600 });
-    fs.renameSync(tmpPath, config.configPath);
+      }
+      if (body.priorityModelPrices !== undefined) {
+        existing.runtimeServiceTierModelPrices = {
+          ...(existing.runtimeServiceTierModelPrices || {}),
+          codex: {
+            ...(existing.runtimeServiceTierModelPrices?.codex || {}),
+            priority: body.priorityModelPrices
+          }
+        };
+      }
+    });
 
     if (body.modelPrices !== undefined) {
       config.runtimeModelPrices = {

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
+import { mutateConfig } from './config-mutation.js';
 import { sendHtml, sendJson, sendText } from './http.js';
 
 const SCRYPT_KEYLEN = 64;
@@ -49,15 +49,13 @@ function isPlaintext(password) {
   return typeof password === 'string' && password.length > 0 && !password.startsWith('scrypt:');
 }
 
-export function migratePasswordIfNeeded(config) {
+export async function migratePasswordIfNeeded(config) {
   if (!isPlaintext(config.auth?.password)) return;
   const hashed = hashPassword(config.auth.password);
   try {
-    const existing = fs.existsSync(config.configPath)
-      ? JSON.parse(fs.readFileSync(config.configPath, 'utf8'))
-      : {};
-    existing.auth = { ...(existing.auth || {}), password: hashed };
-    fs.writeFileSync(config.configPath, `${JSON.stringify(existing, null, 2)}\n`);
+    await mutateConfig(config.configPath, (existing) => {
+      existing.auth = { ...(existing.auth || {}), password: hashed };
+    });
     config.auth.password = hashed;
     console.log('[dashboard] Auth: migrated plaintext password to scrypt hash');
   } catch (err) {
@@ -79,21 +77,20 @@ function createSession(remember = false) {
 }
 
 function validateSession(token) {
-  if (!token) return false;
-  if (!_store) return false;
+  if (!token || !_store) return null;
   const hash = sha256(token);
   const session = _store.getSession(hash);
-  if (!session) return false;
+  if (!session) return null;
   const now = Date.now();
   const absoluteMs = session.remember ? REMEMBER_ABSOLUTE_MS : SESSION_ABSOLUTE_MS;
   const idleMs = session.remember ? REMEMBER_IDLE_MS : SESSION_IDLE_MS;
   if (now - session.created_at > absoluteMs ||
       now - session.last_activity_at > idleMs) {
     _store.deleteSession(hash);
-    return false;
+    return null;
   }
   _store.touchSession(hash, now);
-  return true;
+  return { kind: 'cookie', principalId: hash, scope: 'admin' };
 }
 
 function destroySession(token) {
@@ -323,7 +320,7 @@ export function validateApiSession(token) {
   if (!session) return null;
   if (session.key_revoked_at) return null;
   if (Date.now() > session.expires_at) return null;
-  return { scope: session.scope };
+  return { kind: 'api', principalId: String(session.api_key_id), scope: session.scope };
 }
 
 function getBearerToken(req) {
@@ -336,7 +333,6 @@ export class AuthGate {
   constructor(config, store) {
     this.config = config;
     _store = store || null;
-    migratePasswordIfNeeded(this.config);
     if (_store) {
       this._cleanupTimer = setInterval(() => {
         const now = Date.now();
@@ -356,7 +352,10 @@ export class AuthGate {
     if (!bearer) return null;
     if (bearer.startsWith(API_SESSION_PREFIX)) {
       const result = validateApiSession(bearer);
-      if (result) req._apiToken = bearer;
+      if (result) {
+        req._apiToken = bearer;
+        req._authContext = result;
+      }
       return result;
     }
     return null;
@@ -364,8 +363,17 @@ export class AuthGate {
 
   isAuthenticated(req) {
     if (!this.enabled) return true;
-    if (validateSession(getSessionCookie(req))) return true;
-    return !!this.getApiAuth(req);
+    return Boolean(this.resolveAuthContext(req));
+  }
+
+  resolveAuthContext(req) {
+    if (!this.enabled) return null;
+    const cookieAuth = validateSession(getSessionCookie(req));
+    if (cookieAuth) {
+      req._authContext = cookieAuth;
+      return cookieAuth;
+    }
+    return this.getApiAuth(req);
   }
 
   async handle(req, res, url) {
@@ -386,12 +394,13 @@ export class AuthGate {
 
     if (!this.enabled) return false;
 
-    if (validateSession(getSessionCookie(req))) {
+    const authContext = this.resolveAuthContext(req);
+    if (authContext?.kind === 'cookie') {
       res.setHeader('Cache-Control', 'no-store');
       return false;
     }
 
-    const apiAuth = this.getApiAuth(req);
+    const apiAuth = authContext?.kind === 'api' ? authContext : null;
     if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/'))) {
       const needsAdmin = needsAdminApiAccess(pathname, req.method);
       if (needsAdmin && apiAuth.scope !== 'admin') {
