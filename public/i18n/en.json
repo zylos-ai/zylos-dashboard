@@ -238,6 +238,7 @@
   "metric.total_cost": "Total: {total}",
   "sched.pending": "{count} pending",
   "sched.no_pending": "No pending tasks",
+  "sched.unknown": "Scheduler data unavailable",
   "actions.custom": "Custom...",
   "actions.model_placeholder": "e.g. claude-opus-4-7",
   "btn.remove": "Remove",

@@ -43,6 +43,7 @@ import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModel
 import { VersionChecker } from './lib/version-checker.js';
 import { isNewerVersion } from './lib/version-utils.js';
 import { applyVersionUpdateFields } from './lib/runtime-info.js';
+import { readSchedulerStatus } from './lib/scheduler-status.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
@@ -908,28 +909,6 @@ function readSchedulerTodayCount(zylosDir) {
     return row?.count || 0;
   } catch {
     return 0;
-  }
-}
-
-function readSchedulerStatus(zylosDir) {
-  const dbFile = path.join(zylosDir, 'scheduler', 'scheduler.db');
-  if (!fs.existsSync(dbFile)) return null;
-  try {
-    const db = new Database(dbFile, { readonly: true });
-    db.pragma('busy_timeout = 3000');
-    const counts = db.prepare(
-      `SELECT status, COUNT(*) as count FROM tasks WHERE status IN ('pending','paused','running') GROUP BY status`
-    ).all();
-    const upcoming = db.prepare(
-      `SELECT id, name, next_run_at FROM tasks WHERE status = 'pending' ORDER BY next_run_at ASC LIMIT 5`
-    ).all();
-    db.close();
-    const result = { pending: 0, paused: 0, running: 0 };
-    for (const r of counts) result[r.status] = r.count;
-    result.upcoming = upcoming.map((t) => ({ id: t.id, name: t.name, run_at: new Date(t.next_run_at * 1000).toISOString() }));
-    return result;
-  } catch {
-    return null;
   }
 }
 
