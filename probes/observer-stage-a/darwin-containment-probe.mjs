@@ -344,11 +344,22 @@ function parseChildOutput(buffer) {
   return buffer.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+const GUARDIAN_TEST_ENV_KEYS = [
+  'ZYLOS_GUARDIAN_TEST_FAIL_CENSUS',
+  'ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY',
+  'ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR',
+  'ZYLOS_GUARDIAN_TEST_FAIL_LISTPIDS',
+  'ZYLOS_GUARDIAN_TEST_COLLAPSE_LISTPIDS_ZERO',
+];
+
+function cleanupGuardianTestEnvironment(source = process.env) {
+  const cleaned = { ...source };
+  for (const key of GUARDIAN_TEST_ENV_KEYS) delete cleaned[key];
+  return cleaned;
+}
+
 async function cleanupFailedCase(options, caseName, child, childIdentity, ready, watcher) {
-  const cleanupEnv = { ...process.env };
-  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_CENSUS;
-  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY;
-  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR;
+  const cleanupEnv = cleanupGuardianTestEnvironment();
   const cleanupErrors = [];
   try { watcher?.close(); } catch {}
   try { watcher?.control?.close(); } catch {}
@@ -396,10 +407,7 @@ async function cleanupFailedCase(options, caseName, child, childIdentity, ready,
 function cleanupFailedChildMode(options) {
   const caseRoot = path.join(options.runtimeRoot, 'containment', options.caseName);
   const markerFile = path.join(caseRoot, 'ownership.marker');
-  const cleanupEnv = { ...process.env };
-  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_CENSUS;
-  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY;
-  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR;
+  const cleanupEnv = cleanupGuardianTestEnvironment();
   if (fs.existsSync(markerFile)) {
     try {
       const self = identity(options.guardian, process.pid, cleanupEnv);
@@ -615,6 +623,7 @@ function parseOptions(argv) {
     const argument = argv[index];
     if (argument === '--child') options.child = true;
     else if (argument === '--identity-oracle') options.identityOracle = true;
+    else if (argument === '--cleanup-env-selftest') options.cleanupEnvSelftest = true;
     else if (argument === '--known-bad') options.knownBad = true;
     else if (argument === '--restart-guardian') options.restartGuardian = true;
     else if (argument === '--wrapper-marker-mutant') options.wrapperMarkerMutant = true;
@@ -625,7 +634,12 @@ function parseOptions(argv) {
 }
 
 const options = parseOptions(process.argv.slice(2));
-if (options.identityOracle) {
+if (options.cleanupEnvSelftest) {
+  const cleanupEnv = cleanupGuardianTestEnvironment();
+  const remaining = GUARDIAN_TEST_ENV_KEYS.filter((key) => key in cleanupEnv);
+  emit({ event: 'cleanup-env-selftest', result: remaining.length === 0 ? 'pass' : 'fail', remaining });
+  if (remaining.length > 0) process.exitCode = 1;
+} else if (options.identityOracle) {
   for (const key of ['guardian', 'pid', 'startSec', 'startUsec']) {
     if (!options[key]) throw new Error(`missing --${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
   }

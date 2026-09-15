@@ -49,6 +49,24 @@ async function waitForOutput(readOutput, needle, label, timeoutMs = 3000) {
 
 const parentIdentity = identity(process.pid);
 
+const cleanupEnvContract = spawnSync(process.execPath, [containmentProbePath, '--cleanup-env-selftest'], {
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    ZYLOS_GUARDIAN_TEST_FAIL_CENSUS: 'always',
+    ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: 'all:always',
+    ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR: '1',
+    ZYLOS_GUARDIAN_TEST_FAIL_LISTPIDS: 'fill:always',
+    ZYLOS_GUARDIAN_TEST_COLLAPSE_LISTPIDS_ZERO: '1',
+  },
+});
+assert.equal(cleanupEnvContract.status, 0, cleanupEnvContract.stderr || cleanupEnvContract.stdout);
+assert.deepEqual(events(cleanupEnvContract.stdout), [{
+  event: 'cleanup-env-selftest',
+  result: 'pass',
+  remaining: [],
+}]);
+
 const listpidsContract = spawnSync(guardianPath, ['listpids-selftest'], { encoding: 'utf8' });
 assert.equal(listpidsContract.status, 0, listpidsContract.stderr || listpidsContract.stdout);
 const listpidsContractEvent = events(listpidsContract.stdout)[0];
