@@ -13,6 +13,17 @@ const markerPath = path.join(runtimeRoot, 'guardian-selftest.marker');
 fs.writeFileSync(markerPath, 'stage-a guardian self-test\n', { mode: 0o600 });
 const marker = `fdpath:${markerPath}`;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const containmentProbePath = new URL('./darwin-containment-probe.mjs', import.meta.url).pathname;
+
+function events(output) {
+  return output.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function identity(pid, env = process.env) {
+  const result = spawnSync(guardianPath, ['identity', String(pid)], { encoding: 'utf8', env });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return JSON.parse(result.stdout.trim());
+}
 
 async function waitForOwned(pid, timeoutMs = 3000) {
   const deadline = performance.now() + timeoutMs;
@@ -27,13 +38,241 @@ async function waitForOwned(pid, timeoutMs = 3000) {
   throw new Error(`owned process ${pid} was not discovered: ${lastResult?.stdout || lastResult?.stderr || 'no census output'}`);
 }
 
-const identityResult = spawnSync(guardianPath, ['identity', String(process.pid)], {
-  encoding: 'utf8',
-});
-assert.equal(identityResult.status, 0, identityResult.stderr);
-const parentIdentity = JSON.parse(identityResult.stdout.trim());
+async function waitForOutput(readOutput, needle, label, timeoutMs = 3000) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (readOutput().includes(needle)) return;
+    await delay(25);
+  }
+  throw new Error(`${label} did not emit ${needle}: ${readOutput()}`);
+}
+
+const parentIdentity = identity(process.pid);
 
 const unrelated = spawn('/bin/sleep', ['60'], { stdio: 'ignore' });
+const identityOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
+await waitForOwned(identityOwned.pid);
+const ownedIdentity = identity(identityOwned.pid);
+
+const failedIdentityEnv = { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${identityOwned.pid}:always` };
+const identityCliFailure = spawnSync(guardianPath, ['identity', String(identityOwned.pid)], {
+  encoding: 'utf8',
+  env: failedIdentityEnv,
+});
+assert.equal(identityCliFailure.status, 5, identityCliFailure.stderr || identityCliFailure.stdout);
+assert.deepEqual(events(identityCliFailure.stdout), [{ event: 'identity-error', pid: identityOwned.pid, errno: 5 }]);
+
+const oracleFailure = spawnSync(process.execPath, [
+  containmentProbePath,
+  '--identity-oracle',
+  '--guardian', guardianPath,
+  '--pid', String(identityOwned.pid),
+  '--start-sec', String(ownedIdentity.startSec),
+  '--start-usec', String(ownedIdentity.startUsec),
+], {
+  encoding: 'utf8',
+  env: failedIdentityEnv,
+});
+assert.notEqual(oracleFailure.status, 0, 'whole-topology oracle collapsed identity exit 5 into absence');
+assert.match(`${oracleFailure.stdout}\n${oracleFailure.stderr}`, /identity query failed/);
+
+const absentParentStartSec = parentIdentity.startUsec === 999999 ? parentIdentity.startSec + 1 : parentIdentity.startSec;
+const absentParentStartUsec = parentIdentity.startUsec === 999999 ? 0 : parentIdentity.startUsec + 1;
+const reconcileArgs = [
+  'reconcile', String(process.pid), String(absentParentStartSec), String(absentParentStartUsec), marker, '500',
+];
+const collapsedIdentityFailure = spawnSync(guardianPath, reconcileArgs, {
+  encoding: 'utf8',
+  env: { ...failedIdentityEnv, ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR: '1' },
+});
+assert.equal(collapsedIdentityFailure.status, 0, collapsedIdentityFailure.stderr || collapsedIdentityFailure.stdout);
+assert.match(collapsedIdentityFailure.stdout, /"event":"clean"/);
+assert.equal(identityOwned.exitCode, null, 'known-bad collapse unexpectedly removed the owned process');
+
+const permanentIdentityFailure = spawnSync(guardianPath, reconcileArgs, {
+  encoding: 'utf8',
+  env: failedIdentityEnv,
+});
+assert.notEqual(permanentIdentityFailure.status, 0, 'permanent identity failure falsely reported clean');
+assert.match(permanentIdentityFailure.stdout, new RegExp(`"event":"census-error","errno":5,"queryPid":${identityOwned.pid}`));
+assert.equal(identityOwned.exitCode, null, 'permanent identity failure signaled an unknown identity');
+
+const identityGuardian = spawn(guardianPath, [
+  'watch',
+  '3',
+  String(process.pid),
+  String(parentIdentity.startSec),
+  String(parentIdentity.startUsec),
+  marker,
+  '8000',
+], {
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${identityOwned.pid}:2-20` },
+  stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+});
+let identityGuardianOutput = '';
+let identityGuardianError = '';
+identityGuardian.stdout.setEncoding('utf8');
+identityGuardian.stderr.setEncoding('utf8');
+identityGuardian.stdout.on('data', (chunk) => { identityGuardianOutput += chunk; });
+identityGuardian.stderr.on('data', (chunk) => { identityGuardianError += chunk; });
+await new Promise((resolve, reject) => {
+  const timeout = setTimeout(() => reject(new Error('identity guardian did not enter watch mode')), 3000);
+  const inspect = () => {
+    if (identityGuardianOutput.includes('"event":"watching"')) {
+      clearTimeout(timeout);
+      resolve();
+    }
+  };
+  identityGuardian.stdout.on('data', inspect);
+  inspect();
+});
+const identityStarted = performance.now();
+identityGuardian.stdio[3].end();
+const [identityGuardianCode] = await once(identityGuardian, 'exit');
+const identityElapsedMs = Math.round(performance.now() - identityStarted);
+assert.equal(identityGuardianCode, 0, identityGuardianError || identityGuardianOutput);
+const identityGuardianEvents = events(identityGuardianOutput);
+const identityErrorIndex = identityGuardianEvents.findIndex((event) =>
+  event.pid === identityOwned.pid && (event.event === 'identity-error' || event.event === 'census-error'));
+const identityOwnedIndex = identityGuardianEvents.findIndex((event) => event.event === 'owned' && event.pid === identityOwned.pid);
+const identityKillIndex = identityGuardianEvents.findIndex((event) => event.event === 'kill' && event.pid === identityOwned.pid);
+assert.ok(identityErrorIndex >= 0 && identityOwnedIndex > identityErrorIndex && identityKillIndex > identityOwnedIndex,
+  'transient identity failure did not fail closed, recover, and kill the exact owner');
+assert.ok(!identityGuardianEvents.slice(0, identityOwnedIndex).some((event) => event.event === 'clean'),
+  'transient identity unknown advanced stable-zero before recovery');
+assert.ok(identityElapsedMs >= 1500, `TERM grace started before the first complete TERM pass: ${identityElapsedMs}ms`);
+if (identityOwned.exitCode === null && identityOwned.signalCode === null) await once(identityOwned, 'exit');
+
+const parentIdentityFailure = spawnSync(guardianPath, [
+  'reconcile', String(process.pid), String(parentIdentity.startSec), String(parentIdentity.startUsec), marker, '500',
+], {
+  encoding: 'utf8',
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${process.pid}:always` },
+});
+assert.equal(parentIdentityFailure.status, 5, parentIdentityFailure.stderr || parentIdentityFailure.stdout);
+assert.deepEqual(events(parentIdentityFailure.stdout), [{ event: 'identity-error', pid: process.pid, errno: 5 }]);
+
+const collapsedParentIdentity = spawnSync(guardianPath, [
+  'reconcile', String(process.pid), String(parentIdentity.startSec), String(parentIdentity.startUsec), marker, '500',
+], {
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${process.pid}:always`,
+    ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR: '1',
+  },
+});
+assert.equal(collapsedParentIdentity.status, 0, collapsedParentIdentity.stderr || collapsedParentIdentity.stdout);
+assert.match(collapsedParentIdentity.stdout, /"event":"reconcile"/,
+  'known-bad parent identity collapse did not falsely enter reconcile');
+
+const watchParent = spawn(guardianPath, [
+  'watch', '3', String(process.pid), String(parentIdentity.startSec), String(parentIdentity.startUsec), marker, '1500',
+], {
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${process.pid}:1-3` },
+  stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+});
+let watchParentOutput = '';
+let watchParentError = '';
+watchParent.stdout.setEncoding('utf8');
+watchParent.stderr.setEncoding('utf8');
+watchParent.stdout.on('data', (chunk) => { watchParentOutput += chunk; });
+watchParent.stderr.on('data', (chunk) => { watchParentError += chunk; });
+await waitForOutput(() => watchParentOutput, '"event":"identity-error"', 'parent identity watch');
+await waitForOutput(
+  () => watchParentOutput.match(/"event":"identity-error"/g)?.length >= 3 ? 'three-errors' : watchParentOutput,
+  'three-errors',
+  'parent identity watch',
+);
+assert.doesNotMatch(watchParentOutput, /"event":"parent-gone"/,
+  'unknown parent identity was collapsed into parent-gone');
+watchParent.stdio[3].end();
+const [watchParentCode] = await once(watchParent, 'exit');
+assert.equal(watchParentCode, 0, watchParentError || watchParentOutput);
+assert.match(watchParentOutput, /"event":"liveness-gone"/,
+  'liveness HUP did not remain a separate definitive cleanup trigger');
+
+const collapsedWatchParent = spawn(guardianPath, [
+  'watch', '3', String(process.pid), String(parentIdentity.startSec), String(parentIdentity.startUsec), marker, '500',
+], {
+  env: {
+    ...process.env,
+    ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${process.pid}:1-3`,
+    ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR: '1',
+  },
+  stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+});
+let collapsedWatchOutput = '';
+collapsedWatchParent.stdout.setEncoding('utf8');
+collapsedWatchParent.stdout.on('data', (chunk) => { collapsedWatchOutput += chunk; });
+await waitForOutput(() => collapsedWatchOutput, '"event":"parent-gone"', 'known-bad parent watch');
+collapsedWatchParent.stdio[3].end();
+const [collapsedWatchCode] = collapsedWatchParent.exitCode === null && collapsedWatchParent.signalCode === null
+  ? await once(collapsedWatchParent, 'exit')
+  : [collapsedWatchParent.exitCode];
+assert.equal(collapsedWatchCode, 0,
+  `known-bad parent watch did not falsely complete: ${collapsedWatchOutput}`);
+
+const survivorOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
+await waitForOwned(survivorOwned.pid);
+const survivorArgs = [
+  'reconcile', String(process.pid), String(absentParentStartSec), String(absentParentStartUsec), marker, '400',
+];
+const survivorUnknown = spawnSync(guardianPath, survivorArgs, {
+  encoding: 'utf8',
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${survivorOwned.pid}:2-1000` },
+});
+assert.equal(survivorUnknown.status, 3, survivorUnknown.stderr || survivorUnknown.stdout);
+const survivorUnknownEvents = events(survivorUnknown.stdout);
+assert.ok(survivorUnknownEvents.some((event) => event.event === 'identity-error' && event.pid === survivorOwned.pid),
+  'timeout survivor did not report its unknown identity');
+assert.ok(!survivorUnknownEvents.some((event) => ['term', 'kill'].includes(event.event) && event.pid === survivorOwned.pid),
+  'timeout path signaled a process while its identity was unknown');
+assert.equal(survivorOwned.exitCode, null, 'timeout identity unknown lost the exact survivor');
+
+const collapsedSurvivor = spawnSync(guardianPath, [...survivorArgs.slice(0, -1), '2000'], {
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${survivorOwned.pid}:2-1000`,
+    ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR: '1',
+  },
+});
+assert.equal(collapsedSurvivor.status, 0, collapsedSurvivor.stderr || collapsedSurvivor.stdout);
+assert.match(collapsedSurvivor.stdout, /"event":"clean"/,
+  'known-bad timeout identity collapse did not falsely report stable-zero');
+assert.equal(survivorOwned.exitCode, null, 'known-bad timeout control unexpectedly removed its survivor');
+survivorOwned.kill('SIGKILL');
+await once(survivorOwned, 'exit');
+
+const signalOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
+await waitForOwned(signalOwned.pid);
+const signalGuardian = spawn(guardianPath, [
+  'reconcile', String(process.pid), String(absentParentStartSec), String(absentParentStartUsec), marker, '4000',
+], {
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${signalOwned.pid}:3-3` },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+let signalRecheckOutput = '';
+let signalRecheckError = '';
+signalGuardian.stdout.setEncoding('utf8');
+signalGuardian.stderr.setEncoding('utf8');
+signalGuardian.stdout.on('data', (chunk) => { signalRecheckOutput += chunk; });
+signalGuardian.stderr.on('data', (chunk) => { signalRecheckError += chunk; });
+const [signalRecheckCode] = await once(signalGuardian, 'exit');
+assert.equal(signalRecheckCode, 0, signalRecheckError || signalRecheckOutput);
+const signalRecheckEvents = events(signalRecheckOutput);
+const signalUnknownIndex = signalRecheckEvents.findIndex((event) =>
+  event.event === 'identity-error' && event.pid === signalOwned.pid);
+const signalTermIndex = signalRecheckEvents.findIndex((event) => event.event === 'term' && event.pid === signalOwned.pid);
+const signalKillIndex = signalRecheckEvents.findIndex((event) => event.event === 'kill' && event.pid === signalOwned.pid);
+assert.ok(signalUnknownIndex >= 0 && signalTermIndex > signalUnknownIndex && signalKillIndex > signalTermIndex,
+  'signal recheck did not fail closed, recover, TERM, and then KILL the exact owner');
+assert.ok(!signalRecheckEvents.slice(0, signalUnknownIndex + 1).some((event) =>
+  ['term', 'kill'].includes(event.event) && event.pid === signalOwned.pid),
+  'signal recheck signaled the owner while its identity was unknown');
+if (signalOwned.exitCode === null && signalOwned.signalCode === null) await once(signalOwned, 'exit');
+
 const owned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
 
 const guardian = spawn(guardianPath, [
@@ -93,7 +332,7 @@ const elapsedMs = Math.round(performance.now() - started);
 assert.equal(guardianCode, 0, guardianError || guardianOutput);
 assert.ok(elapsedMs < 8000, `guardian cleanup exceeded bound: ${elapsedMs}ms`);
 assert.match(guardianOutput, /"event":"census-error"/, 'transient census failure control did not execute');
-const guardianEvents = guardianOutput.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+const guardianEvents = events(guardianOutput);
 const firstErrorIndex = guardianEvents.findIndex((event) => event.event === 'census-error');
 const lastErrorIndex = guardianEvents.findLastIndex((event) => event.event === 'census-error');
 const trackedKillIndex = guardianEvents.findIndex((event) => event.event === 'kill' && event.pid === owned.pid);
@@ -116,9 +355,25 @@ const report = {
   ownedPid: owned.pid,
   unrelatedPid: unrelated.pid,
   guardianEvents,
+  identityTriState: {
+    identityCliExitCode: identityCliFailure.status,
+    oracleExitCode: oracleFailure.status,
+    knownBadCollapseExitCode: collapsedIdentityFailure.status,
+    permanentFailureExitCode: permanentIdentityFailure.status,
+    transientElapsedMs: identityElapsedMs,
+    transientEvents: identityGuardianEvents,
+    reconcileParentExitCode: parentIdentityFailure.status,
+    knownBadReconcileParentExitCode: collapsedParentIdentity.status,
+    watchParentEvents: events(watchParentOutput),
+    knownBadWatchParentEvents: events(collapsedWatchOutput),
+    timeoutSurvivorExitCode: survivorUnknown.status,
+    timeoutSurvivorEvents: survivorUnknownEvents,
+    knownBadTimeoutSurvivorExitCode: collapsedSurvivor.status,
+    signalRecheckEvents,
+  },
   permanentFailure: {
     exitCode: permanentFailure.status,
-    events: permanentFailure.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)),
+    events: events(permanentFailure.stdout),
   },
 };
 if (evidenceFile) fs.writeFileSync(evidenceFile, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx', mode: 0o600 });

@@ -40,10 +40,12 @@ typedef enum {
 typedef struct {
     bool ok;
     size_t count;
+    pid_t query_error_pid;
 } census_result;
 
 static bool debug_env_probe = false;
 static unsigned long census_call_count = 0;
+static unsigned long identity_call_count = 0;
 
 static int64_t monotonic_ms(void) {
     struct timespec ts;
@@ -53,11 +55,58 @@ static int64_t monotonic_ms(void) {
     return ((int64_t)ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 }
 
-static bool process_identity(pid_t pid, owned_process *out) {
+static bool inject_identity_failure(pid_t pid) {
+    const char *mode = getenv("ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY");
+    if (mode == NULL || *mode == '\0') {
+        return false;
+    }
+    const char *failure_mode = mode;
+    const char *separator = strchr(mode, ':');
+    if (separator != NULL) {
+        char target_text[32];
+        size_t target_length = (size_t)(separator - mode);
+        if (target_length == 0 || target_length >= sizeof(target_text)) {
+            return false;
+        }
+        memcpy(target_text, mode, target_length);
+        target_text[target_length] = '\0';
+        char *end = NULL;
+        errno = 0;
+        long target = strtol(target_text, &end, 10);
+        if (errno != 0 || end == target_text || *end != '\0' || target != pid) {
+            return false;
+        }
+        failure_mode = separator + 1;
+    }
+    identity_call_count++;
+    if (strcmp(failure_mode, "always") == 0) {
+        return true;
+    }
+    unsigned long first = 0;
+    unsigned long last = 0;
+    return sscanf(failure_mode, "%lu-%lu", &first, &last) == 2 &&
+           identity_call_count >= first && identity_call_count <= last;
+}
+
+static query_result process_identity(pid_t pid, owned_process *out) {
+    if (inject_identity_failure(pid)) {
+        errno = EIO;
+        if (getenv("ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR") != NULL) {
+            return QUERY_NO_MATCH;
+        }
+        return QUERY_ERROR;
+    }
     struct proc_bsdinfo info;
+    errno = 0;
     int size = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info));
     if (size != (int)sizeof(info)) {
-        return false;
+        int identity_errno = errno;
+        errno = 0;
+        if (kill(pid, 0) != 0 && errno == ESRCH) {
+            return QUERY_NO_MATCH;
+        }
+        errno = identity_errno != 0 ? identity_errno : EIO;
+        return QUERY_ERROR;
     }
     if (out != NULL) {
         out->pid = pid;
@@ -69,14 +118,28 @@ static bool process_identity(pid_t pid, owned_process *out) {
         out->start_usec = info.pbi_start_tvusec;
         snprintf(out->name, sizeof(out->name), "%s", info.pbi_name);
     }
-    return true;
+    return QUERY_MATCH;
 }
 
-static bool same_identity(const owned_process *expected) {
+static query_result classify_failed_process_query(pid_t pid, int query_errno) {
+    query_result identity_result = process_identity(pid, NULL);
+    if (identity_result == QUERY_NO_MATCH) {
+        return QUERY_NO_MATCH;
+    }
+    if (identity_result == QUERY_MATCH) {
+        errno = query_errno != 0 ? query_errno : EIO;
+    }
+    return QUERY_ERROR;
+}
+
+static query_result same_identity(const owned_process *expected) {
     owned_process actual;
-    return process_identity(expected->pid, &actual) &&
-           actual.start_sec == expected->start_sec &&
-           actual.start_usec == expected->start_usec;
+    query_result identity_result = process_identity(expected->pid, &actual);
+    if (identity_result != QUERY_MATCH) {
+        return identity_result;
+    }
+    return actual.start_sec == expected->start_sec &&
+           actual.start_usec == expected->start_usec ? QUERY_MATCH : QUERY_NO_MATCH;
 }
 
 static off_t marker_offset(const struct stat *marker_stat) {
@@ -100,11 +163,12 @@ static query_result process_has_env(pid_t pid, const char *needle) {
         return QUERY_ERROR;
     }
     if (sysctl(mib, 3, buffer, &size, NULL, 0) != 0 || size <= sizeof(int)) {
+        int query_errno = errno;
         if (debug_env_probe) {
             fprintf(stderr, "KERN_PROCARGS2 failed pid=%d errno=%d size=%zu\n", pid, errno, size);
         }
         free(buffer);
-        return process_identity(pid, NULL) ? QUERY_ERROR : QUERY_NO_MATCH;
+        return classify_failed_process_query(pid, query_errno);
     }
     if (debug_env_probe) {
         fprintf(stderr, "KERN_PROCARGS2 pid=%d size=%zu argmax=%d\n", pid, size, argmax);
@@ -159,7 +223,8 @@ static query_result process_has_marker_fd_once(pid_t pid, const char *path) {
 
     int required_size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
     if (required_size <= 0) {
-        return process_identity(pid, NULL) ? QUERY_ERROR : QUERY_NO_MATCH;
+        int query_errno = errno;
+        return classify_failed_process_query(pid, query_errno);
     }
     struct proc_fdinfo *fds = NULL;
     int actual_size = 0;
@@ -171,8 +236,9 @@ static query_result process_has_marker_fd_once(pid_t pid, const char *path) {
         }
         actual_size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, capacity);
         if (actual_size <= 0) {
+            int query_errno = errno;
             free(fds);
-            return process_identity(pid, NULL) ? QUERY_ERROR : QUERY_NO_MATCH;
+            return classify_failed_process_query(pid, query_errno);
         }
         if (actual_size < capacity) {
             break;
@@ -204,8 +270,9 @@ static query_result process_has_marker_fd_once(pid_t pid, const char *path) {
             sizeof(vnode)
         );
         if (vnode_size != (int)sizeof(vnode)) {
+            int query_errno = errno;
             free(fds);
-            return process_identity(pid, NULL) ? QUERY_ERROR : QUERY_NO_MATCH;
+            return classify_failed_process_query(pid, query_errno);
         }
         const struct vinfo_stat *candidate = &vnode.pvip.vip_vi.vi_stat;
         if ((dev_t)candidate->vst_dev == marker_stat.st_dev &&
@@ -255,7 +322,7 @@ static bool inject_census_failure(void) {
 }
 
 static census_result census(const char *marker, pid_t skip_pid, owned_process *owned, size_t capacity) {
-    census_result result = {.ok = false, .count = 0};
+    census_result result = {.ok = false, .count = 0, .query_error_pid = 0};
     if (inject_census_failure()) {
         errno = EIO;
         return result;
@@ -266,7 +333,8 @@ static census_result census(const char *marker, pid_t skip_pid, owned_process *o
     if (fd_marker && stat(marker + sizeof(fd_prefix) - 1, &marker_stat) != 0) {
         return result;
     }
-    int estimated_count = proc_listallpids(NULL, 0);
+    uint32_t owner_uid = (uint32_t)geteuid();
+    int estimated_count = proc_listpids(PROC_UID_ONLY, owner_uid, NULL, 0);
     if (estimated_count <= 0) {
         return result;
     }
@@ -281,7 +349,12 @@ static census_result census(const char *marker, pid_t skip_pid, owned_process *o
         if (pids == NULL) {
             return result;
         }
-        count = proc_listallpids(pids, (int)(pid_capacity * sizeof(pid_t)));
+        count = proc_listpids(
+            PROC_UID_ONLY,
+            owner_uid,
+            pids,
+            (int)(pid_capacity * sizeof(pid_t))
+        );
         if (count < 0) {
             free(pids);
             return result;
@@ -312,26 +385,40 @@ static census_result census(const char *marker, pid_t skip_pid, owned_process *o
         if (pid <= 1 || pid == skip_pid) {
             continue;
         }
-        if (process_identity(pid, &all[all_count])) {
-            if (all[all_count].uid != geteuid()) {
-                continue;
-            }
-            if (fd_marker &&
-                (all[all_count].start_sec < (uint64_t)marker_stat.st_birthtimespec.tv_sec ||
-                 (all[all_count].start_sec == (uint64_t)marker_stat.st_birthtimespec.tv_sec &&
-                  all[all_count].start_usec < (uint64_t)(marker_stat.st_birthtimespec.tv_nsec / 1000)))) {
-                continue;
-            }
-            query_result marker_result = process_has_marker(pid, marker);
-            if (marker_result == QUERY_ERROR) {
-                free(all);
-                free(selected);
-                free(pids);
-                return result;
-            }
-            selected[all_count] = marker_result == QUERY_MATCH;
-            all_count++;
+        query_result identity_result = process_identity(pid, &all[all_count]);
+        if (identity_result == QUERY_ERROR) {
+            int identity_errno = errno;
+            result.query_error_pid = pid;
+            free(all);
+            free(selected);
+            free(pids);
+            errno = identity_errno;
+            return result;
         }
+        if (identity_result == QUERY_NO_MATCH) {
+            continue;
+        }
+        if (all[all_count].uid != geteuid()) {
+            continue;
+        }
+        if (fd_marker &&
+            (all[all_count].start_sec < (uint64_t)marker_stat.st_birthtimespec.tv_sec ||
+             (all[all_count].start_sec == (uint64_t)marker_stat.st_birthtimespec.tv_sec &&
+              all[all_count].start_usec < (uint64_t)(marker_stat.st_birthtimespec.tv_nsec / 1000)))) {
+            continue;
+        }
+        query_result marker_result = process_has_marker(pid, marker);
+        if (marker_result == QUERY_ERROR) {
+            int query_errno = errno;
+            result.query_error_pid = pid;
+            free(all);
+            free(selected);
+            free(pids);
+            errno = query_errno != 0 ? query_errno : EIO;
+            return result;
+        }
+        selected[all_count] = marker_result == QUERY_MATCH;
+        all_count++;
     }
     free(pids);
 
@@ -377,9 +464,16 @@ static void print_process(const char *event, const owned_process *process) {
            process->name);
 }
 
-static void signal_snapshot(const owned_process *owned, size_t count, int signal_number) {
+static bool signal_snapshot(const owned_process *owned, size_t count, int signal_number) {
+    bool query_ok = true;
     for (size_t i = 0; i < count; i++) {
-        if (!same_identity(&owned[i])) {
+        query_result identity_result = same_identity(&owned[i]);
+        if (identity_result == QUERY_ERROR) {
+            printf("{\"event\":\"identity-error\",\"pid\":%d,\"errno\":%d}\n", owned[i].pid, errno);
+            query_ok = false;
+            continue;
+        }
+        if (identity_result == QUERY_NO_MATCH) {
             continue;
         }
         print_process(signal_number == SIGTERM ? "term" : "kill", &owned[i]);
@@ -388,11 +482,12 @@ static void signal_snapshot(const owned_process *owned, size_t count, int signal
         }
     }
     fflush(stdout);
+    return query_ok;
 }
 
 static int cleanup(const char *marker, int deadline_ms) {
     int64_t started = monotonic_ms();
-    int64_t term_deadline = started + TERM_GRACE_MS;
+    int64_t term_deadline = -1;
     int stable_zero = 0;
     bool sent_term = false;
     owned_process *tracked = calloc(MAX_PIDS, sizeof(owned_process));
@@ -410,10 +505,12 @@ static int cleanup(const char *marker, int deadline_ms) {
         census_result current_result = census(marker, getpid(), current, MAX_PIDS);
         if (!current_result.ok) {
             stable_zero = 0;
-            printf("{\"event\":\"census-error\",\"errno\":%d}\n", errno);
+            printf("{\"event\":\"census-error\",\"errno\":%d,\"queryPid\":%d}\n",
+                   errno, current_result.query_error_pid);
             fflush(stdout);
         }
         size_t current_count = current_result.ok ? current_result.count : 0;
+        bool discovered_new = false;
         for (size_t i = 0; i < current_count; i++) {
             bool already_tracked = false;
             for (size_t j = 0; j < tracked_count; j++) {
@@ -426,22 +523,38 @@ static int cleanup(const char *marker, int deadline_ms) {
             }
             if (!already_tracked && tracked_count < MAX_PIDS) {
                 tracked[tracked_count++] = current[i];
+                discovered_new = true;
             }
+        }
+        if (discovered_new) {
+            sent_term = false;
+            term_deadline = -1;
         }
 
         size_t alive_count = 0;
+        bool identity_queries_ok = true;
         for (size_t i = 0; i < tracked_count; i++) {
-            if (same_identity(&tracked[i])) {
+            query_result identity_result = same_identity(&tracked[i]);
+            if (identity_result == QUERY_ERROR) {
+                printf("{\"event\":\"identity-error\",\"pid\":%d,\"errno\":%d}\n",
+                       tracked[i].pid, errno);
+                identity_queries_ok = false;
+            } else if (identity_result == QUERY_MATCH) {
                 alive[alive_count++] = tracked[i];
             }
         }
-        if (!current_result.ok) {
+        if (!current_result.ok || !identity_queries_ok) {
+            stable_zero = 0;
             if (alive_count > 0) {
-                if (!sent_term) {
-                    signal_snapshot(alive, alive_count, SIGTERM);
-                    sent_term = true;
+                if (!sent_term && identity_queries_ok) {
+                    if (signal_snapshot(alive, alive_count, SIGTERM)) {
+                        sent_term = true;
+                        term_deadline = monotonic_ms() + TERM_GRACE_MS;
+                    }
+                } else if (!sent_term) {
+                    (void)signal_snapshot(alive, alive_count, SIGTERM);
                 } else if (monotonic_ms() >= term_deadline) {
-                    signal_snapshot(alive, alive_count, SIGKILL);
+                    (void)signal_snapshot(alive, alive_count, SIGKILL);
                 }
             }
             usleep(POLL_MS * 1000);
@@ -467,16 +580,22 @@ static int cleanup(const char *marker, int deadline_ms) {
             print_process("owned", &alive[i]);
         }
         if (!sent_term) {
-            signal_snapshot(alive, alive_count, SIGTERM);
-            sent_term = true;
+            if (signal_snapshot(alive, alive_count, SIGTERM)) {
+                sent_term = true;
+                term_deadline = monotonic_ms() + TERM_GRACE_MS;
+            }
         } else if (monotonic_ms() >= term_deadline) {
-            signal_snapshot(alive, alive_count, SIGKILL);
+            (void)signal_snapshot(alive, alive_count, SIGKILL);
         }
         usleep(POLL_MS * 1000);
     }
 
     for (size_t i = 0; i < tracked_count; i++) {
-        if (same_identity(&tracked[i])) {
+        query_result identity_result = same_identity(&tracked[i]);
+        if (identity_result == QUERY_ERROR) {
+            printf("{\"event\":\"identity-error\",\"pid\":%d,\"errno\":%d}\n",
+                   tracked[i].pid, errno);
+        } else if (identity_result == QUERY_MATCH) {
             print_process("survivor", &tracked[i]);
         }
     }
@@ -534,7 +653,15 @@ int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "identity") == 0) {
         pid_t pid = 0;
         owned_process identity;
-        if (!parse_pid(argv[2], &pid) || !process_identity(pid, &identity)) {
+        if (!parse_pid(argv[2], &pid)) {
+            return 64;
+        }
+        query_result identity_result = process_identity(pid, &identity);
+        if (identity_result == QUERY_ERROR) {
+            printf("{\"event\":\"identity-error\",\"pid\":%d,\"errno\":%d}\n", pid, errno);
+            return 5;
+        }
+        if (identity_result == QUERY_NO_MATCH) {
             return 2;
         }
         print_process("identity", &identity);
@@ -545,7 +672,8 @@ int main(int argc, char **argv) {
         owned_process owned[MAX_PIDS];
         census_result census_value = census(argv[2], getpid(), owned, MAX_PIDS);
         if (!census_value.ok) {
-            printf("{\"event\":\"census-error\",\"errno\":%d}\n", errno);
+            printf("{\"event\":\"census-error\",\"errno\":%d,\"queryPid\":%d}\n",
+                   errno, census_value.query_error_pid);
             return 5;
         }
         size_t count = census_value.count;
@@ -584,7 +712,12 @@ int main(int argc, char **argv) {
     const char *marker = argv[offset + 3];
 
     if (reconcile) {
-        if (same_identity(&parent)) {
+        query_result parent_result = same_identity(&parent);
+        if (parent_result == QUERY_ERROR) {
+            printf("{\"event\":\"identity-error\",\"pid\":%d,\"errno\":%d}\n", parent_pid, errno);
+            return 5;
+        }
+        if (parent_result == QUERY_MATCH) {
             printf("{\"event\":\"parent-alive\",\"pid\":%d}\n", parent_pid);
             return 4;
         }
@@ -610,8 +743,19 @@ int main(int argc, char **argv) {
             fprintf(stderr, "poll failed errno=%d\n", errno);
             return 5;
         }
-        if (!same_identity(&parent) ||
-            (result > 0 && (descriptor.revents & (POLLHUP | POLLERR | POLLNVAL)))) {
+        if (result > 0 && (descriptor.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+            printf("{\"event\":\"liveness-gone\",\"pid\":%d}\n", parent_pid);
+            fflush(stdout);
+            close(fd);
+            return cleanup(marker, (int)deadline_ms);
+        }
+        query_result parent_result = same_identity(&parent);
+        if (parent_result == QUERY_ERROR) {
+            printf("{\"event\":\"identity-error\",\"pid\":%d,\"errno\":%d}\n", parent_pid, errno);
+            fflush(stdout);
+            continue;
+        }
+        if (parent_result == QUERY_NO_MATCH) {
             printf("{\"event\":\"parent-gone\",\"pid\":%d}\n", parent_pid);
             fflush(stdout);
             close(fd);

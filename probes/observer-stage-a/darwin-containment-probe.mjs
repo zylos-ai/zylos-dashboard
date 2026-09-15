@@ -20,17 +20,28 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function identity(guardian, pid) {
-  const result = run(guardian, ['identity', String(pid)]);
-  assert.equal(result.status, 0, result.stderr);
+function identity(guardian, pid, env) {
+  const result = run(guardian, ['identity', String(pid)], { env });
+  assert.equal(result.status, 0, result.stderr || result.stdout || `identity query failed for pid ${pid}`);
   return JSON.parse(result.stdout.trim());
 }
 
-function sameIdentityAlive(guardian, expected, deadline) {
-  const result = run(guardian, ['identity', String(expected.pid)], { deadline });
-  if (result.status !== 0) return false;
+function sameIdentityState(guardian, expected, deadline, env) {
+  const result = run(guardian, ['identity', String(expected.pid)], { deadline, env });
+  if (result.status === 2) return 'gone';
+  if (result.status !== 0) {
+    throw new Error(`identity query failed for pid ${expected.pid}: ${result.stderr || result.stdout || `exit ${result.status}`}`);
+  }
   const actual = JSON.parse(result.stdout.trim());
-  return actual.startSec === expected.startSec && actual.startUsec === expected.startUsec;
+  return actual.startSec === expected.startSec && actual.startUsec === expected.startUsec ? 'match' : 'changed';
+}
+
+function sameIdentityAlive(guardian, expected, deadline, env) {
+  return sameIdentityState(guardian, expected, deadline, env) === 'match';
+}
+
+function aliveTopology(guardian, records, deadline) {
+  return records.filter((record) => sameIdentityAlive(guardian, record, deadline));
 }
 
 function uniqueTopology(records) {
@@ -334,24 +345,40 @@ function parseChildOutput(buffer) {
 }
 
 async function cleanupFailedCase(options, caseName, child, childIdentity, ready, watcher) {
+  const cleanupEnv = { ...process.env };
+  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_CENSUS;
+  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY;
+  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR;
+  const cleanupErrors = [];
   try { watcher?.close(); } catch {}
   try { watcher?.control?.close(); } catch {}
-  if (child.exitCode === null && child.signalCode === null && sameIdentityAlive(options.guardian, childIdentity)) {
-    child.kill('SIGKILL');
-    await Promise.race([once(child, 'close'), delay(1000)]);
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      if (sameIdentityAlive(options.guardian, childIdentity, undefined, cleanupEnv)) {
+        child.kill('SIGKILL');
+        await Promise.race([once(child, 'close'), delay(1000)]);
+      }
+    } catch (error) {
+      emit({ event: 'failed-case-identity-error', pid: childIdentity.pid, message: error.message });
+    }
   }
   const caseRoot = path.join(options.runtimeRoot, 'containment', caseName);
   const markerFile = path.join(caseRoot, 'ownership.marker');
   if (fs.existsSync(markerFile)) {
-    run(options.guardian, [
+    const reconcile = run(options.guardian, [
       'reconcile', String(childIdentity.pid), String(childIdentity.startSec), String(childIdentity.startUsec),
       `fdpath:${markerFile}`, '5000',
-    ], { timeout: 6000 });
+    ], { env: cleanupEnv, timeout: 6000 });
+    if (reconcile.status !== 0) {
+      cleanupErrors.push(`exact reconcile exit ${reconcile.status}: ${reconcile.stderr || reconcile.stdout}`);
+    }
   }
   for (const record of ready?.topology ?? []) {
     if (record.role === 'harness-parent' || record.role === 'guardian') continue;
-    if (sameIdentityAlive(options.guardian, record)) {
-      try { process.kill(record.pid, 'SIGTERM'); } catch {}
+    try {
+      if (sameIdentityAlive(options.guardian, record, undefined, cleanupEnv)) process.kill(record.pid, 'SIGTERM');
+    } catch (error) {
+      emit({ event: 'failed-case-identity-error', pid: record.pid, message: error.message });
     }
   }
   const unrelatedRoot = ready?.unrelatedZellij.root ?? path.join(caseRoot, 'unrelated-zellij');
@@ -363,6 +390,7 @@ async function cleanupFailedCase(options, caseName, child, childIdentity, ready,
     'kill-session', unrelatedSessionName,
   ], { env: unrelatedEnv, timeout: 3000 });
   run(options.tmux, ['-S', ready?.tmuxSocket ?? `/tmp/za297-${child.pid}.sock`, 'kill-server'], { timeout: 3000 });
+  if (cleanupErrors.length > 0) throw new Error(`failed-case cleanup incomplete: ${cleanupErrors.join('; ')}`);
 }
 
 function cleanupFailedChildMode(options) {
@@ -370,9 +398,11 @@ function cleanupFailedChildMode(options) {
   const markerFile = path.join(caseRoot, 'ownership.marker');
   const cleanupEnv = { ...process.env };
   delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_CENSUS;
+  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY;
+  delete cleanupEnv.ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR;
   if (fs.existsSync(markerFile)) {
     try {
-      const self = identity(options.guardian, process.pid);
+      const self = identity(options.guardian, process.pid, cleanupEnv);
       const absentStartSec = self.startUsec === 999999 ? self.startSec + 1 : self.startSec;
       const absentStartUsec = self.startUsec === 999999 ? 0 : self.startUsec + 1;
       run(options.guardian, [
@@ -505,14 +535,18 @@ async function runCase(options, definition) {
 
   assert.equal(after.count, 0, JSON.stringify(after));
   await withinDeadline(watcherClosed, deadline, `${definition.name} active watcher close`);
-  const aliveTopology = ready.topology.filter((record) => sameIdentityAlive(options.guardian, record, deadline));
+  const aliveTopologyAfterCleanup = await withinDeadline(waitFor(
+    () => aliveTopology(options.guardian, ready.topology, deadline),
+    `${definition.name} whole-topology identity queries`,
+    10000,
+  ), deadline, `${definition.name} whole-topology identity queries`);
   if (definition.wrapperMarkerMutant) {
-    assert.deepEqual(aliveTopology.map((record) => record.role), ['pty-wrapper'], `wrapper-retention mutant did not expose the exact topology hole: ${JSON.stringify(aliveTopology)}`);
-    process.kill(aliveTopology[0].pid, 'SIGKILL');
-    await withinDeadline(waitFor(() => !sameIdentityAlive(options.guardian, aliveTopology[0], deadline),
+    assert.deepEqual(aliveTopologyAfterCleanup.map((record) => record.role), ['pty-wrapper'], `wrapper-retention mutant did not expose the exact topology hole: ${JSON.stringify(aliveTopologyAfterCleanup)}`);
+    process.kill(aliveTopologyAfterCleanup[0].pid, 'SIGKILL');
+    await withinDeadline(waitFor(() => !sameIdentityAlive(options.guardian, aliveTopologyAfterCleanup[0], deadline),
       'exact markerless wrapper cleanup'), deadline, 'exact markerless wrapper cleanup');
   } else {
-    assert.deepEqual(aliveTopology, [], `whole owned topology survived cleanup: ${JSON.stringify(aliveTopology)}`);
+    assert.deepEqual(aliveTopologyAfterCleanup, [], `whole owned topology survived cleanup: ${JSON.stringify(aliveTopologyAfterCleanup)}`);
   }
   const tmuxAlive = run(options.tmux, ['-S', ready.tmuxSocket, 'has-session', '-t', 'agent-sentinel'], { deadline });
   assert.equal(tmuxAlive.status, 0, 'sentinel Agent tmux did not survive Observer cleanup');
@@ -531,8 +565,11 @@ async function runCase(options, definition) {
   const unrelatedAlive = run(options.zellij, [...zellijBase(unrelatedPaths), 'list-sessions', '--short'], { env: unrelatedEnv, deadline });
   assert.ok(unrelatedAlive.stdout.split('\n').includes(ready.unrelatedZellij.sessionName),
     `unrelated Zellij did not survive Observer cleanup: ${JSON.stringify({ stdout: unrelatedAlive.stdout, stderr: unrelatedAlive.stderr, cleanupEvents })}`);
-  const unrelatedTopologySurvived = ready.unrelatedZellij.topology.every((record) =>
-    sameIdentityAlive(options.guardian, record, deadline));
+  const unrelatedTopologySurvived = await withinDeadline(waitFor(
+    () => ready.unrelatedZellij.topology.every((record) => sameIdentityAlive(options.guardian, record, deadline)),
+    `${definition.name} unrelated Zellij identity queries`,
+    10000,
+  ), deadline, `${definition.name} unrelated Zellij identity queries`);
   assert.equal(unrelatedTopologySurvived, true,
     `unrelated Zellij exact identities changed: ${JSON.stringify(ready.unrelatedZellij.topology)}`);
   const elapsedMs = Math.round(performance.now() - started);
@@ -577,6 +614,7 @@ function parseOptions(argv) {
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === '--child') options.child = true;
+    else if (argument === '--identity-oracle') options.identityOracle = true;
     else if (argument === '--known-bad') options.knownBad = true;
     else if (argument === '--restart-guardian') options.restartGuardian = true;
     else if (argument === '--wrapper-marker-mutant') options.wrapperMarkerMutant = true;
@@ -587,7 +625,18 @@ function parseOptions(argv) {
 }
 
 const options = parseOptions(process.argv.slice(2));
-if (options.child) {
+if (options.identityOracle) {
+  for (const key of ['guardian', 'pid', 'startSec', 'startUsec']) {
+    if (!options[key]) throw new Error(`missing --${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
+  }
+  const expected = {
+    pid: Number(options.pid),
+    startSec: Number(options.startSec),
+    startUsec: Number(options.startUsec),
+  };
+  const deadline = performance.now() + Number(options.deadlineMs ?? 2000);
+  emit({ event: 'identity-oracle', pid: expected.pid, state: sameIdentityState(options.guardian, expected, deadline) });
+} else if (options.child) {
   try {
     await childMode(options);
   } catch (error) {

@@ -34,7 +34,7 @@ node probes/observer-stage-a/guardian-selftest.mjs \
   "$runtime_root/guardian-selftest-rerun.json"
 ```
 
-The clone command recreates both rejected estimators and their replacements: JSON text vs a 5,000-byte `ArrayBuffer`, and view length vs a one-byte view over a 1 MiB backing buffer. The guardian self-test covers exact-owner selection, unrelated-reader exclusion, permanent census failure, fail-closed SIGKILL of the previously observed owner, and clean recovery.
+The clone command recreates both rejected estimators and their replacements: JSON text vs a 5,000-byte `ArrayBuffer`, and view length vs a one-byte view over a 1 MiB backing buffer. The guardian self-test covers exact-owner selection, unrelated-reader exclusion, match/gone-or-changed/query-error propagation through every C identity consumer and the shared JavaScript oracle, permanent and transient bottom-level faults, signal-time recovery, parent reconcile/watch, independent liveness HUP, timeout reporting, discriminating collapse mutants, post-TERM grace, permanent census failure, fail-closed SIGKILL of a previously observed owner, and final clean recovery.
 
 ## Containment rerun
 
@@ -53,7 +53,7 @@ node probes/observer-stage-a/darwin-containment-probe.mjs \
   --evidence-file "$runtime_root/containment-rerun.json"
 ```
 
-This executes six real Zellij cases: abrupt parent SIGKILL, graceful stop, guardian restart followed by parent SIGKILL, guardian-disabled known-bad escape followed by exact reconciliation, wrapper-marker retention, and the old wrapper-marker behavior mutant. Every case proves active terminal content before cleanup, both upstream sockets close, the whole recorded Observer topology disappears, the listener closes, and exact unrelated Zellij plus tmux identities survive.
+This executes six real Zellij cases: abrupt parent SIGKILL, graceful stop, guardian restart followed by parent SIGKILL, guardian-disabled known-bad escape followed by exact reconciliation, wrapper-marker retention, and the old wrapper-marker behavior mutant. Every case proves active terminal content before cleanup, both upstream sockets close, the whole recorded Observer topology disappears, the listener closes, exact unrelated Zellij wrapper/client identities survive, and the unrelated tmux sentinel still passes private-socket `has-session`. The tmux check is not an exact process-identity claim.
 
 ## Browser/protocol rerun contract
 
@@ -111,6 +111,7 @@ The audit exercises the positive/input controls itself and refuses success unles
 - No Stage B/C product code or real lifecycle wiring: last lease, disable, uninstall, component pre-uninstall, Dashboard restart, config transactions, generation fencing, install races, and failed-uninstall durability remain unproved.
 - No canonical production principal, API-key/Fleet token refresh, lease expiry/revocation, or 10-second active-stream reauthorization implementation was tested.
 - No public Dashboard root/base-path × local/Fleet routing implementation was tested.
-- The 4 KiB frame gate limits post-clone processing/retention only. It cannot prevent the browser from allocating a structured clone before the handler runs, so compromised-iframe clone-time memory pressure remains unproved and must not be described as solved.
+- The 4 KiB frame gate limits retained payload size only. It cannot prevent the browser from allocating a structured clone before the handler runs, and its `Object.entries` walker can materialize and scan an arbitrarily wide object before rejecting it. Clone-time memory, post-clone CPU, and temporary allocation therefore have no hard bound in this probe and must not be described as solved.
+- PID/start identity recheck followed by `kill(2)` retains a non-atomic PID-reuse TOCTOU; the recorded microsecond start identity narrows but does not eliminate it.
 - No archive download/extraction bounds, MIT packaging, dual-hash install verification, online update, or active-generation artifact identity implementation was tested.
 - No Linux, Darwin x64, Windows, multi-user load, sustained resource-bound, or production Agent-session evidence exists. The result applies only to the tested Darwin arm64 environment.
