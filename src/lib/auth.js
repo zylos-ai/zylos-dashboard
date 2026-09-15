@@ -67,6 +67,12 @@ function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
+function authContext(kind, principalId, scope, credentialId) {
+  const context = { kind, principalId, scope };
+  Object.defineProperty(context, 'credentialId', { value: credentialId, enumerable: false });
+  return context;
+}
+
 function createSession(remember = false) {
   const token = crypto.randomBytes(64).toString('hex');
   const now = Date.now();
@@ -76,9 +82,8 @@ function createSession(remember = false) {
   return token;
 }
 
-function validateSession(token) {
-  if (!token || !_store) return null;
-  const hash = sha256(token);
+function validateSessionHash(hash, { touch = true } = {}) {
+  if (!hash || !_store) return null;
   const session = _store.getSession(hash);
   if (!session) return null;
   const now = Date.now();
@@ -89,8 +94,14 @@ function validateSession(token) {
     _store.deleteSession(hash);
     return null;
   }
-  _store.touchSession(hash, now);
-  return { kind: 'cookie', principalId: hash, scope: 'admin' };
+  if (touch) _store.touchSession(hash, now);
+  return authContext('cookie', hash, 'admin', hash);
+}
+
+function validateSession(token) {
+  if (!token || !_store) return null;
+  const hash = sha256(token);
+  return validateSessionHash(hash);
 }
 
 function destroySession(token) {
@@ -320,7 +331,7 @@ export function validateApiSession(token) {
   if (!session) return null;
   if (session.key_revoked_at) return null;
   if (Date.now() > session.expires_at) return null;
-  return { kind: 'api', principalId: String(session.api_key_id), scope: session.scope };
+  return authContext('api', String(session.api_key_id), session.scope, hash);
 }
 
 function getBearerToken(req) {
@@ -374,6 +385,21 @@ export class AuthGate {
       return cookieAuth;
     }
     return this.getApiAuth(req);
+  }
+
+  revalidateAuthContext(context) {
+    if (!this.enabled || !context || context.scope !== 'admin') return null;
+    if (context.kind === 'cookie') {
+      const refreshed = validateSessionHash(context.principalId);
+      return refreshed?.principalId === context.principalId ? refreshed : null;
+    }
+    if (context.kind === 'api' && context.credentialId) {
+      const session = _store?.getApiSession(context.credentialId);
+      if (!session || session.key_revoked_at || Date.now() > session.expires_at ||
+          String(session.api_key_id) !== context.principalId || session.scope !== 'admin') return null;
+      return authContext('api', context.principalId, session.scope, context.credentialId);
+    }
+    return null;
   }
 
   async handle(req, res, url) {

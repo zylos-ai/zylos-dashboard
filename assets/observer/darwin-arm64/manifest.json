@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "platform": "darwin-arm64",
+  "sourceAcceptance": "bf9ba4ef8c18a6d78b39df3e12d7f5a4475ed054",
+  "binaries": {
+    "darwin-guardian": {
+      "sha256": "44b00a0bd7414a3fdce8869df7c27f87e0c964e44a545d3f7554ba4a99564c95",
+      "source": "probes/observer-stage-a/darwin-guardian.c",
+      "sourceSha256": "ba614d74bd4392751169cfc5af7561a73122e4010ea47b2a1c2360e3685c15bd"
+    },
+    "marked-exec": {
+      "sha256": "e6c85c9c0f23eeb3752e77a9d0b725816d797583e240da883b2aa2850d27c8e3",
+      "source": "probes/observer-stage-a/marked-exec.c",
+      "sourceSha256": "cbc217cb0d40bed860aae2d7fcc8e81564bbbb619f26a6bf2514cce14f81edd0"
+    },
+    "pty-marked-exec": {
+      "sha256": "336c645e0e4a8250a2735fcd447d9e902ce63378a4f4531b1e188e9a4e2a095f",
+      "source": "probes/observer-stage-a/pty-marked-exec.c",
+      "sourceSha256": "f7db8a2bb1903a1786a06cc99a803cf9b21d28e87546c86ac8c169518b7e251d"
+    }
+  }
+}

@@ -35,12 +35,14 @@ test('canonical auth context uses server session hash and stable API key id', ()
     principalId: sha256(cookieToken),
     scope: 'admin',
   });
+  assert.equal(gate.revalidateAuthContext(cookieReq._authContext)?.principalId, sha256(cookieToken));
   const apiReq = { headers: { authorization: `Bearer ${apiToken}` } };
   assert.deepEqual(gate.resolveAuthContext(apiReq), {
     kind: 'api',
     principalId: '42',
     scope: 'admin',
   });
+  assert.equal(gate.revalidateAuthContext(apiReq._authContext)?.principalId, '42');
   assert.deepEqual(validateApiSession(apiToken), apiReq._authContext);
 });
 
