@@ -2,8 +2,101 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { buildAgentFleetView, liveStateMood, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
 import { agentColor } from '../src/lib/agent-color.js';
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function observerUiHarness() {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const slice = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
+  const source = [
+    slice('function setObserverNotice(', 'function activeTabName('),
+    slice('function observerStatusLabel(', 'async function runObserverLifecycle('),
+    slice('function enterRemoteAgent(', 'function initFleetMode(')
+  ].join('\n');
+  const elements = {
+    '#observer-notice': { dataset: {} },
+    '#observer-frame': { contentWindow: { postMessage() {} }, parentElement: { dataset: {} } },
+    '#observer-target': {},
+    '#observer-tab': { hidden: false }
+  };
+  const calls = [];
+  const sockets = [];
+  const history = [];
+  let fetchImpl = async () => { throw new Error('unexpected fetch'); };
+  const context = {
+    state: {
+      remoteAgent: null,
+      multiAgent: true,
+      observer: { generation: 0, statusGeneration: 0, statusTarget: null }
+    },
+    settingsModal: null,
+    $: (selector) => elements[selector],
+    document: { querySelectorAll: () => [], querySelector: () => null },
+    t: (key) => key,
+    clearInterval() {},
+    setInterval: () => 1,
+    URL,
+    ArrayBuffer,
+    window: {
+      location: { href: 'http://fixture.local/dashboard/' },
+      history: { pushState: (...args) => history.push(args) }
+    },
+    encodeURIComponent,
+    MessageChannel: class {
+      constructor() {
+        this.port1 = { postMessage() {}, start() {}, close() {} };
+        this.port2 = {};
+      }
+    },
+    WebSocket: class {
+      constructor(url) { this.url = String(url); sockets.push(this); }
+      close() {}
+    },
+    fetch: (...args) => {
+      calls.push({ url: String(args[0]), options: args[1] });
+      return fetchImpl(...args);
+    },
+    observerEndpoint: (suffix) => `${context.state.remoteAgent ? `/fleet/${context.state.remoteAgent}` : ''}${suffix}`,
+    viewedAgentName: () => context.state.remoteAgent || 'self',
+    remoteIsReadOnly: () => false,
+    resetAgentData() {
+      context.closeObserver({ release: true }).catch(() => {});
+      context.state.observer.statusGeneration += 1;
+      context.state.observer.statusTarget = null;
+      context.state.observer.status = null;
+      context.renderObserverStatus(null);
+    },
+    connectSse() {},
+    showAgentDetail() {},
+    showFleetView() {},
+    refreshAll: async () => {},
+    refreshCharts() {},
+    activeTabName: () => 'overview',
+    remotePrefix: () => context.state.remoteAgent ? `/fleet/${context.state.remoteAgent}` : '',
+    api: (value) => value
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  return {
+    calls,
+    context,
+    elements,
+    history,
+    sockets,
+    setFetch(implementation) { fetchImpl = implementation; }
+  };
+}
+
+function observerResponse(data, { ok = true } = {}) {
+  return { ok, json: async () => data, text: async () => '<html>renderer</html>' };
+}
 
 test('prompt source transient display is capped at 5 seconds', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
@@ -670,7 +763,7 @@ test('entering and exiting a remote agent resets per-agent state and resubscribe
   for (const fn of [enter, exit]) {
     assert.match(fn, /resetAgentData\(\);/);
     assert.match(fn, /connectSse\(\);/);
-    assert.match(fn, /refreshAll\(\)\.catch/);
+    assert.match(fn, /return Promise\.allSettled\(\[refreshAll\(\), refreshObserverStatus/);
   }
   assert.match(enter, /showAgentDetail\(\);/);
   assert.match(exit, /showFleetView\(\);/);
@@ -710,8 +803,8 @@ test('popstate routes /fleet/<name> paths into remote view only on the parent do
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   // The standalone remote document (REMOTE_AGENT) keeps plain tab routing.
   assert.match(app, /if \(!REMOTE_AGENT\) \{\s*\n\s*const m = path\.match\(\/\\\/fleet\\\/\(\[\^\/\]\+\)\\\/\?\(\?::?trends\|memory\|observer\)\?\$\/\);?/);
-  assert.match(app, /enterRemoteAgent\(decodeURIComponent\(m\[1\]\), \{ push: false \}\);/);
-  assert.match(app, /else if \(state\.remoteAgent\) \{\s*\n\s*exitRemoteAgent\(\{ push: false \}\);/);
+  assert.match(app, /await enterRemoteAgent\(decodeURIComponent\(m\[1\]\), \{ push: false \}\);/);
+  assert.match(app, /else if \(state\.remoteAgent\) \{\s*\n\s*await exitRemoteAgent\(\{ push: false \}\);/);
   // Tab pushState carries the remote prefix so deep links stay consistent.
   assert.match(app, /const path = name === 'overview' \? `\$\{prefix\}\/` : `\$\{prefix\}\/\$\{name\}`;/);
 });
@@ -776,6 +869,100 @@ test('Observer UI is optional, read-only, agent-routed, and releases leases on e
   }
 });
 
+test('Observer close fences late lease acquisition and releases it against the original target', async () => {
+  const harness = observerUiHarness();
+  const lease = deferred();
+  harness.setFetch((url) => {
+    const path = String(url);
+    if (path.endsWith('/status')) {
+      return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    }
+    if (path.endsWith('/leases')) return lease.promise;
+    return Promise.resolve(observerResponse({ ok: true }));
+  });
+
+  const opening = harness.context.openObserver();
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.context.closeObserver();
+  lease.resolve(observerResponse({ id: 'old-lease', preset: 'standard' }));
+  await opening;
+
+  assert.equal(harness.context.state.observer.lease, null);
+  assert.equal(harness.context.state.observer.endpointPrefix, null);
+  assert.equal(harness.context.state.observer.opening, false);
+  assert.equal(harness.sockets.length, 0);
+  assert.ok(harness.calls.some(({ url }) => url === '/api/observer/leases/old-lease/release'));
+});
+
+test('Observer stale renew and preset responses cannot mutate or report errors into a newer session', async () => {
+  const harness = observerUiHarness();
+  const oldLease = { id: 'old-lease' };
+  const oldEndpoints = { api: '/old/api/observer' };
+  const oldTarget = harness.context.observerTargetKey();
+
+  harness.context.state.observer = {
+    generation: 1,
+    statusGeneration: 0,
+    lease: oldLease,
+    endpointPrefix: oldEndpoints
+  };
+  const renew = deferred();
+  harness.setFetch(() => renew.promise);
+  const pendingRenew = harness.context.renewObserverLease(1, oldTarget, oldLease, oldEndpoints);
+  await harness.context.closeObserver({ release: false });
+  harness.context.state.observer.lease = { id: 'new-lease' };
+  harness.context.state.observer.endpointPrefix = { api: '/new/api/observer' };
+  renew.resolve(observerResponse({ id: 'old-lease' }));
+  await pendingRenew;
+  assert.equal(harness.context.state.observer.lease.id, 'new-lease');
+
+  harness.context.state.observer.generation = 3;
+  harness.context.state.observer.lease = oldLease;
+  harness.context.state.observer.endpointPrefix = oldEndpoints;
+  const preset = deferred();
+  harness.setFetch(() => preset.promise);
+  const pendingPreset = harness.context.setObserverPreset('wide');
+  await harness.context.closeObserver({ release: false });
+  harness.context.state.observer.lease = { id: 'new-lease' };
+  preset.resolve(observerResponse({ error: 'old failure' }, { ok: false }));
+  await assert.doesNotReject(pendingPreset);
+  assert.equal(harness.context.state.observer.lease.id, 'new-lease');
+});
+
+test('Observer navigation fetches target status, waits for it, and discards delayed old-target responses', async () => {
+  const harness = observerUiHarness();
+  const firstStatus = deferred();
+  harness.setFetch((url) => {
+    const path = String(url);
+    if (path === '/fleet/alpha/api/observer/status') return firstStatus.promise;
+    if (path === '/fleet/bravo/api/observer/status') {
+      return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    }
+    return Promise.resolve(observerResponse({}));
+  });
+
+  let alphaSettled = false;
+  const alpha = harness.context.enterRemoteAgent('alpha', { push: false }).then(() => { alphaSettled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(alphaSettled, false);
+
+  await harness.context.enterRemoteAgent('bravo', { push: false });
+  assert.equal(harness.context.state.observer.statusTarget.startsWith('bravo\u0000'), true);
+  assert.equal(harness.context.state.observer.status.state, 'installed');
+  assert.equal(harness.elements['#observer-tab'].hidden, false);
+
+  firstStatus.resolve(observerResponse({ state: 'not_installed' }));
+  await alpha;
+  assert.equal(harness.context.state.remoteAgent, 'bravo');
+  assert.equal(harness.context.state.observer.statusTarget.startsWith('bravo\u0000'), true);
+  assert.equal(harness.context.state.observer.status.state, 'installed');
+  assert.equal(harness.elements['#observer-tab'].hidden, false);
+  assert.deepEqual(harness.calls.filter(({ url }) => url.endsWith('/api/observer/status')).map(({ url }) => url), [
+    '/fleet/alpha/api/observer/status',
+    '/fleet/bravo/api/observer/status'
+  ]);
+});
+
 test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
@@ -787,8 +974,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=62/);
-  assert.match(index, /style\.css\?v=46/);
+  assert.match(index, /app\.js\?v=63/);
+  assert.match(index, /style\.css\?v=47/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -855,7 +1042,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=62/);
+  assert.match(index, /app\.js\?v=63/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

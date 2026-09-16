@@ -58,7 +58,10 @@ const state = {
     channel: null,
     renewTimer: null,
     opening: false,
-    endpointPrefix: null
+    endpointPrefix: null,
+    generation: 0,
+    statusGeneration: 0,
+    statusTarget: null
   },
   memory: {
     tree: null,
@@ -1943,15 +1946,34 @@ function setObserverNotice(message, status = 'idle') {
   notice.dataset.state = status;
 }
 
+function observerTargetKey() {
+  const standaloneAgent = typeof REMOTE_AGENT === 'undefined' ? '' : REMOTE_AGENT;
+  return `${state.remoteAgent || standaloneAgent || 'local'}\u0000${observerEndpoint('/api/observer')}`;
+}
+
+function observerSessionCurrent(generation, targetKey) {
+  return state.observer.generation === generation && observerTargetKey() === targetKey;
+}
+
 function syncObserverPreset(preset) {
   document.querySelectorAll('[data-observer-preset]').forEach((button) => {
     button.classList.toggle('active', button.dataset.observerPreset === preset);
   });
   state.observer.channel?.postMessage({ type: 'preset', preset });
+  const shell = $('#observer-frame')?.parentElement;
+  if (shell) shell.dataset.preset = preset;
+}
+
+function releaseObserverLease(endpoints, lease) {
+  if (!lease?.id || !endpoints?.api) return;
+  fetch(`${endpoints.api}/leases/${encodeURIComponent(lease.id)}/release`, {
+    method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }
+  }).catch(() => {});
 }
 
 async function closeObserver({ release = true, preserveNotice = false } = {}) {
   const observer = state.observer;
+  observer.generation = (Number.isInteger(observer.generation) ? observer.generation : 0) + 1;
   clearInterval(observer.renewTimer);
   observer.renewTimer = null;
   const lease = observer.lease;
@@ -1967,73 +1989,81 @@ async function closeObserver({ release = true, preserveNotice = false } = {}) {
   observer.channel = null;
   if (observer.iframe) observer.iframe.srcdoc = '';
   observer.iframe = null;
-  if (release && lease?.id && endpoints?.api) {
-    fetch(`${endpoints.api}/leases/${encodeURIComponent(lease.id)}/release`, {
-      method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }
-    }).catch(() => {});
-  }
+  if (release) releaseObserverLease(endpoints, lease);
   if (!preserveNotice) setObserverNotice(t('observer.closed'), 'idle');
 }
 
-async function renewObserverLease() {
-  const { lease, endpointPrefix } = state.observer;
+async function renewObserverLease(generation, targetKey, lease, endpointPrefix) {
   if (!lease?.id || !endpointPrefix?.api) return;
   const resp = await fetch(`${endpointPrefix.api}/leases/${encodeURIComponent(lease.id)}/renew`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(data.error || 'lease_renew_failed');
+  if (!observerSessionCurrent(generation, targetKey) || state.observer.lease?.id !== lease.id) return;
   state.observer.lease = data;
 }
 
 async function openObserver() {
   const observer = state.observer;
   if (observer.opening || observer.lease) return;
+  const generation = observer.generation = (Number.isInteger(observer.generation) ? observer.generation : 0) + 1;
+  const targetKey = observerTargetKey();
+  const endpoints = {
+    api: observerEndpoint('/api/observer'),
+    frame: observerEndpoint('/observer/frame'),
+    stream: observerEndpoint('/observer/stream')
+  };
   observer.opening = true;
   setObserverNotice(t('observer.connecting'), 'connecting');
   try {
     const status = await refreshObserverStatus();
+    if (!observerSessionCurrent(generation, targetKey)) return;
     if (status.state !== 'installed' || status.desired?.enabled !== true) {
       throw new Error(t('observer.not_available'));
     }
-    const apiBase = observerEndpoint('/api/observer');
-    const framePath = observerEndpoint('/observer/frame');
-    const streamPath = observerEndpoint('/observer/stream');
-    observer.endpointPrefix = { api: apiBase, frame: framePath, stream: streamPath };
-    const leaseResp = await fetch(`${apiBase}/leases`, {
+    observer.endpointPrefix = endpoints;
+    const leaseResp = await fetch(`${endpoints.api}/leases`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }
     });
     const lease = await leaseResp.json().catch(() => ({}));
     if (!leaseResp.ok) throw new Error(lease.error || t('observer.connect_failed'));
+    if (!observerSessionCurrent(generation, targetKey)) {
+      releaseObserverLease(endpoints, lease);
+      return;
+    }
     observer.lease = lease;
 
-    const frameResp = await fetch(framePath, { headers: { 'X-Observer-Lease': lease.id } });
+    const frameResp = await fetch(endpoints.frame, { headers: { 'X-Observer-Lease': lease.id } });
     if (!frameResp.ok) {
       const data = await frameResp.json().catch(() => ({}));
       throw new Error(data.error || t('observer.connect_failed'));
     }
     const frameDocument = await frameResp.text();
+    if (!observerSessionCurrent(generation, targetKey) || observer.lease?.id !== lease.id) return;
     const iframe = $('#observer-frame');
     observer.iframe = iframe;
     const messageChannel = new MessageChannel();
     observer.channel = messageChannel.port1;
     messageChannel.port1.onmessage = ({ data }) => {
-      if (data?.type === 'ready') setObserverNotice(t('observer.live_read_only'), 'live');
+      if (observerSessionCurrent(generation, targetKey) && observer.lease?.id === lease.id && data?.type === 'ready') {
+        setObserverNotice(t('observer.live_read_only'), 'live');
+      }
     };
     messageChannel.port1.start();
     iframe.onload = () => {
-      if (observer.iframe !== iframe || !iframe.contentWindow) return;
+      if (!observerSessionCurrent(generation, targetKey) || observer.iframe !== iframe || !iframe.contentWindow) return;
       iframe.contentWindow.postMessage({ type: 'observer-init' }, '*', [messageChannel.port2]);
     };
     iframe.srcdoc = frameDocument;
 
-    const streamUrl = new URL(streamPath, window.location.href);
+    const streamUrl = new URL(endpoints.stream, window.location.href);
     streamUrl.protocol = streamUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(streamUrl, ['zylos-observer-v1', `lease.${lease.id}`]);
     observer.ws = ws;
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (event) => {
-      if (observer.ws !== ws) return;
+      if (!observerSessionCurrent(generation, targetKey) || observer.ws !== ws) return;
       if (typeof event.data === 'string') {
         try {
           const message = JSON.parse(event.data);
@@ -2045,14 +2075,17 @@ async function openObserver() {
         observer.channel?.postMessage({ type: 'render', bytes: event.data }, [event.data]);
       }
     };
-    ws.onerror = () => setObserverNotice(t('observer.disconnected'), 'error');
+    ws.onerror = () => {
+      if (observerSessionCurrent(generation, targetKey) && observer.ws === ws) setObserverNotice(t('observer.disconnected'), 'error');
+    };
     ws.onclose = () => {
-      if (observer.ws !== ws) return;
+      if (!observerSessionCurrent(generation, targetKey) || observer.ws !== ws) return;
       setObserverNotice(t('observer.disconnected'), 'error');
       closeObserver({ release: true, preserveNotice: true }).catch(() => {});
     };
     observer.renewTimer = setInterval(() => {
-      renewObserverLease().catch(() => {
+      renewObserverLease(generation, targetKey, lease, endpoints).catch(() => {
+        if (!observerSessionCurrent(generation, targetKey) || observer.lease?.id !== lease.id) return;
         setObserverNotice(t('observer.session_expired'), 'error');
         closeObserver({ release: false, preserveNotice: true }).catch(() => {});
       });
@@ -2061,20 +2094,24 @@ async function openObserver() {
     const target = $('#observer-target');
     if (target) target.textContent = t('observer.target', { name: viewedAgentName() || t('value.unknown') });
   } catch (error) {
+    if (!observerSessionCurrent(generation, targetKey)) return;
     setObserverNotice(error.message || t('observer.connect_failed'), 'error');
     await closeObserver({ release: true, preserveNotice: true });
   } finally {
-    observer.opening = false;
+    if (observer.generation === generation) observer.opening = false;
   }
 }
 
 async function setObserverPreset(preset) {
   const { lease, endpointPrefix } = state.observer;
+  const generation = state.observer.generation;
+  const targetKey = observerTargetKey();
   if (!lease?.id || !endpointPrefix?.api) return;
   const resp = await fetch(`${endpointPrefix.api}/leases/${encodeURIComponent(lease.id)}/preset`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preset })
   });
   const data = await resp.json().catch(() => ({}));
+  if (!observerSessionCurrent(generation, targetKey) || state.observer.lease?.id !== lease.id) return;
   if (!resp.ok) throw new Error(data.error || t('observer.preset_failed'));
   state.observer.lease = data;
   syncObserverPreset(data.preset);
@@ -2338,16 +2375,16 @@ function initTabs() {
       activateTab(btn.dataset.tab, true);
     });
   });
-  window.addEventListener('popstate', () => {
+  window.addEventListener('popstate', async () => {
     const path = window.location.pathname;
     // In-page remote viewing only exists on the parent document; the
     // standalone remote document (REMOTE_AGENT) keeps plain tab routing.
     if (!REMOTE_AGENT) {
       const m = path.match(/\/fleet\/([^/]+)\/?(?:trends|memory|observer)?$/);
       if (m) {
-        enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
+        await enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
       } else if (state.remoteAgent) {
-        exitRemoteAgent({ push: false });
+        await exitRemoteAgent({ push: false });
       }
     }
     const tab = path.endsWith('/trends') ? 'trends' : path.endsWith('/memory') ? 'memory' : path.endsWith('/observer') ? 'observer' : 'overview';
@@ -2458,6 +2495,10 @@ function applyFleetMode(fleet) {
 // mix while switching the detail view between self and a remote agent.
 function resetAgentData() {
   closeObserver({ release: true }).catch(() => {});
+  state.observer.statusGeneration += 1;
+  state.observer.statusTarget = null;
+  state.observer.status = null;
+  renderObserverStatus(null);
   state.dashboardState = null;
   state.metrics = new Map();
   state.aggregated = {};
@@ -2496,9 +2537,12 @@ function enterRemoteAgent(name, { push = true } = {}) {
   resetAgentData();
   connectSse();
   showAgentDetail();
-  refreshAll().catch(() => {});
-  if (activeTabName() === 'trends') refreshCharts();
+  const targetKey = observerTargetKey();
   if (push) window.history.pushState({ remoteAgent: name }, '', api(`${remotePrefix()}/`));
+  return Promise.allSettled([refreshAll(), refreshObserverStatus({ quiet: true })]).then(() => {
+    if (observerTargetKey() !== targetKey) return;
+    if (activeTabName() === 'trends') refreshCharts();
+  });
 }
 
 function exitRemoteAgent({ push = true } = {}) {
@@ -2507,8 +2551,8 @@ function exitRemoteAgent({ push = true } = {}) {
   resetAgentData();
   connectSse();
   showFleetView();
-  refreshAll().catch(() => {});
   if (push) window.history.pushState({ tab: 'overview' }, '', api('/'));
+  return Promise.allSettled([refreshAll(), refreshObserverStatus({ quiet: true })]);
 }
 
 function initFleetMode() {
@@ -3557,15 +3601,23 @@ function renderObserverStatus(status = state.observer.status) {
 }
 
 async function refreshObserverStatus({ quiet = false } = {}) {
+  const targetKey = observerTargetKey();
+  const requestGeneration = state.observer.statusGeneration =
+    (Number.isInteger(state.observer.statusGeneration) ? state.observer.statusGeneration : 0) + 1;
+  const endpoint = observerEndpoint('/api/observer/status');
   try {
-    const resp = await fetch(observerEndpoint('/api/observer/status'), { cache: 'no-store' });
+    const resp = await fetch(endpoint, { cache: 'no-store' });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.error || t('observer.load_failed'));
+    if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
     state.observer.status = data;
+    state.observer.statusTarget = targetKey;
     renderObserverStatus(data);
     return data;
   } catch (error) {
+    if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
     state.observer.status = null;
+    state.observer.statusTarget = targetKey;
     renderObserverStatus(null);
     if (!quiet) throw error;
     return null;

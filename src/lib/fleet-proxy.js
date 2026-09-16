@@ -15,6 +15,16 @@ const STREAM_GUARD_TAIL_CHARS = 128;
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 const MAX_MEMORY_WRITE_BODY_BYTES = 2 * 1024 * 1024 + 64 * 1024;
 
+function hasExactRequestOrigin(req) {
+  const firstHeader = (value) => String(Array.isArray(value) ? value[0] : value || '').split(',')[0].trim();
+  const forwarded = firstHeader(req.headers['x-forwarded-proto']).toLowerCase();
+  const protocol = forwarded === 'https' || forwarded === 'http' ? forwarded : req.socket?.encrypted ? 'https' : 'http';
+  const host = firstHeader(req.headers.host);
+  const expected = host ? `${protocol}://${host}` : null;
+  if (!expected || typeof req.headers.origin !== 'string') return false;
+  try { return new URL(req.headers.origin).origin === expected && req.headers.origin === expected; } catch { return false; }
+}
+
 function decodeAgentName(value) {
   try {
     return decodeURIComponent(value || '');
@@ -299,6 +309,10 @@ export class FleetProxy {
         sendJson(res, 403, { error: 'admin_required' });
         return;
       }
+      if (!['GET', 'HEAD'].includes(req.method) && context.kind === 'cookie' && !hasExactRequestOrigin(req)) {
+        sendJson(res, 403, { error: 'origin_required' });
+        return;
+      }
       const leaseId = observerLeaseId(req, suffix);
       if (leaseId) {
         const binding = this.observerLeases.get(leaseId);
@@ -447,12 +461,7 @@ export class FleetProxy {
     const agentName = decodeAgentName(match[1]);
     const agent = this.config.fleet?.agents?.find((candidate) => candidate.name === agentName);
     const context = req._authContext;
-    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
-    const expectedProtocol = forwardedProto === 'https' || forwardedProto === 'http'
-      ? forwardedProto
-      : req.socket.encrypted ? 'https' : 'http';
-    const expectedOrigin = req.headers.host ? `${expectedProtocol}://${req.headers.host}` : null;
-    const exactOrigin = typeof req.headers.origin === 'string' && req.headers.origin === expectedOrigin;
+    const exactOrigin = hasExactRequestOrigin(req);
     const protocol = String(req.headers['sec-websocket-protocol'] || '');
     const leaseId = protocol.split(',').map((value) => value.trim()).find((value) => value.startsWith('lease.'))?.slice(6);
     this.pruneObserverLeases();
@@ -491,6 +500,16 @@ export class FleetProxy {
         token = await this.poller.getSessionToken(agentName, { force: true });
         upstream = await connect();
       }
+      this.pruneObserverLeases();
+      const refreshedContext = this.authGate?.revalidateAuthContext?.(context) || null;
+      const currentBinding = this.observerLeases.get(leaseId);
+      if (!refreshedContext || refreshedContext.scope !== 'admin' || !currentBinding ||
+          currentBinding.expiresAt <= Date.now() || currentBinding.agentName !== agentName ||
+          !samePrincipal(currentBinding.principal, refreshedContext) || !samePrincipal(refreshedContext, context)) {
+        upstream.close(1000, 'local_auth_revoked');
+        rejectObserverUpgrade(socket, 404, 'lease_not_found');
+        return true;
+      }
       downstream = acceptObserverWebSocket(req, socket, head, 'zylos-observer-v1');
       this.observerStreams.add(stream);
       upstream.on('message', (payload, opcode) => {
@@ -504,7 +523,10 @@ export class FleetProxy {
       downstream.on('close', close);
       revalidationTimer = setInterval(() => {
         const refreshed = this.authGate?.revalidateAuthContext(context);
-        if (!refreshed || !samePrincipal(refreshed, binding.principal)) close();
+        this.pruneObserverLeases();
+        const liveBinding = this.observerLeases.get(leaseId);
+        if (!refreshed || !liveBinding || liveBinding.expiresAt <= Date.now() ||
+            liveBinding.agentName !== agentName || !samePrincipal(refreshed, liveBinding.principal)) close();
       }, 10_000);
       revalidationTimer.unref?.();
       upstream.activate();
