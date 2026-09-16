@@ -257,7 +257,7 @@ export class ObserverService {
     const closeAbortedDownstream = () => {
       aborted = true;
       if (stream) this._closeStream(stream, 1001, 'client_aborted');
-      else socket.destroy();
+      else if (!socket.writableEnded) socket.destroy();
     };
     // Own socket failures before any rejection can write a response.
     socket.on('error', closeAbortedDownstream);
@@ -265,7 +265,10 @@ export class ObserverService {
     socket.on('end', closeAbortedDownstream);
     socket.on('close', closeAbortedDownstream);
     try {
-      const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+      let url;
+      try { url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`); } catch {
+        throw new ObserverHttpError(400, 'invalid_request');
+      }
       if (url.pathname !== '/observer/stream' || url.search) {
         rejectObserverUpgrade(socket, 404, 'not_found');
         return true;

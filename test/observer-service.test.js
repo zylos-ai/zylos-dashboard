@@ -205,6 +205,7 @@ test('local Observer rejects pre-ready bytes and disconnects without allocating 
     } finally {
       releaseReady?.();
       reset?.client.destroy();
+      raw?.destroy();
       await handling;
       await service.shutdown();
       await app.close();

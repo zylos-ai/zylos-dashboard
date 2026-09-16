@@ -246,8 +246,8 @@ export function acceptObserverWebSocket(req, socket, head, protocol) {
 
 export function rejectObserverUpgrade(socket, status = 404, code = 'not_found') {
   const body = JSON.stringify({ error: code });
-  const reason = status === 401 ? 'Unauthorized' : status === 403 ? 'Forbidden' :
-    status === 429 ? 'Too Many Requests' : status === 503 ? 'Service Unavailable' : 'Not Found';
+  const reason = status === 400 ? 'Bad Request' : status === 401 ? 'Unauthorized' : status === 403 ? 'Forbidden' :
+    status === 429 ? 'Too Many Requests' : status === 502 ? 'Bad Gateway' : status === 503 ? 'Service Unavailable' : 'Not Found';
   socket.end([
     `HTTP/1.1 ${status} ${reason}`,
     'Connection: close',

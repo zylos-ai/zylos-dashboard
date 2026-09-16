@@ -45,6 +45,7 @@ import { ObserverControlServer } from './lib/observer-control.js';
 import { ObserverInstaller } from './lib/observer-installer.js';
 import { ObserverManager } from './lib/observer-manager.js';
 import { ObserverService } from './lib/observer-service.js';
+import { rejectObserverUpgrade } from './lib/observer-websocket.js';
 import { shutdownDashboardTransports } from './lib/dashboard-shutdown.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
@@ -1543,7 +1544,11 @@ export function createServer() {
   }
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    let url;
+    try { url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`); } catch {
+      sendJson(res, 400, { error: 'invalid_request' });
+      return;
+    }
     let pathname = url.pathname;
 
     // Ingest endpoints: local-only, reject proxied requests
@@ -1689,7 +1694,12 @@ export function createServer() {
     }
   });
   server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    let url;
+    try { url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`); } catch {
+      socket.on('error', () => socket.destroy());
+      rejectObserverUpgrade(socket, 400, 'invalid_request');
+      return;
+    }
     if (url.pathname.startsWith('/fleet/')) {
       req._authContext = auth.resolveAuthContext(req);
       fleetProxy.handleUpgrade(req, socket, head).then((handled) => {

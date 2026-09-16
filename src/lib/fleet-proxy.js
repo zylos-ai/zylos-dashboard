@@ -456,7 +456,12 @@ export class FleetProxy {
   }
 
   async handleUpgrade(req, socket, head) {
-    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    let url;
+    try { url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`); } catch {
+      socket.on('error', () => socket.destroy());
+      rejectObserverUpgrade(socket, 400, 'invalid_request');
+      return true;
+    }
     const match = url.pathname.match(/^\/fleet\/([^/]+)\/observer\/stream$/);
     if (!match || url.search) return false;
     let upstream;

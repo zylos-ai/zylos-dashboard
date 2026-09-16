@@ -63,6 +63,7 @@ const state = {
     generation: 0,
     statusGeneration: 0,
     lifecycleGeneration: 0,
+    lifecyclePending: null,
     statusRequest: null
   },
   memory: {
@@ -2218,6 +2219,7 @@ function syncMemoryPinned() {
 
 function showFleetView(opts = {}) {
   if (!state.multiAgent) return;
+  if (opts.navigation !== false) state.navigationGeneration += 1;
   closeObserver({ release: true }).catch(() => {});
   state.fleetViewActive = true;
   syncMemoryPinned();
@@ -2227,6 +2229,7 @@ function showFleetView(opts = {}) {
 }
 
 function showAgentDetail(opts = {}) {
+  if (opts.navigation !== false) state.navigationGeneration += 1;
   state.fleetViewActive = false;
   transitionView('agent', opts);
   clearFleetFallback();
@@ -2410,6 +2413,7 @@ function initTabs() {
     }
     if (generation !== state.navigationGeneration) return;
     const tab = path.endsWith('/trends') ? 'trends' : path.endsWith('/memory') ? 'memory' : path.endsWith('/observer') ? 'observer' : 'overview';
+    if (tab !== 'overview') showAgentDetail({ navigation: false });
     activateTab(tab, false);
   });
   document.addEventListener('visibilitychange', () => {
@@ -2519,6 +2523,7 @@ function resetAgentData() {
   closeObserver({ release: true }).catch(() => {});
   state.observer.statusGeneration += 1;
   state.observer.lifecycleGeneration = (state.observer.lifecycleGeneration || 0) + 1;
+  state.observer.lifecyclePending = null;
   state.observer.statusRequest = null;
   state.observer.status = null;
   renderObserverStatus(null);
@@ -2560,12 +2565,12 @@ function enterRemoteAgent(name, { push = true } = {}) {
   // Single-agent dashboards have no fleet wall to come back to — never
   // activate remote viewing there, even if a stale history entry matches.
   if (!state.multiAgent) return;
-  if (push) state.navigationGeneration += 1;
   if (!name || state.remoteAgent === name) return;
+  if (push) state.navigationGeneration += 1;
   state.remoteAgent = name;
   resetAgentData();
   connectSse();
-  showAgentDetail();
+  showAgentDetail({ navigation: false });
   const targetKey = observerTargetKey();
   if (push) window.history.pushState({ remoteAgent: name }, '', api(`${remotePrefix()}/`));
   return Promise.allSettled([refreshAll(), refreshObserverStatus({ quiet: true })]).then(() => {
@@ -2580,7 +2585,7 @@ function exitRemoteAgent({ push = true } = {}) {
   state.remoteAgent = null;
   resetAgentData();
   connectSse();
-  showFleetView();
+  showFleetView({ navigation: false });
   if (push) window.history.pushState({ tab: 'overview' }, '', api('/'));
   return Promise.allSettled([refreshAll(), refreshObserverStatus({ quiet: true })]);
 }
@@ -3592,7 +3597,7 @@ function applySettingsReadOnly(readOnly) {
     el.disabled = readOnly;
   });
   settingsModal.querySelectorAll('.observer-settings-actions button').forEach((el) => {
-    el.disabled = readOnly;
+    el.disabled = readOnly || Boolean(state.observer.lifecyclePending);
   });
 }
 
@@ -3627,7 +3632,9 @@ function renderObserverStatus(status = state.observer.status) {
   if (enable) enable.hidden = status?.state !== 'installed' || status?.desired?.enabled === true;
   if (disable) disable.hidden = status?.state !== 'installed' || status?.desired?.enabled !== true;
   if (uninstall) uninstall.hidden = status?.state !== 'installed' && status?.state !== 'failed';
-  for (const button of [install, enable, disable, uninstall]) if (button) button.disabled = readOnly;
+  for (const button of [install, enable, disable, uninstall]) {
+    if (button) button.disabled = readOnly || Boolean(state.observer.lifecyclePending);
+  }
 }
 
 async function refreshObserverStatus({ quiet = false } = {}) {
@@ -3661,6 +3668,7 @@ async function runObserverLifecycle(action) {
   if (remoteIsReadOnly()) return;
   const targetKey = observerTargetKey();
   const generation = state.observer.lifecycleGeneration = (state.observer.lifecycleGeneration || 0) + 1;
+  state.observer.lifecyclePending = generation;
   const current = () => state.observer.lifecycleGeneration === generation && observerTargetKey() === targetKey;
   const method = action === 'uninstall' ? 'DELETE' : 'POST';
   const path = action === 'install' || action === 'uninstall'
@@ -3698,6 +3706,7 @@ async function runObserverLifecycle(action) {
     if (statusEl) statusEl.textContent = error.message;
     await refreshObserverStatus({ quiet: true });
   } finally {
+    if (state.observer.lifecyclePending === generation) state.observer.lifecyclePending = null;
     renderObserverStatus();
   }
 }

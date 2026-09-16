@@ -18,6 +18,9 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
   const source = [
     slice('function setObserverNotice(', 'function activeTabName('),
     slice('function activeTabName(', '// ─── Fleet view switch'),
+    slice('function showFleetView(', 'function clearFleetFallback('),
+    slice('function hasFleetWall(', '// Clear all per-agent data'),
+    slice('function initFleetMode(', 'function initLocaleToggle('),
     slice('function initTabs(', 'function initObserverControls('),
     slice('function resetAgentData(', 'function initFleetMode('),
     slice('function observerStatusLabel(', 'function addPriceRow(')
@@ -40,6 +43,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
   const sockets = [];
   const history = [];
   const intervals = [];
+  const timeouts = [];
   const listeners = {};
   const tabs = ['overview', 'trends', 'memory', 'observer'].map((name) => ({
     dataset: { tab: name },
@@ -70,6 +74,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     t: (key) => key,
     clearInterval() {},
     setInterval: (handler) => { intervals.push(handler); return intervals.length; },
+    setTimeout: (handler) => { timeouts.push(handler); return timeouts.length; },
     URL,
     ArrayBuffer,
     window: {
@@ -97,8 +102,12 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     viewedAgentName: () => context.state.remoteAgent || 'self',
     remoteIsReadOnly: () => false,
     connectSse() {},
-    showAgentDetail() {},
-    showFleetView() {},
+    transitionView() {},
+    refreshFleet: async () => {},
+    scheduleFleetFallback() {},
+    clearFleetFallback() {},
+    syncFleetSubscription() {},
+    prefersReducedMotion: () => false,
     refreshAll: async () => {},
     refreshCharts() {},
     loadMemoryTree: async () => {},
@@ -119,6 +128,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     elements,
     history,
     intervals,
+    timeouts,
     listeners,
     sockets,
     presets,
@@ -800,8 +810,8 @@ test('entering and exiting a remote agent resets per-agent state and resubscribe
     assert.match(fn, /connectSse\(\);/);
     assert.match(fn, /return Promise\.allSettled\(\[refreshAll\(\), refreshObserverStatus/);
   }
-  assert.match(enter, /showAgentDetail\(\);/);
-  assert.match(exit, /showFleetView\(\);/);
+  assert.match(enter, /showAgentDetail\(\{ navigation: false \}\);/);
+  assert.match(exit, /showFleetView\(\{ navigation: false \}\);/);
   // resetAgentData clears incremental DOM, not just state, so panels from two
   // agents never mix.
   const reset = app.slice(app.indexOf('function resetAgentData('), app.indexOf('function enterRemoteAgent('));
@@ -1353,6 +1363,165 @@ test('Observer popstate reports route failures without an unhandled rejection or
   assert.equal(h.sockets.length, 0);
 });
 
+test('Observer view transitions invalidate pending popstate across fleet entry paths', async (t) => {
+  for (const route of ['fleet', 'detail', 'self-tile', 'back-local', 'live-mode', 'apply-delayed', 'apply-reduced']) {
+    await t.test(route, async () => {
+      const h = observerUiHarness();
+      const refresh = deferred();
+      h.context.refreshAll = () => refresh.promise;
+      h.setFetch((url) => Promise.resolve(observerResponse(String(url).endsWith('/leases')
+        ? { id: 'hidden' } : { state: 'installed', desired: { enabled: true } })));
+      h.elements['#back-to-fleet'] = { addEventListener(_event, handler) { this.click = handler; } };
+      h.elements['#agent-fleet-root'] = { addEventListener(_event, handler) { this.click = handler; } };
+      h.context.initTabs();
+      h.context.initFleetMode();
+      if (route === 'back-local') h.context.state.remoteAgent = 'alpha';
+      h.context.window.location.pathname = route === 'back-local' ? '/observer' : '/fleet/alpha/observer';
+      const navigation = h.listeners.popstate();
+      await new Promise((resolve) => setImmediate(resolve));
+      const before = h.context.state.navigationGeneration;
+      if (route === 'fleet') h.context.showFleetView();
+      if (route === 'detail') h.context.showAgentDetail();
+      if (route === 'self-tile') h.elements['#agent-fleet-root'].click({
+        target: { closest: () => ({ dataset: { self: 'true' } }) }, preventDefault() {}
+      });
+      if (route === 'back-local') h.elements['#back-to-fleet'].click();
+      const fleet = { agents: [{ name: 'self' }, { name: 'alpha' }] };
+      if (route === 'live-mode') {
+        h.context.state.multiAgent = false;
+        h.context.syncLiveFleetMode(fleet);
+      }
+      if (route.startsWith('apply-')) {
+        h.context.prefersReducedMotion = () => route === 'apply-reduced';
+        h.context.applyFleetMode(fleet);
+        if (route === 'apply-delayed') h.timeouts[0]();
+      }
+      assert.ok(h.context.state.navigationGeneration > before);
+      refresh.resolve();
+      await navigation;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(h.context.activeTabName(), 'overview');
+      assert.equal(h.context.state.observer.lease, null);
+      assert.equal(h.sockets.length, 0);
+      assert.equal(h.calls.some(({ url }) => url.endsWith('/leases')), false);
+    });
+  }
+});
+
+test('Observer intended remote and local popstate routes still open visible sessions', async (t) => {
+  for (const target of ['remote', 'local']) await t.test(target, async () => {
+    const h = observerUiHarness();
+    h.setFetch((url) => Promise.resolve(observerResponse(String(url).endsWith('/leases')
+      ? { id: 'wanted' } : { state: 'installed', desired: { enabled: true } })));
+    h.context.initTabs();
+    if (target === 'local') h.context.state.remoteAgent = 'alpha';
+    h.context.window.location.pathname = target === 'remote' ? '/fleet/alpha/observer' : '/observer';
+    await h.listeners.popstate();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.context.state.fleetViewActive, false);
+    assert.equal(h.context.activeTabName(), 'observer');
+    assert.equal(h.context.state.observer.lease.id, 'wanted');
+    assert.equal(h.sockets.length, 1);
+  });
+});
+
+test('Observer lifecycle buttons remain owned by the newest pending action across completion and refresh', async (t) => {
+  for (const outcome of ['success', 'error']) await t.test(outcome, async () => {
+    const h = observerUiHarness();
+    const first = deferred();
+    const second = deferred();
+    h.setFetch((url) => {
+      if (String(url).endsWith('/enable')) return first.promise;
+      if (String(url).endsWith('/disable')) return second.promise;
+      return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    });
+    const a = h.context.runObserverLifecycle('enable');
+    const b = h.context.runObserverLifecycle('disable');
+    await new Promise((resolve) => setImmediate(resolve));
+    first.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    await a;
+    assert.equal(h.buttons.every((button) => button.disabled), true);
+    assert.equal(h.settings['#observer-settings-status'].textContent, 'observer.working');
+    await h.context.refreshObserverStatus();
+    assert.equal(h.buttons.every((button) => button.disabled), true);
+    if (outcome === 'error') second.reject(new Error('failed second'));
+    else second.resolve(observerResponse({ state: 'installed', desired: { enabled: false } }));
+    await b;
+    assert.equal(h.buttons.every((button) => !button.disabled), true);
+    assert.equal(h.settings['#observer-settings-status'].textContent, outcome === 'error' ? 'failed second' : 'observer.action_done');
+  });
+});
+
+test('Observer latest malformed-null status terminates without a lease', async () => {
+  const h = observerUiHarness();
+  const first = deferred();
+  let statuses = 0;
+  h.setFetch(() => ++statuses === 1 ? first.promise : Promise.resolve(observerResponse(null)));
+  const opening = h.context.openObserver();
+  await h.context.refreshObserverStatus({ quiet: true });
+  first.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+  await opening;
+  assert.equal(h.sockets.length, 0);
+  assert.equal(h.elements['#observer-notice'].dataset.state, 'error');
+  assert.equal(h.context.state.observer.opening, false);
+});
+
+test('Observer lifecycle button ownership resets on target change before stale completion', async () => {
+  const h = observerUiHarness();
+  h.context.state.remoteAgent = 'alpha';
+  const action = deferred();
+  h.setFetch((url) => String(url).endsWith('/enable') ? action.promise
+    : Promise.resolve(observerResponse({ state: 'not_installed' })));
+  const pending = h.context.runObserverLifecycle('enable');
+  assert.equal(h.buttons.every((button) => button.disabled), true);
+  await h.context.exitRemoteAgent({ push: false });
+  assert.equal(h.buttons.every((button) => !button.disabled), true);
+  action.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+  await pending;
+  assert.equal(h.buttons.every((button) => !button.disabled), true);
+});
+
+test('Observer no-op target re-entry does not cancel an intended pending route', async () => {
+  const h = observerUiHarness();
+  const refresh = deferred();
+  h.context.refreshAll = () => refresh.promise;
+  h.setFetch((url) => Promise.resolve(observerResponse(String(url).endsWith('/leases')
+    ? { id: 'wanted' } : { state: 'installed', desired: { enabled: true } })));
+  h.context.initTabs();
+  h.context.window.location.pathname = '/fleet/alpha/observer';
+  const pending = h.listeners.popstate();
+  await h.context.enterRemoteAgent('alpha');
+  refresh.resolve();
+  await pending;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.context.activeTabName(), 'observer');
+  assert.equal(h.sockets.length, 1);
+});
+
+test('Observer follows more than eight distinct same-target supersessions to a live session', async () => {
+  const h = observerUiHarness();
+  const requests = [];
+  h.setFetch((url) => {
+    if (String(url).endsWith('/status')) {
+      const request = deferred();
+      requests.push(request);
+      return request.promise;
+    }
+    return Promise.resolve(observerResponse({ id: 'long-chain' }));
+  });
+  const opening = h.context.openObserver();
+  const refreshes = [];
+  for (let i = 0; i < 12; i += 1) {
+    refreshes.push(h.context.refreshObserverStatus({ quiet: true }));
+    requests[i].resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  requests.at(-1).resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+  await Promise.all([...refreshes, opening]);
+  assert.equal(h.context.state.observer.lease.id, 'long-chain');
+  assert.equal(h.sockets.length, 1);
+});
+
 test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
@@ -1364,7 +1533,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=64/);
+  assert.match(index, /app\.js\?v=65/);
   assert.match(index, /style\.css\?v=48/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
@@ -1432,7 +1601,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=64/);
+  assert.match(index, /app\.js\?v=65/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
