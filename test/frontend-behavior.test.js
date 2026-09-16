@@ -8,8 +8,9 @@ import { agentColor } from '../src/lib/agent-color.js';
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, reject, resolve };
 }
 
 function observerUiHarness() {
@@ -17,8 +18,10 @@ function observerUiHarness() {
   const slice = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
   const source = [
     slice('function setObserverNotice(', 'function activeTabName('),
-    slice('function observerStatusLabel(', 'async function runObserverLifecycle('),
-    slice('function enterRemoteAgent(', 'function initFleetMode(')
+    slice('function activeTabName(', '// ─── Fleet view switch'),
+    slice('function initTabs(', 'function initObserverControls('),
+    slice('function resetAgentData(', 'function initFleetMode('),
+    slice('function observerStatusLabel(', 'function addPriceRow(')
   ].join('\n');
   const elements = {
     '#observer-notice': { dataset: {} },
@@ -29,6 +32,18 @@ function observerUiHarness() {
   const calls = [];
   const sockets = [];
   const history = [];
+  const intervals = [];
+  const listeners = {};
+  const tabs = ['overview', 'trends', 'memory', 'observer'].map((name) => ({
+    dataset: { tab: name },
+    classList: { toggle(_className, active) { this.active = active; } },
+    addEventListener() {}
+  }));
+  const panels = tabs.map(({ dataset }) => ({
+    id: `tab-${dataset.tab}`,
+    hidden: true,
+    classList: { toggle() {} }
+  }));
   let fetchImpl = async () => { throw new Error('unexpected fetch'); };
   const context = {
     state: {
@@ -38,17 +53,24 @@ function observerUiHarness() {
     },
     settingsModal: null,
     $: (selector) => elements[selector],
-    document: { querySelectorAll: () => [], querySelector: () => null },
+    document: {
+      querySelectorAll: (selector) => selector === '.tab' ? tabs : selector === '.tab-panel' ? panels : [],
+      querySelector: (selector) => selector === '.tab.active' ? tabs.find((tab) => tab.classList.active) || null : null,
+      addEventListener() {},
+      visibilityState: 'visible'
+    },
     t: (key) => key,
     clearInterval() {},
-    setInterval: () => 1,
+    setInterval: (handler) => { intervals.push(handler); return intervals.length; },
     URL,
     ArrayBuffer,
     window: {
-      location: { href: 'http://fixture.local/dashboard/' },
-      history: { pushState: (...args) => history.push(args) }
+      location: { href: 'http://fixture.local/dashboard/', pathname: '/' },
+      history: { pushState: (...args) => history.push(args) },
+      addEventListener: (name, handler) => { listeners[name] = handler; }
     },
     encodeURIComponent,
+    REMOTE_AGENT: null,
     MessageChannel: class {
       constructor() {
         this.port1 = { postMessage() {}, start() {}, close() {} };
@@ -57,7 +79,7 @@ function observerUiHarness() {
     },
     WebSocket: class {
       constructor(url) { this.url = String(url); sockets.push(this); }
-      close() {}
+      close() { this.closed = true; }
     },
     fetch: (...args) => {
       calls.push({ url: String(args[0]), options: args[1] });
@@ -66,19 +88,18 @@ function observerUiHarness() {
     observerEndpoint: (suffix) => `${context.state.remoteAgent ? `/fleet/${context.state.remoteAgent}` : ''}${suffix}`,
     viewedAgentName: () => context.state.remoteAgent || 'self',
     remoteIsReadOnly: () => false,
-    resetAgentData() {
-      context.closeObserver({ release: true }).catch(() => {});
-      context.state.observer.statusGeneration += 1;
-      context.state.observer.statusTarget = null;
-      context.state.observer.status = null;
-      context.renderObserverStatus(null);
-    },
     connectSse() {},
     showAgentDetail() {},
     showFleetView() {},
     refreshAll: async () => {},
     refreshCharts() {},
-    activeTabName: () => 'overview',
+    loadMemoryTree: async () => {},
+    syncMemoryPinned() {},
+    resetMemoryState() {},
+    prevSubagentIds: new Set(),
+    closeActionsModal() {},
+    closeSettingsModal() {},
+    renderAll() {},
     remotePrefix: () => context.state.remoteAgent ? `/fleet/${context.state.remoteAgent}` : '',
     api: (value) => value
   };
@@ -89,7 +110,10 @@ function observerUiHarness() {
     context,
     elements,
     history,
+    intervals,
+    listeners,
     sockets,
+    tabs,
     setFetch(implementation) { fetchImpl = implementation; }
   };
 }
@@ -871,6 +895,7 @@ test('Observer UI is optional, read-only, agent-routed, and releases leases on e
 
 test('Observer close fences late lease acquisition and releases it against the original target', async () => {
   const harness = observerUiHarness();
+  harness.elements['#observer-frame'].parentElement.dataset.preset = 'large';
   const lease = deferred();
   harness.setFetch((url) => {
     const path = String(url);
@@ -891,7 +916,33 @@ test('Observer close fences late lease acquisition and releases it against the o
   assert.equal(harness.context.state.observer.endpointPrefix, null);
   assert.equal(harness.context.state.observer.opening, false);
   assert.equal(harness.sockets.length, 0);
+  assert.equal('preset' in harness.elements['#observer-frame'].parentElement.dataset, false);
   assert.ok(harness.calls.some(({ url }) => url === '/api/observer/leases/old-lease/release'));
+});
+
+test('Observer open treats a superseded same-target status response as inert', async () => {
+  const harness = observerUiHarness();
+  const openingStatus = deferred();
+  let statusRequests = 0;
+  harness.setFetch((url) => {
+    if (String(url).endsWith('/status')) {
+      statusRequests += 1;
+      if (statusRequests === 1) return openingStatus.promise;
+      return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  });
+
+  const opening = harness.context.openObserver();
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.context.refreshObserverStatus({ quiet: true });
+  openingStatus.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+  await opening;
+
+  assert.equal(harness.context.state.observer.lease, undefined);
+  assert.equal(harness.context.state.observer.opening, false);
+  assert.equal(harness.sockets.length, 0);
+  assert.notEqual(harness.elements['#observer-notice'].dataset.state, 'error');
 });
 
 test('Observer stale renew and preset responses cannot mutate or report errors into a newer session', async () => {
@@ -929,6 +980,92 @@ test('Observer stale renew and preset responses cannot mutate or report errors i
   assert.equal(harness.context.state.observer.lease.id, 'new-lease');
 });
 
+test('Observer stale open, frame, and renew errors cannot damage a closed or newer session', async (t) => {
+  await t.test('stale open error', async () => {
+    const harness = observerUiHarness();
+    const firstLease = deferred();
+    let leaseRequests = 0;
+    harness.setFetch((url) => {
+      const path = String(url);
+      if (path.endsWith('/status')) {
+        return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+      }
+      if (path.endsWith('/leases')) {
+        leaseRequests += 1;
+        return leaseRequests === 1
+          ? firstLease.promise
+          : Promise.resolve(observerResponse({ id: 'new-lease', preset: 'standard' }));
+      }
+      return Promise.resolve(observerResponse({}));
+    });
+    const stale = harness.context.openObserver();
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.context.closeObserver();
+    await harness.context.openObserver();
+    assert.equal(harness.context.state.observer.lease.id, 'new-lease');
+    firstLease.reject(new Error('old target failed'));
+    await stale;
+    assert.equal(harness.context.state.observer.lease.id, 'new-lease');
+    assert.equal(harness.sockets[0].closed, undefined);
+    assert.notEqual(harness.elements['#observer-notice'].dataset.state, 'error');
+  });
+
+  await t.test('stale frame response', async () => {
+    const harness = observerUiHarness();
+    const frame = deferred();
+    harness.setFetch((url) => {
+      const path = String(url);
+      if (path.endsWith('/status')) {
+        return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+      }
+      if (path.endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'old-lease', preset: 'standard' }));
+      if (path.endsWith('/observer/frame')) return frame.promise;
+      return Promise.resolve(observerResponse({}));
+    });
+    const stale = harness.context.openObserver();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.context.state.observer.lease.id, 'old-lease');
+    await harness.context.closeObserver();
+    frame.resolve(observerResponse({}));
+    await stale;
+    assert.equal(harness.context.state.observer.lease, null);
+    assert.equal(harness.context.state.observer.iframe, null);
+    assert.equal(harness.sockets.length, 0);
+  });
+
+  await t.test('stale renew error', async () => {
+    const harness = observerUiHarness();
+    const oldRenew = deferred();
+    let leaseRequests = 0;
+    harness.setFetch((url) => {
+      const path = String(url);
+      if (path.endsWith('/status')) {
+        return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+      }
+      if (path.endsWith('/leases')) {
+        leaseRequests += 1;
+        return Promise.resolve(observerResponse({
+          id: leaseRequests === 1 ? 'old-lease' : 'new-lease', preset: 'standard'
+        }));
+      }
+      if (path.includes('/leases/old-lease/renew')) return oldRenew.promise;
+      return Promise.resolve(observerResponse({}));
+    });
+    await harness.context.openObserver();
+    harness.intervals[0]();
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.context.closeObserver();
+    await harness.context.openObserver();
+    oldRenew.reject(new Error('old lease failed'));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.context.state.observer.lease.id, 'new-lease');
+    assert.equal(harness.sockets[1].closed, undefined);
+    assert.notEqual(harness.elements['#observer-notice'].dataset.state, 'error');
+  });
+});
+
 test('Observer navigation fetches target status, waits for it, and discards delayed old-target responses', async () => {
   const harness = observerUiHarness();
   const firstStatus = deferred();
@@ -961,6 +1098,113 @@ test('Observer navigation fetches target status, waits for it, and discards dela
     '/fleet/alpha/api/observer/status',
     '/fleet/bravo/api/observer/status'
   ]);
+});
+
+test('Observer navigation discards a delayed old-target status error', async () => {
+  const harness = observerUiHarness();
+  const oldStatus = deferred();
+  harness.setFetch((url) => {
+    const path = String(url);
+    if (path === '/fleet/alpha/api/observer/status') return oldStatus.promise;
+    if (path === '/fleet/bravo/api/observer/status') {
+      return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    }
+    return Promise.resolve(observerResponse({}));
+  });
+  const alpha = harness.context.enterRemoteAgent('alpha', { push: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.context.enterRemoteAgent('bravo', { push: false });
+  oldStatus.reject(new Error('alpha unavailable'));
+  await alpha;
+
+  assert.equal(harness.context.state.remoteAgent, 'bravo');
+  assert.equal(harness.context.state.observer.status.state, 'installed');
+  assert.equal(harness.elements['#observer-tab'].hidden, false);
+});
+
+test('Observer reset uses the real resetAgentData path to clear target status before navigation fetches', async () => {
+  const harness = observerUiHarness();
+  harness.context.state.observer.statusGeneration = 4;
+  harness.context.state.observer.statusTarget = 'alpha\u0000/fleet/alpha/api/observer';
+  harness.context.state.observer.status = { state: 'installed', desired: { enabled: true } };
+  harness.elements['#observer-tab'].hidden = false;
+
+  harness.context.resetAgentData();
+
+  assert.equal(harness.context.state.observer.statusGeneration, 5);
+  assert.equal(harness.context.state.observer.statusTarget, null);
+  assert.equal(harness.context.state.observer.status, null);
+  assert.equal(harness.elements['#observer-tab'].hidden, true);
+});
+
+test('Observer popstate navigation generation prevents a delayed remote route from reopening locally', async () => {
+  const harness = observerUiHarness();
+  const remoteRefresh = deferred();
+  harness.context.refreshAll = () => harness.context.state.remoteAgent === 'alpha'
+    ? remoteRefresh.promise
+    : Promise.resolve();
+  harness.setFetch((url) => {
+    const path = String(url);
+    if (path.endsWith('/status')) {
+      return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    }
+    if (path.endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'stray', preset: 'standard' }));
+    return Promise.resolve(observerResponse({}));
+  });
+  harness.context.initTabs();
+  const popstate = harness.listeners.popstate;
+  assert.ok(popstate);
+
+  harness.context.window.location.pathname = '/fleet/alpha/observer';
+  const remoteNavigation = popstate();
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.context.window.location.pathname = '/';
+  await popstate();
+  remoteRefresh.resolve();
+  await remoteNavigation;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.context.state.remoteAgent, null);
+  assert.equal(harness.context.window.location.pathname, '/');
+  assert.equal(harness.context.activeTabName(), 'overview');
+  assert.equal(harness.context.state.observer.lease, null);
+  assert.equal(harness.sockets.length, 0);
+});
+
+test('Observer lifecycle success and error responses cannot mutate a different target', async (t) => {
+  for (const outcome of ['success', 'error-response', 'network-error']) {
+    await t.test(outcome, async () => {
+      const harness = observerUiHarness();
+      harness.context.state.remoteAgent = 'alpha';
+      const action = deferred();
+      harness.setFetch((url) => {
+        const path = String(url);
+        if (path === '/fleet/alpha/api/observer/enable') return action.promise;
+        if (path === '/api/observer/status') {
+          return Promise.resolve(observerResponse({ state: 'not_installed' }));
+        }
+        return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: false } }));
+      });
+
+      const running = harness.context.runObserverLifecycle('enable');
+      await new Promise((resolve) => setImmediate(resolve));
+      await harness.context.exitRemoteAgent({ push: false });
+      if (outcome === 'success') {
+        action.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+      } else if (outcome === 'error-response') {
+        action.resolve(observerResponse({ error: 'old target failed' }, { ok: false }));
+      } else {
+        action.reject(new Error('old target unavailable'));
+      }
+      await running;
+
+      assert.equal(harness.context.state.remoteAgent, null);
+      assert.equal(harness.context.state.observer.status.state, 'not_installed');
+      assert.equal(harness.elements['#observer-tab'].hidden, true);
+      assert.equal(harness.calls.filter(({ url }) => url === '/fleet/alpha/api/observer/status').length, 0);
+      assert.equal(harness.calls.filter(({ url }) => url === '/api/observer/status').length, 1);
+    });
+  }
 });
 
 test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {

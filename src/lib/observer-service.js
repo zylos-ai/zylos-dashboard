@@ -257,6 +257,14 @@ export class ObserverService {
     }
     let upstream;
     let stream;
+    let awaitingAdmission = true;
+    const closeAbortedDownstream = () => {
+      if (stream) this._closeStream(stream, 1001, 'client_aborted');
+    };
+    socket.on('error', closeAbortedDownstream);
+    socket.on('data', () => { if (awaitingAdmission) closeAbortedDownstream(); });
+    socket.on('end', closeAbortedDownstream);
+    socket.on('close', closeAbortedDownstream);
     try {
       await this._ready();
       const context = this._authContext(req, { requireOrigin: true });
@@ -307,11 +315,15 @@ export class ObserverService {
         },
         onClose: () => this._closeStream(stream, 1011, 'upstream_closed'),
       });
-      if (stream.closed) throw new Error('Observer upstream closed during handshake');
+      if (stream.closed || socket.destroyed || socket.writableEnded) {
+        this._closeStream(stream, 1001, 'client_aborted');
+        throw new Error('Observer downstream closed during handshake');
+      }
       const refreshed = this.authGate.revalidateAuthContext(stream.context);
       if (!refreshed) throw new ObserverHttpError(401, 'unauthorized');
       stream.context = refreshed;
       stream.lease = this.manager.validateLease(stream.leaseId, refreshed);
+      awaitingAdmission = false;
       stream.downstream = acceptObserverWebSocket(req, socket, head, OBSERVER_PROTOCOL);
       stream.downstream.on('message', () => this._closeStream(stream, 1008, 'input_forbidden'));
       stream.downstream.on('error', () => this._closeStream(stream, 1011, 'stream_error'));
@@ -334,7 +346,7 @@ export class ObserverService {
         clearInterval(stream?.timer);
         if (stream) this.streams.delete(stream);
         const result = publicError(error);
-        rejectObserverUpgrade(socket, result.status, result.code);
+        if (!socket.destroyed && !socket.writableEnded) rejectObserverUpgrade(socket, result.status, result.code);
       }
       return true;
     }

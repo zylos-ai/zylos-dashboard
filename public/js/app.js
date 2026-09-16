@@ -1989,6 +1989,8 @@ async function closeObserver({ release = true, preserveNotice = false } = {}) {
   observer.channel = null;
   if (observer.iframe) observer.iframe.srcdoc = '';
   observer.iframe = null;
+  const shell = $('#observer-frame')?.parentElement;
+  if (shell) delete shell.dataset.preset;
   if (release) releaseObserverLease(endpoints, lease);
   if (!preserveNotice) setObserverNotice(t('observer.closed'), 'idle');
 }
@@ -2019,6 +2021,7 @@ async function openObserver() {
   try {
     const status = await refreshObserverStatus();
     if (!observerSessionCurrent(generation, targetKey)) return;
+    if (!status) return;
     if (status.state !== 'installed' || status.desired?.enabled !== true) {
       throw new Error(t('observer.not_available'));
     }
@@ -2350,6 +2353,7 @@ function scheduleSseReconnect() {
 
 // ─── Tabs ───
 function initTabs() {
+  let navigationGeneration = 0;
   const activateTab = (name, push = false) => {
     if (name === 'memory' && remoteIsReadOnly()) name = 'overview';
     if (name === 'observer' && ($('#observer-tab')?.hidden || remoteIsReadOnly())) name = 'overview';
@@ -2376,6 +2380,7 @@ function initTabs() {
     });
   });
   window.addEventListener('popstate', async () => {
+    const generation = ++navigationGeneration;
     const path = window.location.pathname;
     // In-page remote viewing only exists on the parent document; the
     // standalone remote document (REMOTE_AGENT) keeps plain tab routing.
@@ -2387,6 +2392,7 @@ function initTabs() {
         await exitRemoteAgent({ push: false });
       }
     }
+    if (generation !== navigationGeneration) return;
     const tab = path.endsWith('/trends') ? 'trends' : path.endsWith('/memory') ? 'memory' : path.endsWith('/observer') ? 'observer' : 'overview';
     activateTab(tab, false);
   });
@@ -3626,6 +3632,7 @@ async function refreshObserverStatus({ quiet = false } = {}) {
 
 async function runObserverLifecycle(action) {
   if (remoteIsReadOnly()) return;
+  const targetKey = observerTargetKey();
   const statusEl = settingsModal?.querySelector('#observer-settings-status');
   const buttons = settingsModal?.querySelectorAll('.observer-settings-actions button') || [];
   buttons.forEach((button) => { button.disabled = true; });
@@ -3642,8 +3649,10 @@ async function runObserverLifecycle(action) {
   try {
     const resp = await fetch(observerEndpoint(path), { method, headers: { 'Content-Type': 'application/json' } });
     const data = await resp.json().catch(() => ({}));
+    if (observerTargetKey() !== targetKey) return;
     if (!resp.ok) throw new Error(data.error || t('observer.action_failed'));
     const refreshed = await refreshObserverStatus({ quiet: true });
+    if (observerTargetKey() !== targetKey) return;
     if (!refreshed) {
       state.observer.status = data;
       renderObserverStatus(data);
@@ -3653,10 +3662,12 @@ async function runObserverLifecycle(action) {
       statusEl.textContent = t('observer.action_done');
     }
   } catch (error) {
+    if (observerTargetKey() !== targetKey) return;
     if (statusEl) statusEl.textContent = error.message;
     await refreshObserverStatus({ quiet: true });
+    if (observerTargetKey() !== targetKey) return;
   } finally {
-    renderObserverStatus();
+    if (observerTargetKey() === targetKey) renderObserverStatus();
   }
 }
 

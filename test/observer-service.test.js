@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import test from 'node:test';
 import { ObserverService, OBSERVER_WEBSOCKET_PROTOCOL } from '../src/lib/observer-service.js';
 import { connectObserverWebSocket } from '../src/lib/observer-websocket.js';
@@ -74,6 +75,32 @@ async function waitUntil(check, timeoutMs = 2_000) {
   throw new Error('condition did not become true');
 }
 
+function resetUpgrade(port, path, headers = {}) {
+  let client;
+  const closed = new Promise((resolve, reject) => {
+    client = net.connect(port, '127.0.0.1');
+    client.on('error', () => {});
+    client.on('close', resolve);
+    client.on('connect', () => {
+      const lines = [
+        `GET ${path} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        'Sec-WebSocket-Version: 13',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`),
+        '',
+        '',
+      ];
+      client.write(lines.join('\r\n'), (error) => {
+        if (error) reject(error);
+      });
+    });
+  });
+  return { client, closed };
+}
+
 async function startHttp(service) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -95,6 +122,49 @@ test('Observer HTTP surface fails closed without Dashboard authentication', asyn
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), { error: 'auth_required' });
   } finally { await app.close(); }
+});
+
+test('local Observer upgrade survives downstream resets during reject and pending handshake', async () => {
+  const rejected = fixture();
+  const rejectedApp = await startHttp(rejected.service);
+  try {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const reset = resetUpgrade(rejectedApp.server.address().port, '/observer/stream');
+      await new Promise((resolve) => setImmediate(resolve));
+      reset.client.resetAndDestroy();
+      await reset.closed;
+    }
+    const healthy = await fetch(`${rejectedApp.origin}/api/observer/status`, {
+      headers: { Authorization: 'Bearer admin-token' },
+    });
+    assert.equal(healthy.status, 200);
+  } finally {
+    await rejected.service.shutdown();
+    await rejectedApp.close();
+  }
+
+  const pending = fixture({ deferUpstream: true });
+  const pendingApp = await startHttp(pending.service);
+  try {
+    const reset = resetUpgrade(pendingApp.server.address().port, '/observer/stream', {
+      Cookie: 'admin=1',
+      Origin: pendingApp.origin,
+      'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+    });
+    await waitUntil(() => pending.upstreams.length === 1 && pending.service.streams.size === 1);
+    reset.client.resetAndDestroy();
+    await reset.closed;
+    pending.resolveConnect();
+    await waitUntil(() => pending.service.streams.size === 0 && pending.upstreams[0].closed);
+    const healthy = await fetch(`${pendingApp.origin}/api/observer/status`, {
+      headers: { Authorization: 'Bearer admin-token' },
+    });
+    assert.equal(healthy.status, 200);
+  } finally {
+    pending.resolveConnect();
+    await pending.service.shutdown();
+    await pendingApp.close();
+  }
 });
 
 test('cookie lifecycle requires exact Origin and frame requires the bound lease header', async () => {

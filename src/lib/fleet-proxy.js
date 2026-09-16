@@ -458,6 +458,26 @@ export class FleetProxy {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     const match = url.pathname.match(/^\/fleet\/([^/]+)\/observer\/stream$/);
     if (!match || url.search) return false;
+    let upstream;
+    let downstream;
+    let revalidationTimer = null;
+    let closed = false;
+    let stream;
+    let awaitingAdmission = true;
+    const upstreamControl = new AbortController();
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(revalidationTimer);
+      upstreamControl.abort();
+      upstream?.close(1000, 'relay_closed');
+      downstream?.close(1000, 'relay_closed');
+      if (stream) this.observerStreams.delete(stream);
+    };
+    socket.on('error', close);
+    socket.on('data', () => { if (awaitingAdmission) close(); });
+    socket.on('end', close);
+    socket.on('close', close);
     const agentName = decodeAgentName(match[1]);
     const agent = this.config.fleet?.agents?.find((candidate) => candidate.name === agentName);
     const context = req._authContext;
@@ -471,18 +491,10 @@ export class FleetProxy {
       rejectObserverUpgrade(socket, 404, 'lease_not_found');
       return true;
     }
-    let upstream;
-    let downstream;
-    let revalidationTimer = null;
-    const close = () => {
-      clearInterval(revalidationTimer);
-      upstream?.close(1000, 'relay_closed');
-      downstream?.close(1000, 'relay_closed');
-      this.observerStreams.delete(stream);
-    };
-    const stream = { agentName, leaseId, close };
+    stream = { agentName, leaseId, close };
     try {
       let token = await this.poller.getSessionToken(agentName);
+      if (closed || socket.destroyed || socket.writableEnded) return true;
       const target = new URL(remoteUrl(agent, '/observer/stream'));
       const connect = () => connectObserverWebSocket({
         host: target.hostname,
@@ -495,10 +507,17 @@ export class FleetProxy {
           Origin: `${target.protocol}//${target.host}`,
           'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${leaseId}`,
         },
+        signal: upstreamControl.signal,
       });
       try { upstream = await connect(); } catch {
+        if (closed || socket.destroyed || socket.writableEnded) return true;
         token = await this.poller.getSessionToken(agentName, { force: true });
+        if (closed || socket.destroyed || socket.writableEnded) return true;
         upstream = await connect();
+      }
+      if (closed || socket.destroyed || socket.writableEnded) {
+        upstream.close(1000, 'downstream_aborted');
+        return true;
       }
       this.pruneObserverLeases();
       const refreshedContext = this.authGate?.revalidateAuthContext?.(context) || null;
@@ -510,6 +529,7 @@ export class FleetProxy {
         rejectObserverUpgrade(socket, 404, 'lease_not_found');
         return true;
       }
+      awaitingAdmission = false;
       downstream = acceptObserverWebSocket(req, socket, head, 'zylos-observer-v1');
       this.observerStreams.add(stream);
       upstream.on('message', (payload, opcode) => {
@@ -534,7 +554,9 @@ export class FleetProxy {
       return true;
     } catch {
       close();
-      if (!downstream) rejectObserverUpgrade(socket, 502, 'upstream_unreachable');
+      if (!downstream && !socket.destroyed && !socket.writableEnded) {
+        rejectObserverUpgrade(socket, 502, 'upstream_unreachable');
+      }
       return true;
     }
   }
