@@ -2141,6 +2141,7 @@ function activeTabName() {
 // single-agent dashboard is the "agent detail" view, reached by clicking the
 // self tile. In single mode only the agent dashboard exists.
 const VIEW_ANIM_CLASSES = ['is-entering', 'is-leaving', 'v-enter', 'v-leave-to-fleet', 'v-leave-to-agent'];
+let cancelViewTransition = null;
 
 function prefersReducedMotion() {
   return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2156,6 +2157,9 @@ function transitionView(target, { animate = true } = {}) {
   const fleetView = $('#fleet-view');
   const agentDetail = $('#agent-detail');
   if (!fleetView || !agentDetail) return;
+  // Both directions own the same pair of views. Retire the previous transition
+  // before changing either view, including an immediate or reduced-motion swap.
+  if (cancelViewTransition) cancelViewTransition();
   const inEl = target === 'fleet' ? fleetView : agentDetail;
   const outEl = target === 'fleet' ? agentDetail : fleetView;
 
@@ -2182,22 +2186,17 @@ function transitionView(target, { animate = true } = {}) {
   // Force reflow so the v-enter start state is applied before we animate away.
   void inEl.offsetWidth;
 
-  const token = {};
-  inEl._viewAnimToken = token;
-
-  requestAnimationFrame(() => {
-    if (inEl._viewAnimToken !== token) return;
+  let done = false;
+  const frame = requestAnimationFrame(() => {
+    if (done) return;
     inEl.classList.remove('v-enter');
     outEl.classList.add(leaveClass);
   });
 
-  let done = false;
   const finish = () => {
-    if (done || inEl._viewAnimToken !== token) return;
-    done = true;
-    inEl.removeEventListener('transitionend', onEnd);
+    if (done) return;
+    cancelViewTransition();
     outEl.hidden = true;
-    cleanup();
   };
   const onEnd = (e) => {
     if (e.target !== inEl) return;
@@ -2205,7 +2204,15 @@ function transitionView(target, { animate = true } = {}) {
     finish();
   };
   inEl.addEventListener('transitionend', onEnd);
-  setTimeout(finish, 460); // fallback if transitionend doesn't fire
+  const timer = setTimeout(finish, 460); // fallback if transitionend doesn't fire
+  cancelViewTransition = () => {
+    done = true;
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    inEl.removeEventListener('transitionend', onEnd);
+    cleanup();
+    cancelViewTransition = null;
+  };
 }
 
 // #222: the Memory tab pins the page frame (body becomes a fixed-height flex
