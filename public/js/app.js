@@ -50,6 +50,16 @@ const state = {
   fleetViewActive: false,
   fleetModeInitialized: false,
   remoteAgent: null,
+  observer: {
+    status: null,
+    lease: null,
+    ws: null,
+    iframe: null,
+    channel: null,
+    renewTimer: null,
+    opening: false,
+    endpointPrefix: null
+  },
   memory: {
     tree: null,
     selectedPath: null,
@@ -90,6 +100,10 @@ function agentPath(path) {
   if (!state.remoteAgent) return path;
   if (!path.startsWith('/api/') || path === '/api/fleet') return path;
   return `${remotePrefix()}${path}`;
+}
+
+function observerEndpoint(path) {
+  return state.remoteAgent ? api(`${remotePrefix()}${path}`) : api(path);
 }
 
 function remoteAccess() {
@@ -1922,6 +1936,150 @@ async function refreshFleet() {
   }
 }
 
+function setObserverNotice(message, status = 'idle') {
+  const notice = $('#observer-notice');
+  if (!notice) return;
+  notice.textContent = message;
+  notice.dataset.state = status;
+}
+
+function syncObserverPreset(preset) {
+  document.querySelectorAll('[data-observer-preset]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.observerPreset === preset);
+  });
+  state.observer.channel?.postMessage({ type: 'preset', preset });
+}
+
+async function closeObserver({ release = true, preserveNotice = false } = {}) {
+  const observer = state.observer;
+  clearInterval(observer.renewTimer);
+  observer.renewTimer = null;
+  const lease = observer.lease;
+  const endpoints = observer.endpointPrefix;
+  observer.lease = null;
+  observer.endpointPrefix = null;
+  observer.opening = false;
+  const ws = observer.ws;
+  observer.ws = null;
+  try { ws?.close(1000, 'viewer_closed'); } catch {}
+  try { observer.channel?.postMessage({ type: 'shutdown' }); } catch {}
+  try { observer.channel?.close(); } catch {}
+  observer.channel = null;
+  if (observer.iframe) observer.iframe.srcdoc = '';
+  observer.iframe = null;
+  if (release && lease?.id && endpoints?.api) {
+    fetch(`${endpoints.api}/leases/${encodeURIComponent(lease.id)}/release`, {
+      method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }
+    }).catch(() => {});
+  }
+  if (!preserveNotice) setObserverNotice(t('observer.closed'), 'idle');
+}
+
+async function renewObserverLease() {
+  const { lease, endpointPrefix } = state.observer;
+  if (!lease?.id || !endpointPrefix?.api) return;
+  const resp = await fetch(`${endpointPrefix.api}/leases/${encodeURIComponent(lease.id)}/renew`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || 'lease_renew_failed');
+  state.observer.lease = data;
+}
+
+async function openObserver() {
+  const observer = state.observer;
+  if (observer.opening || observer.lease) return;
+  observer.opening = true;
+  setObserverNotice(t('observer.connecting'), 'connecting');
+  try {
+    const status = await refreshObserverStatus();
+    if (status.state !== 'installed' || status.desired?.enabled !== true) {
+      throw new Error(t('observer.not_available'));
+    }
+    const apiBase = observerEndpoint('/api/observer');
+    const framePath = observerEndpoint('/observer/frame');
+    const streamPath = observerEndpoint('/observer/stream');
+    observer.endpointPrefix = { api: apiBase, frame: framePath, stream: streamPath };
+    const leaseResp = await fetch(`${apiBase}/leases`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }
+    });
+    const lease = await leaseResp.json().catch(() => ({}));
+    if (!leaseResp.ok) throw new Error(lease.error || t('observer.connect_failed'));
+    observer.lease = lease;
+
+    const frameResp = await fetch(framePath, { headers: { 'X-Observer-Lease': lease.id } });
+    if (!frameResp.ok) {
+      const data = await frameResp.json().catch(() => ({}));
+      throw new Error(data.error || t('observer.connect_failed'));
+    }
+    const frameDocument = await frameResp.text();
+    const iframe = $('#observer-frame');
+    observer.iframe = iframe;
+    const messageChannel = new MessageChannel();
+    observer.channel = messageChannel.port1;
+    messageChannel.port1.onmessage = ({ data }) => {
+      if (data?.type === 'ready') setObserverNotice(t('observer.live_read_only'), 'live');
+    };
+    messageChannel.port1.start();
+    iframe.onload = () => {
+      if (observer.iframe !== iframe || !iframe.contentWindow) return;
+      iframe.contentWindow.postMessage({ type: 'observer-init' }, '*', [messageChannel.port2]);
+    };
+    iframe.srcdoc = frameDocument;
+
+    const streamUrl = new URL(streamPath, window.location.href);
+    streamUrl.protocol = streamUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(streamUrl, ['zylos-observer-v1', `lease.${lease.id}`]);
+    observer.ws = ws;
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = (event) => {
+      if (observer.ws !== ws) return;
+      if (typeof event.data === 'string') {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'preset') syncObserverPreset(message.preset);
+        } catch {}
+        return;
+      }
+      if (event.data instanceof ArrayBuffer && event.data.byteLength <= 262144) {
+        observer.channel?.postMessage({ type: 'render', bytes: event.data }, [event.data]);
+      }
+    };
+    ws.onerror = () => setObserverNotice(t('observer.disconnected'), 'error');
+    ws.onclose = () => {
+      if (observer.ws !== ws) return;
+      setObserverNotice(t('observer.disconnected'), 'error');
+      closeObserver({ release: true, preserveNotice: true }).catch(() => {});
+    };
+    observer.renewTimer = setInterval(() => {
+      renewObserverLease().catch(() => {
+        setObserverNotice(t('observer.session_expired'), 'error');
+        closeObserver({ release: false, preserveNotice: true }).catch(() => {});
+      });
+    }, 10_000);
+    syncObserverPreset(lease.preset || 'standard');
+    const target = $('#observer-target');
+    if (target) target.textContent = t('observer.target', { name: viewedAgentName() || t('value.unknown') });
+  } catch (error) {
+    setObserverNotice(error.message || t('observer.connect_failed'), 'error');
+    await closeObserver({ release: true, preserveNotice: true });
+  } finally {
+    observer.opening = false;
+  }
+}
+
+async function setObserverPreset(preset) {
+  const { lease, endpointPrefix } = state.observer;
+  if (!lease?.id || !endpointPrefix?.api) return;
+  const resp = await fetch(`${endpointPrefix.api}/leases/${encodeURIComponent(lease.id)}/preset`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preset })
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || t('observer.preset_failed'));
+  state.observer.lease = data;
+  syncObserverPreset(data.preset);
+}
+
 function activeTabName() {
   return document.querySelector('.tab.active')?.dataset.tab || 'overview';
 }
@@ -2009,6 +2167,7 @@ function syncMemoryPinned() {
 
 function showFleetView(opts = {}) {
   if (!state.multiAgent) return;
+  closeObserver({ release: true }).catch(() => {});
   state.fleetViewActive = true;
   syncMemoryPinned();
   refreshFleet().catch(() => {});
@@ -2156,6 +2315,8 @@ function scheduleSseReconnect() {
 function initTabs() {
   const activateTab = (name, push = false) => {
     if (name === 'memory' && remoteIsReadOnly()) name = 'overview';
+    if (name === 'observer' && ($('#observer-tab')?.hidden || remoteIsReadOnly())) name = 'overview';
+    if (activeTabName() === 'observer' && name !== 'observer') closeObserver({ release: true }).catch(() => {});
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
     document.querySelectorAll('.tab-panel').forEach((p) => {
       const active = p.id === `tab-${name}`;
@@ -2165,6 +2326,7 @@ function initTabs() {
     syncMemoryPinned();
     if (name === 'trends') refreshCharts();
     if (name === 'memory') loadMemoryTree().catch(() => {});
+    if (name === 'observer') openObserver().catch(() => {});
     if (push) {
       const prefix = remotePrefix();
       const path = name === 'overview' ? `${prefix}/` : `${prefix}/${name}`;
@@ -2181,14 +2343,14 @@ function initTabs() {
     // In-page remote viewing only exists on the parent document; the
     // standalone remote document (REMOTE_AGENT) keeps plain tab routing.
     if (!REMOTE_AGENT) {
-      const m = path.match(/\/fleet\/([^/]+)\/?(?:trends|memory)?$/);
+      const m = path.match(/\/fleet\/([^/]+)\/?(?:trends|memory|observer)?$/);
       if (m) {
         enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
       } else if (state.remoteAgent) {
         exitRemoteAgent({ push: false });
       }
     }
-    const tab = path.endsWith('/trends') ? 'trends' : (path.endsWith('/memory') ? 'memory' : 'overview');
+    const tab = path.endsWith('/trends') ? 'trends' : path.endsWith('/memory') ? 'memory' : path.endsWith('/observer') ? 'observer' : 'overview';
     activateTab(tab, false);
   });
   document.addEventListener('visibilitychange', () => {
@@ -2198,8 +2360,18 @@ function initTabs() {
     // since reset) until the 10-30s fallbacks fire. Refetch now instead (#247).
     if (document.visibilityState === 'visible') refreshAll().catch(() => {});
   });
-  const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : (window.location.pathname.endsWith('/memory') ? 'memory' : 'overview');
+  const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : window.location.pathname.endsWith('/memory') ? 'memory' : window.location.pathname.endsWith('/observer') ? 'observer' : 'overview';
   activateTab(initialTab, false);
+}
+
+function initObserverControls() {
+  document.querySelectorAll('[data-observer-preset]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setObserverPreset(button.dataset.observerPreset).catch((error) => {
+        setObserverNotice(error.message || t('observer.preset_failed'), 'error');
+      });
+    });
+  });
 }
 
 function initMemoryControls() {
@@ -2285,6 +2457,7 @@ function applyFleetMode(fleet) {
 // Clear all per-agent data and incremental DOM so two agents' panels never
 // mix while switching the detail view between self and a remote agent.
 function resetAgentData() {
+  closeObserver({ release: true }).catch(() => {});
   state.dashboardState = null;
   state.metrics = new Map();
   state.aggregated = {};
@@ -3284,6 +3457,21 @@ function createSettingsModal() {
       </div>
       <p class="modal-status">${esc(t('settings.fast_defaults_note'))}</p>
     </div>
+    <div class="action-group observer-settings" id="observer-settings-group">
+      <span class="action-group-label">${esc(t('observer.settings_title'))}</span>
+      <p class="fleet-help">${esc(t('observer.settings_help'))}</p>
+      <div class="observer-settings-state">
+        <strong id="observer-settings-state">${esc(t('status.loading'))}</strong>
+        <span id="observer-settings-platform"></span>
+      </div>
+      <div class="action-row observer-settings-actions">
+        <button class="action-btn action-btn-primary" id="observer-install" type="button">${esc(t('observer.install_enable'))}</button>
+        <button class="action-btn" id="observer-enable" type="button">${esc(t('observer.enable'))}</button>
+        <button class="action-btn" id="observer-disable" type="button">${esc(t('observer.disable'))}</button>
+        <button class="action-btn" id="observer-uninstall" type="button">${esc(t('observer.uninstall'))}</button>
+      </div>
+      <p class="modal-status" id="observer-settings-status" hidden></p>
+    </div>
   </div>
   <div class="modal-status" id="settings-readonly-note" hidden></div>
   <div class="modal-status" id="settings-status" hidden></div>
@@ -3301,6 +3489,10 @@ function createSettingsModal() {
   overlay.querySelector('#settings-save').addEventListener('click', saveSettings);
   overlay.querySelector('#settings-add-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false));
   overlay.querySelector('#settings-add-priority-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false, 'settings-priority-price-rows'));
+  overlay.querySelector('#observer-install').addEventListener('click', () => runObserverLifecycle('install'));
+  overlay.querySelector('#observer-enable').addEventListener('click', () => runObserverLifecycle('enable'));
+  overlay.querySelector('#observer-disable').addEventListener('click', () => runObserverLifecycle('disable'));
+  overlay.querySelector('#observer-uninstall').addEventListener('click', () => runObserverLifecycle('uninstall'));
 
   const pricingTip = overlay.querySelector('#pricing-tip');
   const pricingPop = overlay.querySelector('#pricing-popover');
@@ -3325,6 +3517,95 @@ function applySettingsReadOnly(readOnly) {
   settingsModal.querySelectorAll('.settings-input, .settings-remove-btn').forEach((el) => {
     el.disabled = readOnly;
   });
+  settingsModal.querySelectorAll('.observer-settings-actions button').forEach((el) => {
+    el.disabled = readOnly;
+  });
+}
+
+function observerStatusLabel(status) {
+  if (!status) return t('value.unknown');
+  if (status.state === 'installed' && status.desired?.enabled) return t('observer.state_enabled');
+  if (status.state === 'installed') return t('observer.state_disabled');
+  if (status.state === 'not_installed') return t('observer.state_not_installed');
+  if (status.state === 'unsupported' && status.artifactAvailable) return t('observer.state_unvalidated');
+  if (status.state === 'unsupported') return t('observer.state_unsupported');
+  if (status.state === 'failed') return t('observer.state_failed');
+  return status.state || t('value.unknown');
+}
+
+function renderObserverStatus(status = state.observer.status) {
+  const tab = $('#observer-tab');
+  const available = status?.state === 'installed' && status.desired?.enabled === true && !remoteIsReadOnly();
+  if (tab) tab.hidden = !available;
+  const stateEl = settingsModal?.querySelector('#observer-settings-state');
+  const platformEl = settingsModal?.querySelector('#observer-settings-platform');
+  if (stateEl) stateEl.textContent = observerStatusLabel(status);
+  if (platformEl) {
+    const version = status?.version ? ` · Zellij ${status.version}` : '';
+    platformEl.textContent = status?.platform ? `${status.platform}${version}` : '';
+  }
+  const readOnly = remoteIsReadOnly();
+  const install = settingsModal?.querySelector('#observer-install');
+  const enable = settingsModal?.querySelector('#observer-enable');
+  const disable = settingsModal?.querySelector('#observer-disable');
+  const uninstall = settingsModal?.querySelector('#observer-uninstall');
+  if (install) install.hidden = status?.state !== 'not_installed';
+  if (enable) enable.hidden = status?.state !== 'installed' || status?.desired?.enabled === true;
+  if (disable) disable.hidden = status?.state !== 'installed' || status?.desired?.enabled !== true;
+  if (uninstall) uninstall.hidden = status?.state !== 'installed' && status?.state !== 'failed';
+  for (const button of [install, enable, disable, uninstall]) if (button) button.disabled = readOnly;
+}
+
+async function refreshObserverStatus({ quiet = false } = {}) {
+  try {
+    const resp = await fetch(observerEndpoint('/api/observer/status'), { cache: 'no-store' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || t('observer.load_failed'));
+    state.observer.status = data;
+    renderObserverStatus(data);
+    return data;
+  } catch (error) {
+    state.observer.status = null;
+    renderObserverStatus(null);
+    if (!quiet) throw error;
+    return null;
+  }
+}
+
+async function runObserverLifecycle(action) {
+  if (remoteIsReadOnly()) return;
+  const statusEl = settingsModal?.querySelector('#observer-settings-status');
+  const buttons = settingsModal?.querySelectorAll('.observer-settings-actions button') || [];
+  buttons.forEach((button) => { button.disabled = true; });
+  if (statusEl) {
+    statusEl.hidden = false;
+    statusEl.className = 'modal-status';
+    statusEl.textContent = t('observer.working');
+  }
+  if (action === 'disable' || action === 'uninstall') await closeObserver({ release: true });
+  const method = action === 'uninstall' ? 'DELETE' : 'POST';
+  const path = action === 'install' || action === 'uninstall'
+    ? '/api/observer/install'
+    : `/api/observer/${action}`;
+  try {
+    const resp = await fetch(observerEndpoint(path), { method, headers: { 'Content-Type': 'application/json' } });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || t('observer.action_failed'));
+    const refreshed = await refreshObserverStatus({ quiet: true });
+    if (!refreshed) {
+      state.observer.status = data;
+      renderObserverStatus(data);
+    }
+    if (statusEl) {
+      statusEl.className = 'modal-status settings-status-ok';
+      statusEl.textContent = t('observer.action_done');
+    }
+  } catch (error) {
+    if (statusEl) statusEl.textContent = error.message;
+    await refreshObserverStatus({ quiet: true });
+  } finally {
+    renderObserverStatus();
+  }
 }
 
 function addPriceRow(prefix, prices, builtIn, rowsId = 'settings-price-rows') {
@@ -3350,6 +3631,8 @@ async function openSettingsModal() {
   const readOnly = remoteIsReadOnly();
   status.hidden = true;
   applySettingsReadOnly(readOnly);
+
+  refreshObserverStatus({ quiet: true }).catch(() => {});
 
   try {
     const resp = await fetch(api(agentPath('/api/settings')));
@@ -3941,11 +4224,14 @@ window.addEventListener('beforeunload', () => {
   clearFleetFallback();
   clearTimeout(state.sseReconnectTimer);
   state.eventSource?.close();
+  closeObserver({ release: true }).catch(() => {});
 });
+window.addEventListener('pagehide', () => { closeObserver({ release: true }).catch(() => {}); });
 
 // ─── Init ───
 initTheme();
 await initI18n();
+await refreshObserverStatus({ quiet: true });
 initTabs();
 initFleetMode();
 initLocaleToggle();
@@ -3954,6 +4240,7 @@ initTips();
 initInfoBarButtons();
 initFleetManageButton();
 initMemoryControls();
+initObserverControls();
 initFleetHoverPause();
 initFleetSounds();
 renderAll();

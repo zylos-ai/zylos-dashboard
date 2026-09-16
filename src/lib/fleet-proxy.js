@@ -4,6 +4,11 @@ import { Readable, Transform } from 'node:stream';
 import { browserPath, browserBaseFromRequest } from './browser-base.js';
 import { sendHtml, sendJson, sendText, serveStatic } from './http.js';
 import { validateMemoryQueryPath } from './memory-browser.js';
+import {
+  acceptObserverWebSocket,
+  connectObserverWebSocket,
+  rejectObserverUpgrade,
+} from './observer-websocket.js';
 
 const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
 const STREAM_GUARD_TAIL_CHARS = 128;
@@ -64,7 +69,29 @@ function isSseResponse(resp) {
 
 function isAllowedProxyWrite(method, suffix) {
   return method === 'POST' && /^\/api\/actions\/[^/]+$/.test(suffix) ||
-    method === 'PUT' && (suffix === '/api/settings' || suffix === '/api/memory/file');
+    method === 'PUT' && (suffix === '/api/settings' || suffix === '/api/memory/file') ||
+    method === 'POST' && (
+      /^\/api\/observer\/(?:install|enable|disable|leases)$/.test(suffix) ||
+      /^\/api\/observer\/leases\/[A-Za-z0-9_-]{32}\/(?:renew|release|preset)$/.test(suffix)
+    ) ||
+    method === 'DELETE' && suffix === '/api/observer/install';
+}
+
+function isObserverProxyRoute(method, suffix) {
+  if (method === 'GET' || method === 'HEAD') {
+    return suffix === '/api/observer/status' || suffix === '/observer/frame';
+  }
+  return isAllowedProxyWrite(method, suffix) && suffix.startsWith('/api/observer/');
+}
+
+function samePrincipal(left, right) {
+  return left?.kind === right?.kind && left?.principalId === right?.principalId &&
+    left?.scope === 'admin' && right?.scope === 'admin';
+}
+
+function observerLeaseId(req, suffix) {
+  if (suffix === '/observer/frame') return String(req.headers['x-observer-lease'] || '');
+  return suffix.match(/^\/api\/observer\/leases\/([A-Za-z0-9_-]{32})\//)?.[1] || null;
 }
 
 function isLocalOnlyEndpoint(suffix) {
@@ -174,11 +201,23 @@ function guardedSseStream(guard, upstreamStream, onLeak) {
 }
 
 export class FleetProxy {
-  constructor({ config, rootDir, poller, fetch }) {
+  constructor({ config, rootDir, poller, fetch, authGate }) {
     this.config = config;
     this.rootDir = rootDir;
     this.poller = poller;
     this.fetch = fetch || globalThis.fetch;
+    this.authGate = authGate;
+    this.observerLeases = new Map();
+    this.observerStreams = new Set();
+  }
+
+  pruneObserverLeases(now = Date.now()) {
+    for (const [id, binding] of this.observerLeases) {
+      if (!Number.isFinite(binding.expiresAt) || binding.expiresAt <= now) {
+        this.observerLeases.delete(id);
+        for (const stream of [...this.observerStreams]) if (stream.leaseId === id) stream.close();
+      }
+    }
   }
 
   async handle(req, res, url) {
@@ -203,7 +242,7 @@ export class FleetProxy {
       return true;
     }
 
-    if (suffix === '/api/stream' || suffix.startsWith('/api/')) {
+    if (suffix === '/api/stream' || suffix.startsWith('/api/') || suffix === '/observer/frame') {
       await this.proxyApi(req, res, agent, suffix, url.search);
       return true;
     }
@@ -213,7 +252,7 @@ export class FleetProxy {
       return true;
     }
 
-    if (suffix === '/' || suffix === '/index.html' || suffix === '/trends' || suffix === '/memory') {
+    if (suffix === '/' || suffix === '/index.html' || suffix === '/trends' || suffix === '/memory' || suffix === '/observer') {
       // Include the reverse-proxy base path (X-Forwarded-Prefix, e.g. /dashboard)
       // so the browser requests assets/API under it. Caddy forwards everything
       // under /dashboard/* and strips the prefix before this handler runs, so
@@ -249,7 +288,26 @@ export class FleetProxy {
   }
 
   async proxyApi(req, res, agent, suffix, search) {
-    if (!['GET', 'HEAD'].includes(req.method) && !isAllowedProxyWrite(req.method, suffix)) {
+    if (suffix.startsWith('/api/observer/') || suffix.startsWith('/observer/')) {
+      this.pruneObserverLeases();
+      if (!isObserverProxyRoute(req.method, suffix)) {
+        sendJson(res, 403, { error: 'observer_route_not_allowlisted' });
+        return;
+      }
+      const context = req._authContext;
+      if (!context || context.scope !== 'admin') {
+        sendJson(res, 403, { error: 'admin_required' });
+        return;
+      }
+      const leaseId = observerLeaseId(req, suffix);
+      if (leaseId) {
+        const binding = this.observerLeases.get(leaseId);
+        if (!binding || binding.agentName !== agent.name || !samePrincipal(binding.principal, context)) {
+          sendJson(res, 404, { error: 'lease_not_found' });
+          return;
+        }
+      }
+    } else if (!['GET', 'HEAD'].includes(req.method) && !isAllowedProxyWrite(req.method, suffix)) {
       sendJson(res, 403, { error: 'read_only_proxy' });
       return;
     }
@@ -355,8 +413,107 @@ export class FleetProxy {
         sendJson(res, 502, { error: 'secret_leak_blocked' });
         return;
       }
+      if (remoteResp.ok && req.method === 'POST' &&
+          (suffix === '/api/observer/leases' || suffix.endsWith('/renew'))) {
+        try {
+          const lease = JSON.parse(text);
+          if (/^[A-Za-z0-9_-]{32}$/.test(lease.id)) {
+            const current = this.observerLeases.get(lease.id);
+            if (!current || (current.agentName === agent.name && samePrincipal(current.principal, req._authContext))) {
+              this.observerLeases.set(lease.id, {
+                agentName: agent.name,
+                principal: req._authContext,
+                expiresAt: Number(lease.expiresAt),
+              });
+            }
+          }
+        } catch { /* malformed upstream response is returned and rejected by the browser */ }
+      }
+      const completedLease = observerLeaseId(req, suffix);
+      if (completedLease && suffix.endsWith('/release') && remoteResp.ok) this.observerLeases.delete(completedLease);
+      if ((suffix === '/api/observer/disable' || (suffix === '/api/observer/install' && req.method === 'DELETE')) && remoteResp.ok) {
+        for (const [id, binding] of this.observerLeases) if (binding.agentName === agent.name) this.observerLeases.delete(id);
+        for (const stream of [...this.observerStreams]) if (stream.agentName === agent.name) stream.close();
+      }
       res.writeHead(remoteResp.status, responseHeaders);
       res.end(buffer);
+    }
+  }
+
+  async handleUpgrade(req, socket, head) {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    const match = url.pathname.match(/^\/fleet\/([^/]+)\/observer\/stream$/);
+    if (!match || url.search) return false;
+    const agentName = decodeAgentName(match[1]);
+    const agent = this.config.fleet?.agents?.find((candidate) => candidate.name === agentName);
+    const context = req._authContext;
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const expectedProtocol = forwardedProto === 'https' || forwardedProto === 'http'
+      ? forwardedProto
+      : req.socket.encrypted ? 'https' : 'http';
+    const expectedOrigin = req.headers.host ? `${expectedProtocol}://${req.headers.host}` : null;
+    const exactOrigin = typeof req.headers.origin === 'string' && req.headers.origin === expectedOrigin;
+    const protocol = String(req.headers['sec-websocket-protocol'] || '');
+    const leaseId = protocol.split(',').map((value) => value.trim()).find((value) => value.startsWith('lease.'))?.slice(6);
+    this.pruneObserverLeases();
+    const binding = leaseId && this.observerLeases.get(leaseId);
+    if (!agent || !context || context.scope !== 'admin' || (context.kind === 'cookie' && !exactOrigin) || !binding ||
+        binding.agentName !== agentName || !samePrincipal(binding.principal, context)) {
+      rejectObserverUpgrade(socket, 404, 'lease_not_found');
+      return true;
+    }
+    let upstream;
+    let downstream;
+    let revalidationTimer = null;
+    const close = () => {
+      clearInterval(revalidationTimer);
+      upstream?.close(1000, 'relay_closed');
+      downstream?.close(1000, 'relay_closed');
+      this.observerStreams.delete(stream);
+    };
+    const stream = { agentName, leaseId, close };
+    try {
+      let token = await this.poller.getSessionToken(agentName);
+      const target = new URL(remoteUrl(agent, '/observer/stream'));
+      const connect = () => connectObserverWebSocket({
+        host: target.hostname,
+        port: Number(target.port || (target.protocol === 'https:' ? 443 : 80)),
+        path: `${target.pathname}${target.search}`,
+        secure: target.protocol === 'https:',
+        servername: target.hostname,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Origin: `${target.protocol}//${target.host}`,
+          'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${leaseId}`,
+        },
+      });
+      try { upstream = await connect(); } catch {
+        token = await this.poller.getSessionToken(agentName, { force: true });
+        upstream = await connect();
+      }
+      downstream = acceptObserverWebSocket(req, socket, head, 'zylos-observer-v1');
+      this.observerStreams.add(stream);
+      upstream.on('message', (payload, opcode) => {
+        if (opcode === 1) downstream.sendText(payload);
+        else downstream.sendBinary(payload);
+      });
+      downstream.on('message', () => close());
+      upstream.on('error', close);
+      downstream.on('error', close);
+      upstream.on('close', close);
+      downstream.on('close', close);
+      revalidationTimer = setInterval(() => {
+        const refreshed = this.authGate?.revalidateAuthContext(context);
+        if (!refreshed || !samePrincipal(refreshed, binding.principal)) close();
+      }, 10_000);
+      revalidationTimer.unref?.();
+      upstream.activate();
+      downstream.activate();
+      return true;
+    } catch {
+      close();
+      if (!downstream) rejectObserverUpgrade(socket, 502, 'upstream_unreachable');
+      return true;
     }
   }
 

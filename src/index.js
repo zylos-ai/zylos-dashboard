@@ -1531,7 +1531,7 @@ async function handleMemoryApi(req, res, pathname, url) {
 
 export function createServer() {
   const rootDir = publicDir();
-  const fleetProxy = new FleetProxy({ config, rootDir, poller: fleetPoller });
+  const fleetProxy = new FleetProxy({ config, rootDir, poller: fleetPoller, authGate: auth });
 
   function renderIndex(req, res) {
     const browserBase = browserBaseFromRequest(req);
@@ -1679,7 +1679,7 @@ export function createServer() {
       return;
     }
 
-    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends' || pathname === '/memory') {
+    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends' || pathname === '/memory' || pathname === '/observer') {
       renderIndex(req, res);
       return;
     }
@@ -1689,6 +1689,14 @@ export function createServer() {
     }
   });
   server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    if (url.pathname.startsWith('/fleet/')) {
+      req._authContext = auth.resolveAuthContext(req);
+      fleetProxy.handleUpgrade(req, socket, head).then((handled) => {
+        if (!handled) socket.destroy();
+      }).catch(() => socket.destroy());
+      return;
+    }
     observerService.handleUpgrade(req, socket, head).catch(() => socket.destroy());
   });
   return server;

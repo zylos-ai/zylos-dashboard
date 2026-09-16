@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { observerArtifactFor, observerPlatformKey } from './observer-artifacts.js';
+import { observerArtifactFor, observerCatalogFor, observerPlatformKey } from './observer-artifacts.js';
 import { observerPaths } from './observer-paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -184,6 +184,7 @@ export class ObserverInstaller {
     this.paths = observerPaths(dataDir);
     this.platformKey = observerPlatformKey(platform, arch);
     this.artifact = artifact;
+    this.catalogArtifact = observerCatalogFor(platform, arch);
     this.fetchImpl = fetchImpl;
     this.exec = exec;
     this.licensePath = licensePath;
@@ -225,7 +226,13 @@ export class ObserverInstaller {
   }
 
   async verify() {
-    if (!this.artifact) return { state: 'unsupported', platform: this.platformKey };
+    if (!this.artifact) return {
+      state: 'unsupported',
+      platform: this.platformKey,
+      artifactAvailable: Boolean(this.catalogArtifact),
+      version: this.catalogArtifact?.version || null,
+      supportState: this.catalogArtifact?.supportState || 'no_official_artifact',
+    };
     try {
       await assertPrivateDirectory(this.paths.root);
     } catch (error) {

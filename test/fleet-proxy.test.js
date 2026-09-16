@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import test from 'node:test';
 import { publicDir } from '../src/lib/config.js';
 import { FleetProxy } from '../src/lib/fleet-proxy.js';
+import { acceptObserverWebSocket, connectObserverWebSocket } from '../src/lib/observer-websocket.js';
 
 async function listen(handler) {
   const server = http.createServer(handler);
@@ -146,6 +147,159 @@ test('fleet proxy injects session token for API and keeps token out of client re
     assert.equal(body.includes('zylos_st_secret'), false);
     assert.equal(body.includes('zylos_ak_secret'), false);
   } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet Observer HTTP allowlist binds remote leases to the local admin principal', async () => {
+  const leaseId = 'o'.repeat(32);
+  const seen = [];
+  const remote = await listen(async (req, res) => {
+    seen.push([req.method, req.url, req.headers.authorization, req.headers['x-observer-lease']]);
+    if (req.method === 'POST' && req.url === '/api/observer/leases') {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: leaseId, expiresAt: Date.now() + 30_000, preset: 'standard' }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/observer/frame') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><title>Observer</title>');
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'remote-admin-token' }
+  });
+  const principal = { kind: 'cookie', principalId: 'local-admin', scope: 'admin' };
+  const hub = await listen((req, res) => {
+    req._authContext = req.headers['x-test-principal'] === 'other'
+      ? { kind: 'cookie', principalId: 'other-admin', scope: 'admin' }
+      : principal;
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  try {
+    const lease = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, { method: 'POST' });
+    assert.equal(lease.status, 201);
+    assert.equal((await lease.json()).id, leaseId);
+
+    const frame = await fetch(`${hub.origin}/fleet/Remote/observer/frame`, {
+      headers: { 'x-observer-lease': leaseId }
+    });
+    assert.equal(frame.status, 200);
+    assert.match(await frame.text(), /Observer/);
+
+    const stolen = await fetch(`${hub.origin}/fleet/Remote/observer/frame`, {
+      headers: { 'x-observer-lease': leaseId, 'x-test-principal': 'other' }
+    });
+    assert.equal(stolen.status, 404);
+    assert.equal(seen.filter(([, url]) => url === '/observer/frame').length, 1);
+    assert.ok(seen.every(([, , auth]) => auth === 'Bearer remote-admin-token'));
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet Observer renewals advance the local lease fence and stale bindings are reclaimed', async () => {
+  const leaseId = 'r'.repeat(32);
+  let expiresAt = Date.now() + 30_000;
+  const remote = await listen(async (req, res) => {
+    if (req.method === 'POST' && (req.url === '/api/observer/leases' || req.url.endsWith('/renew'))) {
+      expiresAt += 30_000;
+      res.writeHead(req.url.endsWith('/renew') ? 200 : 201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: leaseId, expiresAt, preset: 'standard' }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  const principal = { kind: 'cookie', principalId: 'local-admin', scope: 'admin' };
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'remote-admin-token' }
+  });
+  const hub = await listen((req, res) => {
+    req._authContext = principal;
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  try {
+    assert.equal((await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, { method: 'POST' })).status, 201);
+    const firstExpiry = proxy.observerLeases.get(leaseId).expiresAt;
+    assert.equal((await fetch(`${hub.origin}/fleet/Remote/api/observer/leases/${leaseId}/renew`, { method: 'POST' })).status, 200);
+    assert.ok(proxy.observerLeases.get(leaseId).expiresAt > firstExpiry);
+
+    proxy.observerLeases.get(leaseId).expiresAt = Date.now() - 1;
+    proxy.pruneObserverLeases();
+    assert.equal(proxy.observerLeases.has(leaseId), false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet Observer WebSocket relays display only and closes on browser input', async () => {
+  const leaseId = 'w'.repeat(32);
+  let upstreamAuth = null;
+  let upstreamSocket = null;
+  const remote = await listen((req, res) => {
+    if (req.method === 'POST' && req.url === '/api/observer/leases') {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: leaseId, expiresAt: Date.now() + 30_000, preset: 'standard' }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  remote.server.on('upgrade', (req, socket, head) => {
+    upstreamAuth = req.headers.authorization;
+    upstreamSocket = acceptObserverWebSocket(req, socket, head, 'zylos-observer-v1');
+    upstreamSocket.activate();
+    upstreamSocket.sendBinary(Buffer.from('REMOTE DISPLAY'));
+  });
+  const principal = { kind: 'cookie', principalId: 'local-admin', scope: 'admin' };
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'remote-admin-token' },
+    authGate: { revalidateAuthContext: (value) => value }
+  });
+  const hub = await listen((req, res) => {
+    req._authContext = principal;
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  hub.server.on('upgrade', (req, socket, head) => {
+    req._authContext = principal;
+    proxy.handleUpgrade(req, socket, head);
+  });
+  let browser;
+  try {
+    const lease = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, { method: 'POST' });
+    assert.equal(lease.status, 201);
+    browser = await connectObserverWebSocket({
+      port: hub.server.address().port,
+      path: '/fleet/Remote/observer/stream',
+      headers: {
+        Origin: hub.origin,
+        Cookie: 'session=test',
+        'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${leaseId}`,
+      },
+    });
+    const messages = [];
+    browser.on('message', (payload) => messages.push(payload));
+    browser.activate();
+    const deadline = Date.now() + 2_000;
+    while (!messages.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(Buffer.from(messages[0]).toString(), 'REMOTE DISPLAY');
+    assert.equal(upstreamAuth, 'Bearer remote-admin-token');
+    browser.sendText('forbidden input');
+    await new Promise((resolve) => browser.once('close', resolve));
+    assert.equal(proxy.observerStreams.size, 0);
+  } finally {
+    browser?.destroy();
+    upstreamSocket?.destroy();
     await hub.close();
     await remote.close();
   }

@@ -709,7 +709,7 @@ test('back button resolves in-page remote first, standalone remote second, fleet
 test('popstate routes /fleet/<name> paths into remote view only on the parent document', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   // The standalone remote document (REMOTE_AGENT) keeps plain tab routing.
-  assert.match(app, /if \(!REMOTE_AGENT\) \{\s*\n\s*const m = path\.match\(\/\\\/fleet\\\/\(\[\^\/\]\+\)\\\/\?\(\?::?trends\|memory\)\?\$\/\);?/);
+  assert.match(app, /if \(!REMOTE_AGENT\) \{\s*\n\s*const m = path\.match\(\/\\\/fleet\\\/\(\[\^\/\]\+\)\\\/\?\(\?::?trends\|memory\|observer\)\?\$\/\);?/);
   assert.match(app, /enterRemoteAgent\(decodeURIComponent\(m\[1\]\), \{ push: false \}\);/);
   assert.match(app, /else if \(state\.remoteAgent\) \{\s*\n\s*exitRemoteAgent\(\{ push: false \}\);/);
   // Tab pushState carries the remote prefix so deep links stay consistent.
@@ -750,6 +750,32 @@ test('remote Actions/Settings are gated by access and routed through the viewed 
   assert.match(reset, /closeSettingsModal\(\);/);
 });
 
+test('Observer UI is optional, read-only, agent-routed, and releases leases on exit', () => {
+  const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  const en = JSON.parse(fs.readFileSync(path.resolve('public/i18n/en.json'), 'utf8'));
+  const zh = JSON.parse(fs.readFileSync(path.resolve('public/i18n/zh.json'), 'utf8'));
+  assert.match(index, /id="observer-tab"[^>]+hidden/);
+  assert.match(index, /id="tab-observer"/);
+  assert.match(index, /sandbox="allow-scripts"/);
+  assert.match(app, /new MessageChannel\(\)/);
+  assert.match(app, /new WebSocket\(streamUrl, \['zylos-observer-v1', `lease\.\$\{lease\.id\}`\]\)/);
+  assert.match(app, /X-Observer-Lease/);
+  assert.match(app, /observer\.channel\?\.postMessage\(\{ type: 'render', bytes: event\.data \}, \[event\.data\]\)/);
+  assert.match(app, /if \(activeTabName\(\) === 'observer' && name !== 'observer'\) closeObserver/);
+  assert.match(app, /window\.addEventListener\('pagehide',[\s\S]+closeObserver/);
+  assert.match(app, /state\.remoteAgent \? api\(`\$\{remotePrefix\(\)\}\$\{path\}`\) : api\(path\)/);
+  assert.match(app, /const refreshed = await refreshObserverStatus\(\{ quiet: true \}\);/);
+  assert.ok(app.indexOf('await refreshObserverStatus({ quiet: true });\ninitTabs();') > -1);
+  assert.match(css, /\.observer-frame-shell/);
+  for (const pack of [en, zh]) {
+    assert.equal(typeof pack['tab.observer'], 'string');
+    assert.equal(typeof pack['observer.live_read_only'], 'string');
+    assert.equal(typeof pack['observer.state_unvalidated'], 'string');
+  }
+});
+
 test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
@@ -761,8 +787,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=59/);
-  assert.match(index, /style\.css\?v=45/);
+  assert.match(index, /app\.js\?v=62/);
+  assert.match(index, /style\.css\?v=46/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -829,7 +855,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=59/);
+  assert.match(index, /app\.js\?v=62/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

@@ -106,7 +106,13 @@ test('unsupported platforms never attempt a download', async (t) => {
     artifact: null,
     fetchImpl: async () => { fetched = true; throw new Error('must not fetch'); },
   });
-  assert.deepEqual(await installer.verify(), { state: 'unsupported', platform: 'linux-x64' });
+  assert.deepEqual(await installer.verify(), {
+    state: 'unsupported',
+    platform: 'linux-x64',
+    artifactAvailable: true,
+    version: '0.45.1',
+    supportState: 'lifecycle_adapter_required',
+  });
   await assert.rejects(installer.install(), (error) => error?.code === 'unsupported_platform');
   assert.equal(fetched, false);
 });

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
+import tls from 'node:tls';
 
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
@@ -260,13 +261,16 @@ export function rejectObserverUpgrade(socket, status = 404, code = 'not_found') 
 
 export async function connectObserverWebSocket({
   host = '127.0.0.1', port, path, headers = {}, timeoutMs = 5_000,
+  secure = false, servername = host,
   closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
   maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES,
   signal,
 }) {
   if (signal?.aborted) throw new Error('WebSocket connect aborted');
   const key = crypto.randomBytes(16).toString('base64');
-  const socket = net.createConnection({ host, port });
+  const socket = secure
+    ? tls.connect({ host, port, servername })
+    : net.createConnection({ host, port });
   socket.setNoDelay(true);
   await new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -276,7 +280,7 @@ export async function connectObserverWebSocket({
     const onAbort = () => { cleanup(); socket.destroy(); reject(new Error('WebSocket connect aborted')); };
     const timeout = setTimeout(() => { cleanup(); socket.destroy(); reject(new Error('WebSocket connect timeout')); }, timeoutMs);
     signal?.addEventListener('abort', onAbort, { once: true });
-    socket.once('connect', () => { cleanup(); resolve(); });
+    socket.once(secure ? 'secureConnect' : 'connect', () => { cleanup(); resolve(); });
     socket.once('error', (error) => { cleanup(); reject(error); });
   });
   const lines = [
