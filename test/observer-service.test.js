@@ -128,11 +128,13 @@ test('local Observer upgrade survives downstream resets during reject and pendin
   const rejected = fixture();
   const rejectedApp = await startHttp(rejected.service);
   try {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const reset = resetUpgrade(rejectedApp.server.address().port, '/observer/stream');
-      await new Promise((resolve) => setImmediate(resolve));
-      reset.client.resetAndDestroy();
-      await reset.closed;
+    for (const path of ['/observer/stream', '/ws', '/observer/stream?x=1']) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const reset = resetUpgrade(rejectedApp.server.address().port, path);
+        await new Promise((resolve) => setImmediate(resolve));
+        reset.client.resetAndDestroy();
+        await reset.closed;
+      }
     }
     const healthy = await fetch(`${rejectedApp.origin}/api/observer/status`, {
       headers: { Authorization: 'Bearer admin-token' },
@@ -165,6 +167,49 @@ test('local Observer upgrade survives downstream resets during reject and pendin
     await pending.service.shutdown();
     await pendingApp.close();
   }
+});
+
+test('local Observer rejects pre-ready bytes and disconnects without allocating an upstream', async (t) => {
+  for (const action of ['data', 'end', 'reset']) await t.test(action, async () => {
+    const { service, upstreams } = fixture();
+    let releaseReady;
+    let readySeen = false;
+    service._ready = async () => {
+      readySeen = true;
+      await new Promise((resolve) => { releaseReady = resolve; });
+    };
+    let handling;
+    let raw;
+    const original = service.handleUpgrade.bind(service);
+    service.handleUpgrade = (...args) => {
+      raw = args[1];
+      return (handling = original(...args));
+    };
+    const app = await startHttp(service);
+    let reset;
+    try {
+      reset = resetUpgrade(app.server.address().port, '/observer/stream', {
+        Cookie: 'admin=1', Origin: app.origin,
+        'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+      });
+      await waitUntil(() => readySeen);
+      if (action === 'data') reset.client.write('x');
+      if (action === 'end') reset.client.end();
+      if (action === 'reset') reset.client.resetAndDestroy();
+      // The readiness operation is still held: a byte must actively close the socket.
+      await waitUntil(() => reset.client.destroyed && raw.destroyed);
+      releaseReady();
+      await handling;
+      assert.equal(upstreams.length, 0);
+      assert.equal(service.streams.size, 0);
+    } finally {
+      releaseReady?.();
+      reset?.client.destroy();
+      await handling;
+      await service.shutdown();
+      await app.close();
+    }
+  });
 });
 
 test('cookie lifecycle requires exact Origin and frame requires the bound lease header', async () => {

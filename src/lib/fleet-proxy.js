@@ -211,12 +211,13 @@ function guardedSseStream(guard, upstreamStream, onLeak) {
 }
 
 export class FleetProxy {
-  constructor({ config, rootDir, poller, fetch, authGate }) {
+  constructor({ config, rootDir, poller, fetch, authGate, observerConnect = connectObserverWebSocket }) {
     this.config = config;
     this.rootDir = rootDir;
     this.poller = poller;
     this.fetch = fetch || globalThis.fetch;
     this.authGate = authGate;
+    this.observerConnect = observerConnect;
     this.observerLeases = new Map();
     this.observerStreams = new Set();
   }
@@ -472,6 +473,9 @@ export class FleetProxy {
       upstreamControl.abort();
       upstream?.close(1000, 'relay_closed');
       downstream?.close(1000, 'relay_closed');
+      // A pre-admission byte is not a socket close. Terminate that raw
+      // connection, but let an already-ended rejection response drain.
+      if (!downstream && !socket.writableEnded) socket.destroy();
       if (stream) this.observerStreams.delete(stream);
     };
     socket.on('error', close);
@@ -496,7 +500,7 @@ export class FleetProxy {
       let token = await this.poller.getSessionToken(agentName);
       if (closed || socket.destroyed || socket.writableEnded) return true;
       const target = new URL(remoteUrl(agent, '/observer/stream'));
-      const connect = () => connectObserverWebSocket({
+      const connect = () => this.observerConnect({
         host: target.hostname,
         port: Number(target.port || (target.protocol === 'https:' ? 443 : 80)),
         path: `${target.pathname}${target.search}`,
@@ -553,10 +557,10 @@ export class FleetProxy {
       downstream.activate();
       return true;
     } catch {
-      close();
       if (!downstream && !socket.destroyed && !socket.writableEnded) {
         rejectObserverUpgrade(socket, 502, 'upstream_unreachable');
       }
+      close();
       return true;
     }
   }

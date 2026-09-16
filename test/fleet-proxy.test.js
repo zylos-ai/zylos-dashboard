@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
@@ -482,6 +483,7 @@ test('fleet Observer upgrade survives downstream resets during reject and pendin
   remote.server.on('upgrade', async (req, socket, head) => {
     upstreamRaw = socket;
     socket.on('error', () => {});
+    socket.on('end', () => socket.destroy());
     markUpgradeSeen();
     await upgradeGate;
     if (socket.destroyed) return;
@@ -510,8 +512,11 @@ test('fleet Observer upgrade survives downstream resets during reject and pendin
     await upgradeSeen;
     reset.client.resetAndDestroy();
     await reset.closed;
+    // Abort must tear down the in-flight connect before the remote answers.
+    await waitUntil(() => upstreamRaw.destroyed);
     releaseUpgrade();
-    await waitUntil(() => pendingProxy.observerStreams.size === 0 && upstream?.closed === true);
+    assert.equal(pendingProxy.observerStreams.size, 0);
+    assert.equal(upstream, undefined);
     assert.equal((await fetch(pendingHub.origin)).status, 204);
   } finally {
     releaseUpgrade();
@@ -522,6 +527,93 @@ test('fleet Observer upgrade survives downstream resets during reject and pendin
     await pendingHub.close();
     await remote.close();
   }
+});
+
+test('fleet Observer closes a valid client that sends a byte before admission', async () => {
+  const principal = { kind: 'cookie', principalId: 'local-admin', scope: 'admin' };
+  const leaseId = 'b'.repeat(32);
+  let releaseToken;
+  let tokenSeen = false;
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: 'http://127.0.0.1:1' }] } },
+    poller: { getSessionToken: () => {
+      tokenSeen = true;
+      return new Promise((resolve) => { releaseToken = resolve; });
+    } },
+    authGate: { revalidateAuthContext: (value) => value },
+  });
+  proxy.observerLeases.set(leaseId, { agentName: 'Remote', principal, expiresAt: Date.now() + 30_000 });
+  const hub = await listen((_req, res) => res.writeHead(204).end());
+  let handling;
+  let raw;
+  hub.server.on('upgrade', (req, socket, head) => {
+    raw = socket;
+    req._authContext = principal;
+    handling = proxy.handleUpgrade(req, socket, head);
+  });
+  let client;
+  try {
+    ({ client } = resetUpgrade(hub.server.address().port, '/fleet/Remote/observer/stream', {
+      Cookie: 'session=test', Origin: hub.origin,
+      'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${leaseId}`,
+    }));
+    await waitUntil(() => tokenSeen);
+    client.write('x');
+    await waitUntil(() => client.destroyed && raw.destroyed);
+    releaseToken('unused');
+    await handling;
+    assert.equal(proxy.observerStreams.size, 0);
+    assert.equal((await fetch(hub.origin)).status, 204);
+  } finally {
+    releaseToken?.('unused');
+    client?.destroy();
+    raw?.destroy();
+    await handling;
+    await hub.close();
+  }
+});
+
+test('fleet Observer owns a resolved upstream across downstream cancellation and admission', async (t) => {
+  for (const phase of ['resolved-before-admission', 'admission-before-registration']) await t.test(phase, async () => {
+    const principal = { kind: 'api', principalId: 'local-admin', scope: 'admin' };
+    const leaseId = 'c'.repeat(32);
+    const socket = new EventEmitter();
+    socket.destroyed = false;
+    socket.writableEnded = false;
+    socket.setNoDelay = () => {};
+    socket.write = () => true;
+    socket.end = () => { socket.writableEnded = true; };
+    socket.destroy = () => { socket.destroyed = true; };
+    const upstream = new EventEmitter();
+    upstream.closed = false;
+    upstream.close = () => { upstream.closed = true; };
+    upstream.activate = () => {};
+    const proxy = new FleetProxy({
+      config: { fleet: { agents: [{ name: 'Remote', base_url: 'http://127.0.0.1:1' }] } },
+      poller: { getSessionToken: async () => 'unused' },
+      authGate: { revalidateAuthContext: () => {
+        if (phase === 'admission-before-registration') queueMicrotask(() => socket.emit('end'));
+        return principal;
+      } },
+      // A completed handshake has stopped observing AbortSignal. Its resolved
+      // transport must be reclaimed by the admission fence, not by connect abort.
+      observerConnect: () => {
+        if (phase === 'resolved-before-admission') queueMicrotask(() => socket.emit('end'));
+        return Promise.resolve(upstream);
+      },
+    });
+    proxy.observerLeases.set(leaseId, { agentName: 'Remote', principal, expiresAt: Date.now() + 30_000 });
+    await proxy.handleUpgrade({
+      url: '/fleet/Remote/observer/stream', _authContext: principal,
+      headers: {
+        host: 'localhost', connection: 'Upgrade', upgrade: 'websocket',
+        'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'sec-websocket-protocol': `zylos-observer-v1, lease.${leaseId}`,
+      },
+    }, socket, Buffer.alloc(0));
+    assert.equal(upstream.closed, true);
+    assert.equal(proxy.observerStreams.size, 0);
+  });
 });
 
 test('fleet proxy strips content-encoding from compressed upstream responses (#255)', async () => {

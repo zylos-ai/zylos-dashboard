@@ -250,23 +250,28 @@ export class ObserverService {
   }
 
   async handleUpgrade(req, socket, head) {
-    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
-    if (url.pathname !== '/observer/stream' || url.search) {
-      rejectObserverUpgrade(socket, 404, 'not_found');
-      return true;
-    }
     let upstream;
     let stream;
+    let aborted = false;
     let awaitingAdmission = true;
     const closeAbortedDownstream = () => {
+      aborted = true;
       if (stream) this._closeStream(stream, 1001, 'client_aborted');
+      else socket.destroy();
     };
+    // Own socket failures before any rejection can write a response.
     socket.on('error', closeAbortedDownstream);
     socket.on('data', () => { if (awaitingAdmission) closeAbortedDownstream(); });
     socket.on('end', closeAbortedDownstream);
     socket.on('close', closeAbortedDownstream);
     try {
+      const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+      if (url.pathname !== '/observer/stream' || url.search) {
+        rejectObserverUpgrade(socket, 404, 'not_found');
+        return true;
+      }
       await this._ready();
+      if (aborted || socket.destroyed || socket.writableEnded) return true;
       const context = this._authContext(req, { requireOrigin: true });
       const leaseId = parseProtocol(req.headers['sec-websocket-protocol']);
       if (!leaseId) throw new ObserverHttpError(404, 'invalid_protocol');

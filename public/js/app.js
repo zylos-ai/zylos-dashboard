@@ -50,6 +50,7 @@ const state = {
   fleetViewActive: false,
   fleetModeInitialized: false,
   remoteAgent: null,
+  navigationGeneration: 0,
   observer: {
     status: null,
     lease: null,
@@ -61,7 +62,8 @@ const state = {
     endpointPrefix: null,
     generation: 0,
     statusGeneration: 0,
-    statusTarget: null
+    lifecycleGeneration: 0,
+    statusRequest: null
   },
   memory: {
     tree: null,
@@ -1991,6 +1993,7 @@ async function closeObserver({ release = true, preserveNotice = false } = {}) {
   observer.iframe = null;
   const shell = $('#observer-frame')?.parentElement;
   if (shell) delete shell.dataset.preset;
+  document.querySelectorAll('[data-observer-preset]').forEach((button) => button.classList.remove('active'));
   if (release) releaseObserverLease(endpoints, lease);
   if (!preserveNotice) setObserverNotice(t('observer.closed'), 'idle');
 }
@@ -2019,10 +2022,18 @@ async function openObserver() {
   observer.opening = true;
   setObserverNotice(t('observer.connecting'), 'connecting');
   try {
-    const status = await refreshObserverStatus();
+    let status = await refreshObserverStatus();
+    // A same-target refresh may supersede our request. Follow the current
+    // request, including further supersessions, without abandoning the open.
+    while (!status && observerSessionCurrent(generation, targetKey)) {
+      const request = observer.statusRequest;
+      if (!request || request.targetKey !== targetKey) break;
+      status = await request.promise;
+      if (request === observer.statusRequest) break;
+      status = null;
+    }
     if (!observerSessionCurrent(generation, targetKey)) return;
-    if (!status) return;
-    if (status.state !== 'installed' || status.desired?.enabled !== true) {
+    if (status?.state !== 'installed' || status.desired?.enabled !== true) {
       throw new Error(t('observer.not_available'));
     }
     observer.endpointPrefix = endpoints;
@@ -2353,8 +2364,8 @@ function scheduleSseReconnect() {
 
 // ─── Tabs ───
 function initTabs() {
-  let navigationGeneration = 0;
   const activateTab = (name, push = false) => {
+    if (push) state.navigationGeneration += 1;
     if (name === 'memory' && remoteIsReadOnly()) name = 'overview';
     if (name === 'observer' && ($('#observer-tab')?.hidden || remoteIsReadOnly())) name = 'overview';
     if (activeTabName() === 'observer' && name !== 'observer') closeObserver({ release: true }).catch(() => {});
@@ -2380,19 +2391,24 @@ function initTabs() {
     });
   });
   window.addEventListener('popstate', async () => {
-    const generation = ++navigationGeneration;
+    const generation = ++state.navigationGeneration;
     const path = window.location.pathname;
     // In-page remote viewing only exists on the parent document; the
     // standalone remote document (REMOTE_AGENT) keeps plain tab routing.
-    if (!REMOTE_AGENT) {
-      const m = path.match(/\/fleet\/([^/]+)\/?(?:trends|memory|observer)?$/);
-      if (m) {
-        await enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
-      } else if (state.remoteAgent) {
-        await exitRemoteAgent({ push: false });
+    try {
+      if (!REMOTE_AGENT) {
+        const m = path.match(/\/fleet\/([^/]+)\/?(?:trends|memory|observer)?$/);
+        if (m) {
+          await enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
+        } else if (state.remoteAgent) {
+          await exitRemoteAgent({ push: false });
+        }
       }
+    } catch {
+      if (generation === state.navigationGeneration) renderConnection('degraded');
+      return;
     }
-    if (generation !== navigationGeneration) return;
+    if (generation !== state.navigationGeneration) return;
     const tab = path.endsWith('/trends') ? 'trends' : path.endsWith('/memory') ? 'memory' : path.endsWith('/observer') ? 'observer' : 'overview';
     activateTab(tab, false);
   });
@@ -2502,9 +2518,15 @@ function applyFleetMode(fleet) {
 function resetAgentData() {
   closeObserver({ release: true }).catch(() => {});
   state.observer.statusGeneration += 1;
-  state.observer.statusTarget = null;
+  state.observer.lifecycleGeneration = (state.observer.lifecycleGeneration || 0) + 1;
+  state.observer.statusRequest = null;
   state.observer.status = null;
   renderObserverStatus(null);
+  const observerStatus = settingsModal?.querySelector('#observer-settings-status');
+  if (observerStatus) {
+    observerStatus.hidden = true;
+    observerStatus.textContent = '';
+  }
   state.dashboardState = null;
   state.metrics = new Map();
   state.aggregated = {};
@@ -2538,6 +2560,7 @@ function enterRemoteAgent(name, { push = true } = {}) {
   // Single-agent dashboards have no fleet wall to come back to — never
   // activate remote viewing there, even if a stale history entry matches.
   if (!state.multiAgent) return;
+  if (push) state.navigationGeneration += 1;
   if (!name || state.remoteAgent === name) return;
   state.remoteAgent = name;
   resetAgentData();
@@ -2552,6 +2575,7 @@ function enterRemoteAgent(name, { push = true } = {}) {
 }
 
 function exitRemoteAgent({ push = true } = {}) {
+  if (push) state.navigationGeneration += 1;
   if (!state.remoteAgent) return;
   state.remoteAgent = null;
   resetAgentData();
@@ -3611,28 +3635,38 @@ async function refreshObserverStatus({ quiet = false } = {}) {
   const requestGeneration = state.observer.statusGeneration =
     (Number.isInteger(state.observer.statusGeneration) ? state.observer.statusGeneration : 0) + 1;
   const endpoint = observerEndpoint('/api/observer/status');
-  try {
-    const resp = await fetch(endpoint, { cache: 'no-store' });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || t('observer.load_failed'));
-    if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
-    state.observer.status = data;
-    state.observer.statusTarget = targetKey;
-    renderObserverStatus(data);
-    return data;
-  } catch (error) {
-    if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
-    state.observer.status = null;
-    state.observer.statusTarget = targetKey;
-    renderObserverStatus(null);
-    if (!quiet) throw error;
-    return null;
-  }
+  const request = { targetKey, promise: null };
+  state.observer.statusRequest = request;
+  request.promise = (async () => {
+    try {
+      const resp = await fetch(endpoint, { cache: 'no-store' });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || t('observer.load_failed'));
+      if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
+      state.observer.status = data;
+      renderObserverStatus(data);
+      return data;
+    } catch (error) {
+      if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
+      state.observer.status = null;
+      renderObserverStatus(null);
+      throw error;
+    }
+  })();
+  try { return await request.promise; }
+  catch (error) { if (!quiet) throw error; return null; }
 }
 
 async function runObserverLifecycle(action) {
   if (remoteIsReadOnly()) return;
   const targetKey = observerTargetKey();
+  const generation = state.observer.lifecycleGeneration = (state.observer.lifecycleGeneration || 0) + 1;
+  const current = () => state.observer.lifecycleGeneration === generation && observerTargetKey() === targetKey;
+  const method = action === 'uninstall' ? 'DELETE' : 'POST';
+  const path = action === 'install' || action === 'uninstall'
+    ? '/api/observer/install'
+    : `/api/observer/${action}`;
+  const endpoint = observerEndpoint(path);
   const statusEl = settingsModal?.querySelector('#observer-settings-status');
   const buttons = settingsModal?.querySelectorAll('.observer-settings-actions button') || [];
   buttons.forEach((button) => { button.disabled = true; });
@@ -3641,19 +3675,17 @@ async function runObserverLifecycle(action) {
     statusEl.className = 'modal-status';
     statusEl.textContent = t('observer.working');
   }
-  if (action === 'disable' || action === 'uninstall') await closeObserver({ release: true });
-  const method = action === 'uninstall' ? 'DELETE' : 'POST';
-  const path = action === 'install' || action === 'uninstall'
-    ? '/api/observer/install'
-    : `/api/observer/${action}`;
   try {
-    const resp = await fetch(observerEndpoint(path), { method, headers: { 'Content-Type': 'application/json' } });
+    if (action === 'disable' || action === 'uninstall') await closeObserver({ release: true });
+    if (!current()) return;
+    const resp = await fetch(endpoint, { method, headers: { 'Content-Type': 'application/json' } });
     const data = await resp.json().catch(() => ({}));
-    if (observerTargetKey() !== targetKey) return;
+    if (!current()) return;
     if (!resp.ok) throw new Error(data.error || t('observer.action_failed'));
+    const refreshGeneration = state.observer.statusGeneration + 1;
     const refreshed = await refreshObserverStatus({ quiet: true });
-    if (observerTargetKey() !== targetKey) return;
-    if (!refreshed) {
+    if (!current()) return;
+    if (!refreshed && state.observer.statusGeneration === refreshGeneration) {
       state.observer.status = data;
       renderObserverStatus(data);
     }
@@ -3662,12 +3694,11 @@ async function runObserverLifecycle(action) {
       statusEl.textContent = t('observer.action_done');
     }
   } catch (error) {
-    if (observerTargetKey() !== targetKey) return;
+    if (!current()) return;
     if (statusEl) statusEl.textContent = error.message;
     await refreshObserverStatus({ quiet: true });
-    if (observerTargetKey() !== targetKey) return;
   } finally {
-    if (observerTargetKey() === targetKey) renderObserverStatus();
+    renderObserverStatus();
   }
 }
 
