@@ -37,7 +37,7 @@ function sha256File(filePath) {
   });
 }
 
-async function privateDirectory(directory) {
+export async function privateDirectory(directory) {
   await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
   const stat = await fs.promises.lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -53,7 +53,7 @@ async function writeJsonAtomic(filePath, value) {
   await fs.promises.chmod(filePath, 0o600);
 }
 
-function cleanGuardianEnvironment(environment = process.env) {
+export function cleanGuardianEnvironment(environment = process.env) {
   const result = { ...environment };
   for (const key of Object.keys(result)) {
     if (key.startsWith('ZYLOS_GUARDIAN_TEST_') || key.startsWith('ZYLOS_PTY_MARKER_TEST_')) delete result[key];
@@ -215,9 +215,13 @@ export class DarwinObserverContainment extends EventEmitter {
     this._stopping = null;
   }
 
+  get helperPlatform() { return 'darwin-arm64'; }
+
+  get guardianFileName() { return 'darwin-guardian'; }
+
   get helperPaths() {
     return {
-      guardian: path.join(this.helperDir, 'darwin-guardian'),
+      guardian: path.join(this.helperDir, this.guardianFileName),
       markedExec: path.join(this.helperDir, 'marked-exec'),
       ptyMarkedExec: path.join(this.helperDir, 'pty-marked-exec'),
     };
@@ -230,11 +234,11 @@ export class DarwinObserverContainment extends EventEmitter {
       throw new ObserverContainmentError('invalid_helper_manifest', 'Observer helper manifest is unsafe');
     }
     const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
-    if (manifest.schema !== 1 || manifest.platform !== 'darwin-arm64') {
+    if (manifest.schema !== 1 || manifest.platform !== this.helperPlatform) {
       throw new ObserverContainmentError('invalid_helper_manifest', 'Observer helper manifest does not match this platform');
     }
     for (const [name, filePath] of Object.entries({
-      'darwin-guardian': this.helperPaths.guardian,
+      [this.guardianFileName]: this.helperPaths.guardian,
       'marked-exec': this.helperPaths.markedExec,
       'pty-marked-exec': this.helperPaths.ptyMarkedExec,
     })) {
@@ -250,7 +254,7 @@ export class DarwinObserverContainment extends EventEmitter {
   }
 
   async verifyHelpers() {
-    if (this.platform !== 'darwin' || this.arch !== 'arm64') {
+    if (`${this.platform}-${this.arch}` !== this.helperPlatform) {
       throw new ObserverContainmentError('unsupported_platform', `Unsupported containment platform: ${this.platform}-${this.arch}`);
     }
     return this.verifyHelperManifest();

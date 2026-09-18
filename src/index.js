@@ -39,7 +39,7 @@ import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
-import { DarwinObserverContainment } from './lib/observer-containment-darwin.js';
+import { createObserverContainment } from './lib/observer-containment.js';
 import { ObserverCoordinator } from './lib/observer-coordinator.js';
 import { ObserverControlServer } from './lib/observer-control.js';
 import { ObserverInstaller } from './lib/observer-installer.js';
@@ -126,7 +126,7 @@ try {
 const auth = new AuthGate(config, store);
 const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
 const observerInstaller = new ObserverInstaller({ dataDir: config.dataDir });
-const observerContainment = new DarwinObserverContainment({ dataDir: config.dataDir });
+const observerContainment = createObserverContainment({ dataDir: config.dataDir });
 const observerCoordinator = new ObserverCoordinator({
   configPath: config.configPath,
   installer: observerInstaller,

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { DarwinObserverContainment } from './observer-containment-darwin.js';
+import { createObserverContainment } from './observer-containment.js';
 import { ObserverCoordinator } from './observer-coordinator.js';
 import { ObserverInstaller } from './observer-installer.js';
 import { observerPaths } from './observer-paths.js';
@@ -205,7 +205,7 @@ export async function runObserverPreUninstall({ dataDir, configPath }) {
   const lock = await acquireCoordinatorLock(paths.control, { timeoutMs: OPERATION_TIMEOUT_MS });
   try {
     const installer = new ObserverInstaller({ dataDir });
-    const containment = new DarwinObserverContainment({ dataDir });
+    const containment = createObserverContainment({ dataDir });
     const coordinator = new ObserverCoordinator({
       configPath,
       installer,
