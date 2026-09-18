@@ -2,8 +2,11 @@
 
 These sources preserve the accepted Darwin watch/reconcile event and exit-status
 contract while replacing process inspection and signaling with Linux mechanisms.
-They are **unvalidated experimental sources**, not product assets or a supported
-Observer platform. Darwin sources and binaries remain unchanged.
+They are **experimental sources**, not product assets or a supported Observer
+platform. Frozen Stage 1 `0cdcf003` has reported native Debian AMD64 synthetic
+evidence; this R2 revision still requires its own native validation. That prior
+result does not validate R2 or general Linux deployment. Darwin sources and
+binaries remain unchanged.
 
 Build on the authorized native Linux x86_64 host, using an existing GCC and Python:
 
@@ -68,8 +71,22 @@ observation may evade discovery. Descendant and FD snapshots are not atomic.
 No namespace, cgroup, privilege, ptrace attachment, systemd or host PID access is
 used. No marker birth-time shortcut is used; unreadable unrelated same-UID
 processes therefore block a clean census. This is intentional fail-closed
-behavior, and must be measured on the target container. `/proc` must expose the
-entire authorized experiment PID namespace without hidden same-UID processes.
+behavior for processes included in enumeration, and must be measured on the
+target container. It does not cover processes excluded before FD inspection:
+dumpability changes can change procfs ownership, and credential or namespace
+transitions can invalidate the visibility assumptions while marker FDs remain
+open. `/proc` must expose the entire authorized experiment PID namespace without
+hidden same-UID processes. The bounded synthetic envelope assumes inspectable
+same-UID candidates and cooperative fixtures that do not change dumpability,
+credentials, or namespaces. A successful probe does not enforce these assumptions
+for future workloads. General-host ownership remains an unresolved product gate;
+do not exclude permission errors or different-GID processes to obtain a pass.
+
+R2's probe retries uncertain census results within a fixed deadline and resets
+the quiet window on uncertainty. It adds wrong-starttime reconciliation against
+an empty marker and a marked parent with a markerless child. Native repeated
+runs and identity/descendant-closure mutants must establish their discrimination;
+source changes alone are not evidence that those controls pass.
 
 Identity is only meaningful within the same boot and PID namespace. Persisted
 adapter records require an explicit boot-ID/namespace contract before reboot

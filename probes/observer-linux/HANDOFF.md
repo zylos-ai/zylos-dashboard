@@ -2,7 +2,7 @@
 
 This is an implementation candidate on accepted F13 `ab2a59cc18df82d705eed6d514901b9e5db6097f`, not a platform acceptance or a release. The existing Darwin helpers and accepted R5/F13 commits remain frozen. The upstream Linux artifact remains excluded from the enabled product catalog.
 
-## First execution scope
+## R2 execution scope
 
 Piper may build the three native helper programs in a fresh private experiment directory using the existing GCC toolchain and run the supplied native-helper probe after reading its source. This stage needs only existing Node, GCC/libc headers, and filesystem/process facilities. It neither downloads Zellij nor installs npm/system dependencies. Preserve the directory and raw logs after success or failure.
 
@@ -19,7 +19,40 @@ Use only the explicitly supplied helper directory and a fresh experiment output 
 
 Return the exact source head/tree, source and package hashes, `uname -a`, architecture, Node/compiler version and target, build invocation/output/exit status, helper manifest and binary hashes, probe invocation/output/exit status, and complete per-case logs. Include PID namespace scope and all permission/visibility/compile errors. Do not discard a failed attempt after a successful retry.
 
+R2 requires three consecutive successful native probes from the same frozen
+source and helper build, each in a fresh output directory. Preserve every failed
+attempt, then restart the consecutive-run count after any repair. Record all four
+cases: identity mismatch, graceful shutdown, abrupt producer death, and omitted
+cleanup control. The omitted mechanism control calibrates survivor detection;
+it is not a mutation test of the guardian's clean-reporting implementation.
+
+Retain the independent reviewer's PID-only identity and disabled-descendant-closure
+mutation patches, commands, binary hashes, and raw failures. Each must fail the
+corresponding new assertion while the unchanged candidate passes. Run mutants
+only against private synthetic fixtures; never replace deployed helpers.
+
+The fortified build control must compile the same source with the standard flags
+plus `-D_FORTIFY_SOURCE=3` on a toolchain supporting that setting. Record compiler,
+libc, flags, and exit status, and preserve a frozen-parent comparison showing
+whether the original ignored-write warning is reproduced. Debian evidence does
+not by itself close the reported Ubuntu 24.04 toolchain gate.
+
 The lifecycle oracle must cover the full fresh-marker ownership set, originally recorded process identities, cleanup time measured from the trigger through stable zero, and sentinel survival. An error or inaccessible census must never count as zero. A deliberately omitted cleanup mechanism must produce detected live survivors before safe fixture recovery.
+
+Use `events.jsonl` monotonic trigger/oracle timestamps for trigger-through-quiet
+duration (at most 10 seconds including at least 1 second of stable zero). Report
+helper event timing separately from harness timing. Direct-child exit events and
+final identity classifications establish harness-observed reaping only; any
+post-harness `/proc` absence needs a separate timestamped observation by the
+executor. Retained zombies are terminated, not absent.
+
+General-host ownership is still unresolved (S1-1). Unreadable enumerated processes
+block census; processes hidden by dumpability, credentials, or namespace changes
+can fall outside enumeration. Keep the restricted cooperative envelope in README
+explicit. Piper reported read-only cgroup v2 with no writable delegation; this
+handoff does not authorize cgroup creation, migration, killing, or permission
+changes. A synthetic pass cannot enable the product or establish crash-stable
+ownership on a general host.
 
 ## Remaining product gates after the helper experiment
 
@@ -34,7 +67,7 @@ The lifecycle oracle must cover the full fresh-marker ownership set, originally 
 
 The implementation uses procfs process starttime as an opaque identity value and pidfds for signaling a specific process. Linux documents process starttime in [proc_pid_stat(5)](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html), fd inspection permissions in [proc_pid_fd(5)](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html), and pidfd lifecycle/zombie semantics in [pidfd_open(2)](https://man7.org/linux/man-pages/man2/pidfd_open.2.html). Availability and access still require native execution evidence.
 
-## Exact first-stage commands
+## Native build and first probe commands
 
 After verifying the package hash and reading the sources, run from the reconstructed candidate repository root on Piper's native Linux AMD64 host. Each command below is a separate step; stop and return logs at the first nonzero exit. Do not execute the final probe if the build or selftest fails.
 
@@ -46,5 +79,11 @@ node probes/observer-linux/native-helper-probe.mjs --helper-dir "$experiment_roo
 ```
 
 Save each exit code immediately along with the exact invocation. Preserve the entire experiment directory and return it as an attachment. Do not remove the fixture evidence directories. The script can produce ordinary process termination and retained zombie classifications separately; a pass means resource-live cleanup within this synthetic fixture only. The PTY helper is compiled in this stage but its runtime behavior is not exercised.
+
+After a successful first probe, repeat the last command with fresh `probe-2` and
+`probe-3` output directories and distinct log files. Stop on any failure and return
+all logs. A new handoff must supply the frozen R2 head/tree and package manifest;
+do not treat this working document or the previous `0cdcf003` package as that
+freeze record.
 
 Known next-stage gap: persisted Linux process identities need explicit boot and PID-namespace metadata before reboot reconciliation can be accepted. The first-stage script has no persisted generation replay across boots. See README for other visibility/cooperative-ownership assumptions; none is silently waived by a synthetic pass.

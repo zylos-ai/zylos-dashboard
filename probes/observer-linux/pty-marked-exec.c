@@ -27,6 +27,21 @@ static void usage(const char *program) {
     fprintf(stderr, "usage: %s <marker-file> <command> [args...]\n", program);
 }
 
+/* Consume diagnostic write results for fortified toolchains, with a finite
+   retry count for short writes/EINTR. This does not bound an individual blocking
+   write or change the inherited SIGPIPE behavior; PTY runtime is unvalidated. */
+static void write_diagnostic(const char *buffer, ssize_t length) {
+    for (int attempt = 0; attempt < 16 && length > 0; attempt++) {
+        ssize_t written = write(STDERR_FILENO, buffer, (size_t)length);
+        if (written > 0) {
+            buffer += written;
+            length -= written;
+        } else if (written == 0 || errno != EINTR) {
+            break;
+        }
+    }
+}
+
 static void linger_for_retention_control(void) {
     if (getenv("ZYLOS_PTY_MARKER_TEST_LINGER_WRAPPER") != NULL) {
         for (;;) pause();
@@ -140,12 +155,12 @@ int main(int argc, char **argv) {
             if (WIFEXITED(status)) {
                 int exit_code = WEXITSTATUS(status);
                 if (exit_code != 0 && last_output_size > 0) {
-                    write(STDERR_FILENO, last_output, (size_t)last_output_size);
+                    write_diagnostic(last_output, last_output_size);
                 }
                 return exit_code;
             }
             if (WIFSIGNALED(status)) {
-                if (last_output_size > 0) write(STDERR_FILENO, last_output, (size_t)last_output_size);
+                if (last_output_size > 0) write_diagnostic(last_output, last_output_size);
                 return 128 + WTERMSIG(status);
             }
             return 1;
@@ -159,11 +174,11 @@ int main(int argc, char **argv) {
     if (marker_fd >= 0) close(marker_fd);
     if (WIFEXITED(status)) {
         int exit_code = WEXITSTATUS(status);
-        if (exit_code != 0 && last_output_size > 0) write(STDERR_FILENO, last_output, (size_t)last_output_size);
+        if (exit_code != 0 && last_output_size > 0) write_diagnostic(last_output, last_output_size);
         return exit_code;
     }
     if (WIFSIGNALED(status)) {
-        if (last_output_size > 0) write(STDERR_FILENO, last_output, (size_t)last_output_size);
+        if (last_output_size > 0) write_diagnostic(last_output, last_output_size);
         return 128 + WTERMSIG(status);
     }
     return 1;
