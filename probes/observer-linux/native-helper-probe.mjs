@@ -90,7 +90,9 @@ function safeKill(id) {
   assert.equal(current.current.uid, process.getuid());
   const killed = command(fixture, ['cleanup', String(id.pid), id.ticks]);
   assert.equal(killed.status, 0, `pidfd cleanup failed closed for ${id.pid}`);
-  record({ event: 'exact-fixture-cleanup', ...id });
+  // Exit 0 includes a target that disappeared after classify; it does not
+  // establish that a signal was sent. Preserve the command's separate record.
+  record({ event: 'exact-fixture-cleanup', outcome: 'cleanup-command-succeeded', signalSent: 'not-observed', ...id });
 }
 async function until(test, label, timeout = 2500) {
   const end = performance.now() + timeout;

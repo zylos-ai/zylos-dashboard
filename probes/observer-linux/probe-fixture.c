@@ -20,10 +20,14 @@ static int cleanup(const char *pid_text, const char *ticks) {
     if (!end || *end || parsed <= 1 || parsed > 2147483647L) return 64;
     int fd = (int)syscall(SYS_pidfd_open, (pid_t)parsed, 0);
     if (fd < 0) return errno == ESRCH ? 0 : 5;
-    char filename[80], line[4096];
+    char directory[80], filename[80], line[4096];
+    snprintf(directory, sizeof(directory), "/proc/%ld", parsed);
     snprintf(filename, sizeof(filename), "/proc/%ld/stat", parsed);
     struct stat info;
-    if (stat(filename, &info) != 0) {
+    /* The stat file can become root-owned after exit_mm, before reaping.
+       Check the process directory, as the harness does; retain pidfd pinning
+       and the start-tick check below before any signal. */
+    if (stat(directory, &info) != 0) {
         int error = errno;
         close(fd);
         return error == ENOENT || error == ESRCH ? 0 : 5;

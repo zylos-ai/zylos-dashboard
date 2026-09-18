@@ -2,7 +2,7 @@
 
 This is an implementation candidate on accepted F13 `ab2a59cc18df82d705eed6d514901b9e5db6097f`, not a platform acceptance or a release. The existing Darwin helpers and accepted R5/F13 commits remain frozen. The upstream Linux artifact remains excluded from the enabled product catalog.
 
-## R2 execution scope
+## R3 execution scope
 
 Piper may build the three native helper programs in a fresh private experiment directory using the existing GCC toolchain and run the supplied native-helper probe after reading its source. This stage needs only existing Node, GCC/libc headers, and filesystem/process facilities. It neither downloads Zellij nor installs npm/system dependencies. Preserve the directory and raw logs after success or failure.
 
@@ -19,7 +19,7 @@ Use only the explicitly supplied helper directory and a fresh experiment output 
 
 Return the exact source head/tree, source and package hashes, `uname -a`, architecture, Node/compiler version and target, build invocation/output/exit status, helper manifest and binary hashes, probe invocation/output/exit status, and complete per-case logs. Include PID namespace scope and all permission/visibility/compile errors. Do not discard a failed attempt after a successful retry.
 
-R2 requires three consecutive successful native probes from the same frozen
+R3 requires three consecutive successful native probes from the same frozen
 source and helper build, each in a fresh output directory. Preserve every failed
 attempt, then restart the consecutive-run count after any repair. Record all four
 cases: identity mismatch, graceful shutdown, abrupt producer death, and omitted
@@ -54,6 +54,24 @@ handoff does not authorize cgroup creation, migration, killing, or permission
 changes. A synthetic pass cannot enable the product or establish crash-stable
 ownership on a general host.
 
+## R3 fixture regression control
+
+Keep `0749c0b` frozen as the R2 comparison. In a private synthetic control, retain
+an owned killed child unreaped (for example `waitid(WEXITED | WNOWAIT)`), record
+its directory UID, stat-file UID, and start ticks, then invoke the compiled R2
+fixture and R3 fixture against that same identity before reaping it. On the
+reported failure mechanism, R2 must return 5 and R3 0. Record unsupported or
+different metadata behavior explicitly instead of claiming reproduction. Also
+verify a live child's wrong start ticks yield 4 without harming it, and correct
+ticks allow cleanup. Do not deduplicate the main probe's final identity sweep to
+hide this race. Preserve the control source, commands, hashes, and raw results.
+
+The original build script admits only native AMD64 and validates ELF machine 62.
+Any reviewer-derived architecture patch must label its manifest as derived and
+record the actual architecture. R3 derives the manifest platform from the build
+machine and records `buildMachine`; a manifest alone cannot establish native
+AMD64 provenance without matching sources, unmodified gates, and binary headers.
+
 ## Remaining product gates after the helper experiment
 
 1. Pinned Linux Zellij archive and extracted executable hashes, executable provenance and helper packaging compatibility.
@@ -82,8 +100,8 @@ Save each exit code immediately along with the exact invocation. Preserve the en
 
 After a successful first probe, repeat the last command with fresh `probe-2` and
 `probe-3` output directories and distinct log files. Stop on any failure and return
-all logs. A new handoff must supply the frozen R2 head/tree and package manifest;
-do not treat this working document or the previous `0cdcf003` package as that
+all logs. A new handoff must supply the frozen R3 head/tree and package manifest;
+do not treat this working document or either previous Stage 1/R2 package as that
 freeze record.
 
 Known next-stage gap: persisted Linux process identities need explicit boot and PID-namespace metadata before reboot reconciliation can be accepted. The first-stage script has no persisted generation replay across boots. See README for other visibility/cooperative-ownership assumptions; none is silently waived by a synthetic pass.

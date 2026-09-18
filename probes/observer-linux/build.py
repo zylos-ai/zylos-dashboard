@@ -12,7 +12,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output', required=True, help='New isolated output directory; must not exist')
 parser.add_argument('--cc', default='cc', help='C compiler executable (no flags)')
 args = parser.parse_args()
-if platform.system() != 'Linux' or platform.machine() not in ('x86_64', 'amd64'):
+machine = platform.machine()
+if platform.system() != 'Linux' or machine not in ('x86_64', 'amd64'):
     parser.error('native Linux x86_64 is required; cross builds are not acceptance evidence')
 source_dir = Path(__file__).resolve().parent
 root = source_dir.parent.parent
@@ -21,7 +22,8 @@ out.mkdir(mode=0o700, parents=False, exist_ok=False)
 flags = ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-D_FILE_OFFSET_BITS=64']
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-manifest = {'schema': 1, 'platform': 'linux-x64', 'status': 'experimental-native-validation-required',
+manifest = {'schema': 1, 'platform': 'linux-' + {'x86_64': 'x64', 'amd64': 'x64', 'aarch64': 'arm64'}.get(machine, machine),
+            'buildMachine': machine, 'status': 'experimental-native-validation-required',
             'compiler': subprocess.check_output([args.cc, '--version'], text=True).splitlines()[0],
             'flags': flags, 'binaries': {}, 'buildScriptSha256': sha(Path(__file__).resolve())}
 for name in ('linux-guardian', 'marked-exec', 'pty-marked-exec'):

@@ -4,8 +4,8 @@ These sources preserve the accepted Darwin watch/reconcile event and exit-status
 contract while replacing process inspection and signaling with Linux mechanisms.
 They are **experimental sources**, not product assets or a supported Observer
 platform. Frozen Stage 1 `0cdcf003` has reported native Debian AMD64 synthetic
-evidence; this R2 revision still requires its own native validation. That prior
-result does not validate R2 or general Linux deployment. Darwin sources and
+evidence; this R3 revision still requires its own native validation. That prior
+result does not validate R3 or general Linux deployment. Darwin sources and
 binaries remain unchanged.
 
 Build on the authorized native Linux x86_64 host, using an existing GCC and Python:
@@ -75,7 +75,9 @@ behavior for processes included in enumeration, and must be measured on the
 target container. It does not cover processes excluded before FD inspection:
 dumpability changes can change procfs ownership, and credential or namespace
 transitions can invalidate the visibility assumptions while marker FDs remain
-open. `/proc` must expose the entire authorized experiment PID namespace without
+open. For example, privilege-changing setuid/setgid exec can leave an inherited
+marker holder outside the procfs-owner filter. `/proc` must expose the entire
+authorized experiment PID namespace without
 hidden same-UID processes. The bounded synthetic envelope assumes inspectable
 same-UID candidates and cooperative fixtures that do not change dumpability,
 credentials, or namespaces. A successful probe does not enforce these assumptions
@@ -87,6 +89,13 @@ the quiet window on uncertainty. It adds wrong-starttime reconciliation against
 an empty marker and a marked parent with a markerless child. Native repeated
 runs and identity/descendant-closure mutants must establish their discrimination;
 source changes alone are not evidence that those controls pass.
+
+R3 corrects the fixture cleanup UID check to inspect the process directory,
+not its `stat` file, whose owner can change during process exit before reaping.
+The pidfd and exact start-tick check remain required. Duplicate identity records
+are retained to exercise the exit window. `exact-fixture-cleanup` records a
+successful cleanup command, including an already-gone target; it does not prove
+that a signal was sent. Native frozen-R2 versus R3 fixture controls remain required.
 
 Identity is only meaningful within the same boot and PID namespace. Persisted
 adapter records require an explicit boot-ID/namespace contract before reboot
