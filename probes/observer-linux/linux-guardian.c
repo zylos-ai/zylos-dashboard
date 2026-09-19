@@ -565,6 +565,17 @@ static census_result census(const char *marker, pid_t skip_pid, owned_process *o
             continue;
         }
         query_result marker_result = process_has_marker(pid, marker);
+        if (marker_result == QUERY_ERROR && (errno == EACCES || errno == EPERM)) {
+            /* The kernel refuses marker inspection of this same-UID process
+               (ptrace_may_access). Skipping it: it cannot be proven owned, so it
+               is treated as unmarked and the clean verdict rests on inspectable
+               processes only. Already-tracked pids stay tracked by identity.
+               One row per pid per census round. */
+            int skip_errno = errno;
+            printf("{\"event\":\"skipped-unreadable\",\"pid\":%d,\"errno\":%d}\n", pid, skip_errno);
+            fflush(stdout);
+            marker_result = QUERY_NO_MATCH;
+        }
         if (marker_result == QUERY_ERROR) {
             int query_errno = errno;
             result.query_error_pid = pid;
