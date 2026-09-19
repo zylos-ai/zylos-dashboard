@@ -69,10 +69,12 @@ This is cooperative containment, not a security boundary against hostile code
 with the same UID. A process that closes the marker and reparents before any
 observation may evade discovery. Descendant and FD snapshots are not atomic.
 No namespace, cgroup, privilege, ptrace attachment, systemd or host PID access is
-used. No marker birth-time shortcut is used; unreadable unrelated same-UID
-processes therefore block a clean census. This is intentional fail-closed
-behavior for processes included in enumeration, and must be measured on the
-target container. It does not cover processes excluded before FD inspection:
+used. No marker birth-time shortcut is used. If marker inspection of an
+unrelated same-UID process is denied with `EACCES` or `EPERM`, the candidate is
+reported as `skipped-unreadable` and treated as unmarked; all other query errors
+still fail closed. Already-tracked owned identities remain tracked and signalled.
+This behavior must be measured on the target container. It does not cover
+processes excluded before FD inspection:
 dumpability changes can change procfs ownership, and credential or namespace
 transitions can invalidate the visibility assumptions while marker FDs remain
 open. For example, privilege-changing setuid/setgid exec can leave an inherited
