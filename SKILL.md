@@ -65,3 +65,7 @@ npm start
 ```
 
 Default URL: `http://127.0.0.1:3470/`
+
+For optional terminal viewing, supported platforms and cleanup recovery, see
+[Observer](docs/observer.md). Observer installation is currently enabled only on
+macOS Apple Silicon; experimental Linux adapters do not enable product support.

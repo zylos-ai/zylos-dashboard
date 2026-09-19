@@ -131,6 +131,7 @@ const observerCoordinator = new ObserverCoordinator({
   configPath: config.configPath,
   installer: observerInstaller,
   teardown: ({ reason }) => observerContainment.stopGeneration({ reason }),
+  reconcilePersisted: () => observerContainment.reconcilePersisted(),
   start: ({ generation, binaryPath }) => observerContainment.startGeneration({
     generation,
     binaryPath,
@@ -1733,7 +1734,13 @@ if (isMain && process.argv.includes('--smoke')) {
   const observerStartupStatus = await observerService.startup();
   if (observerStartupStatus && (['installed', 'failed'].includes(observerStartupStatus.state) ||
       observerStartupStatus.desired?.enabled || observerStartupStatus.desired?.removalState)) {
-    await observerControl.start();
+    try {
+      await observerControl.start();
+    } catch (error) {
+      // Observer is optional; ownership failure fences its API, not Dashboard.
+      observerService.startupError = error;
+      process.stderr.write(`[observer] control startup failed: ${error.code || 'control_failed'}\n`);
+    }
   }
   const server = createServer();
   server.on('error', (err) => {

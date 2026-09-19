@@ -1,23 +1,26 @@
-# Experimental Linux AMD64 native helpers
+# Experimental Linux native helpers
 
 These sources preserve the accepted Darwin watch/reconcile event and exit-status
 contract while replacing process inspection and signaling with Linux mechanisms.
 They are **experimental sources**, not product assets or a supported Observer
 platform. Frozen Stage 1 `0cdcf003` has reported native Debian AMD64 synthetic
 evidence; this R3 revision still requires its own native validation. That prior
-result does not validate R3 or general Linux deployment. Darwin sources and
-binaries remain unchanged.
+result does not validate R3 or general Linux deployment. Historical sections
+below describe frozen revisions. Current sources are shared with Darwin under
+`src/native/observer`; bundled binaries remain unchanged.
 
-Build on the authorized native Linux x86_64 host, using an existing GCC and Python:
+Build on an authorized native Linux x64 or arm64 host, using an existing compiler
+and Python (the same entry point also supports native macOS arm64):
 
 ```sh
 python3 probes/observer-linux/build.py --output /absolute/new/isolated/helper-dir
 ```
 
 The output directory must not already exist. The script installs nothing, starts
-no service and runs no helper. It compiles three ELF64 x86_64 executables and emits
+no service and runs no helper. It compiles three native executables and emits
 `manifest.json` with source/binary/build-script SHA-256 values and compiler flags.
-`pty-marked-exec` is a separate Linux copy using `<pty.h>` and `-lutil`. GCC uses
+`pty-marked-exec` shares its implementation with macOS; Linux uses `<pty.h>` and
+`-lutil`. The shared build uses
 `-std=c11 -O2 -Wall -Wextra -Werror -D_FILE_OFFSET_BITS=64`. Failed builds leave their
 isolated directory intact for diagnosis; they do not write a final manifest.
 

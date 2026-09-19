@@ -40,6 +40,6 @@ export function createObserverContainment(options) {
   const arch = options.arch ?? process.arch;
   const resolved = { ...options, platform, arch };
   if (platform === 'darwin' && arch === 'arm64') return new DarwinObserverContainment(resolved);
-  if (platform === 'linux' && arch === 'x64') return new LinuxObserverContainment(resolved);
+  if (platform === 'linux' && ['x64', 'arm64'].includes(arch)) return new LinuxObserverContainment(resolved);
   return new UnsupportedObserverContainment(resolved);
 }

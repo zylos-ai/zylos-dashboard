@@ -170,7 +170,11 @@ export class ObserverControlServer {
   }
 
   async close() {
-    if (this._starting) await this._starting;
+    if (this._starting) {
+      try { await this._starting; } catch { return; }
+    }
+    // A failed contender must never unlink the current producer's socket.
+    if (!this.lock) return;
     if (this.server) await new Promise((resolve) => this.server.close(resolve));
     this.server = null;
     try { await fs.promises.unlink(this.socketPath); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
@@ -210,9 +214,8 @@ export async function runObserverPreUninstall({ dataDir, configPath }) {
       configPath,
       installer,
       teardown: ({ reason }) => containment.stopGeneration({ reason }),
+      reconcilePersisted: () => containment.reconcilePersisted(),
     });
-    await containment.reconcilePersisted();
-    await coordinator.reconcileStartup();
     await coordinator.uninstall();
     return { mode: 'offline' };
   } finally {

@@ -189,3 +189,18 @@ test('verify and uninstall reject a symlinked managed artifacts parent without t
   await assert.rejects(installer.removeInstalledArtifacts(), (error) => error?.code === 'unsafe_removal');
   assert.equal(fs.existsSync(sentinel), true);
 });
+
+test('uninstall retries after artifact removal interrupted before manifest deletion', async (t) => {
+  const fixture = makeArtifactFixture(t);
+  const installer = installerFor(t, fixture);
+  const installed = await installer.install();
+  const sentinel = path.join(installer.paths.artifacts, 'unrelated');
+  fs.mkdirSync(sentinel);
+  fs.writeFileSync(path.join(sentinel, 'keep'), 'sentinel');
+  fs.rmSync(path.dirname(installed.binaryPath), { recursive: true });
+  assert.equal(fs.existsSync(installer.paths.installedManifest), true);
+  assert.equal((await installer.removeInstalledArtifacts()).state, 'not_installed');
+  assert.equal(fs.existsSync(installer.paths.installedManifest), false);
+  assert.equal(fs.readFileSync(path.join(sentinel, 'keep'), 'utf8'), 'sentinel');
+  assert.equal((await installer.removeInstalledArtifacts()).state, 'not_installed');
+});

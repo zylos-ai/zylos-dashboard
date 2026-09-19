@@ -60,7 +60,7 @@ test('Linux verifies platform, executable bytes, and helper identity before laun
   await assert.rejects(containment.verifyHelpers(), { code: 'invalid_helper' });
 });
 
-test('Linux rejects a symlink helper or manifest and non-native architecture', async (t) => {
+test('Linux rejects a symlink helper or manifest and unsupported architecture', async (t) => {
   const dataDir = fixture(t);
   const helperDir = path.join(dataDir, 'helpers');
   writeHelpers(helperDir);
@@ -71,11 +71,11 @@ test('Linux rejects a symlink helper or manifest and non-native architecture', a
   fs.renameSync(path.join(helperDir, 'manifest.json'), path.join(helperDir, 'manifest-actual.json'));
   fs.symlinkSync(path.join(helperDir, 'manifest-actual.json'), path.join(helperDir, 'manifest.json'));
   await assert.rejects(containment.verifyHelpers(), { code: 'invalid_helper_manifest' });
-  const nonNative = new LinuxObserverContainment({ dataDir, helperDir, platform: 'linux', arch: 'arm64' });
+  const nonNative = new LinuxObserverContainment({ dataDir, helperDir, platform: 'linux', arch: 'ia32' });
   await assert.rejects(nonNative.verifyHelpers(), { code: 'unsupported_platform' });
 });
 
-test('Linux isolates inherited HOME, XDG, Zellij and temporary roots', async (t) => {
+for (const platform of ['darwin', 'linux']) test(`${platform} isolates inherited HOME, XDG, Zellij and temporary roots`, async (t) => {
   const dataDir = fixture(t);
   const root = path.join(dataDir, 'generation');
   const socketRoot = path.join(dataDir, 'sockets');
@@ -91,7 +91,7 @@ test('Linux isolates inherited HOME, XDG, Zellij and temporary roots', async (t)
       else process.env[key] = value;
     }
   });
-  const containment = new LinuxObserverContainment({ dataDir });
+  const containment = createObserverContainment({ dataDir, platform, arch: 'arm64' });
   const environment = await containment._privateEnvironment(root, socketRoot);
   for (const key of keys) {
     if (['XDG_UNKNOWN_ROOT', 'ZELLIJ_SESSION_NAME', 'ZELLIJ', 'ZYLOS_GUARDIAN_TEST_INJECT'].includes(key)) {
@@ -104,10 +104,26 @@ test('Linux isolates inherited HOME, XDG, Zellij and temporary roots', async (t)
   }
   assert.equal(environment.XDG_RUNTIME_DIR, socketRoot);
   assert.equal(environment.TERM, 'xterm-256color');
+  if (platform === 'darwin') {
+    assert.equal(environment.ZELLIJ_CACHE_DIR, path.join(root, 'home', 'Library', 'Caches', 'org.Zellij-Contributors.Zellij'));
+    assert.equal(environment.ZELLIJ_DATA_DIR, path.join(root, 'home', 'Library', 'Application Support', 'org.Zellij-Contributors.Zellij'));
+  }
+});
+
+test('Linux ARM64 selects its own manifest and rejects x64 artifacts', async (t) => {
+  const dataDir = fixture(t);
+  const helperDir = path.join(dataDir, 'helpers');
+  const containment = createObserverContainment({ dataDir, helperDir, platform: 'linux', arch: 'arm64' });
+  assert.equal(containment.constructor, LinuxObserverContainment);
+  writeHelpers(helperDir, 'linux-x64');
+  await assert.rejects(containment.verifyHelpers(), { code: 'invalid_helper_manifest' });
+  writeHelpers(helperDir, 'linux-arm64');
+  assert.equal((await containment.verifyHelpers()).guardian, path.join(helperDir, 'linux-guardian'));
+  assert.equal(observerArtifactFor('linux', 'arm64'), null);
 });
 
 test('empty Linux and unsupported hosts reconcile without helpers, persisted state fails closed', async (t) => {
-  for (const [platform, arch] of [['linux', 'x64'], ['linux', 'arm64'], ['win32', 'x64']]) {
+  for (const [platform, arch] of [['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64'], ['win32', 'x64']]) {
     const dataDir = fixture(t);
     const containment = createObserverContainment({ dataDir, platform, arch, helperDir: path.join(dataDir, 'missing') });
     assert.deepEqual(await containment.reconcilePersisted(), []);

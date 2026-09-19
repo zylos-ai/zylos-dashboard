@@ -21,10 +21,11 @@ function observerDesired(config) {
 }
 
 export class ObserverCoordinator {
-  constructor({ configPath, installer, teardown = async () => {}, start = async () => ({}) }) {
+  constructor({ configPath, installer, teardown = async () => {}, reconcilePersisted = async () => {}, start = async () => ({}) }) {
     this.configPath = configPath;
     this.installer = installer;
     this.teardown = teardown;
+    this.reconcilePersisted = reconcilePersisted;
     this.start = start;
     this._tail = Promise.resolve();
     this._requestedGeneration = 0;
@@ -123,6 +124,7 @@ export class ObserverCoordinator {
       await this._persist({ enabled: false, generation: ticket, teardownFence: true, lastError: null });
       try {
         await this.teardown({ reason, generation: ticket });
+        await this.reconcilePersisted();
       } catch (error) {
         let persistenceError;
         try {
@@ -155,6 +157,7 @@ export class ObserverCoordinator {
       try {
         cleanupAttempted = true;
         await this.teardown({ reason: 'uninstall', generation: ticket });
+        await this.reconcilePersisted();
         const removed = await this.installer.removeInstalledArtifacts();
         await this._persist({
           enabled: false,

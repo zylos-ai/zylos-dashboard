@@ -333,3 +333,50 @@ test('persisted reconciliation fails closed on an inconclusive listener probe', 
   assert.equal(fs.existsSync(root), true);
   assert.equal(fs.existsSync(socketRoot), true);
 });
+
+test('interrupted socket-root removal retries only after producer, census and listener proof', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-removal-retry-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const listener = net.createServer();
+  await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  t.after(() => listener.close());
+  const port = listener.address().port;
+  let phase = 'parent-alive';
+  const commands = [];
+  const containment = new DarwinObserverContainment({
+    dataDir, cleanupTimeoutMs: 100, ownershipQuietMs: 0, ownershipPollMs: 1,
+    exec: async (_file, args) => {
+      commands.push(args[0]);
+      if (args[0] === 'reconcile' && phase === 'parent-alive') {
+        throw Object.assign(new Error('parent alive'), { code: 4 });
+      }
+      if (args[0] === 'census' && phase === 'census-error') {
+        throw Object.assign(new Error('inconclusive'), { code: 5 });
+      }
+      return { stdout: '{"event":"count","count":0}\n' };
+    },
+  });
+  containment.verifyHelpers = async () => ({});
+  const root = path.join(containment.runtimeRoot, 'interrupted');
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const markerFile = path.join(root, 'ownership.marker');
+  const socketRoot = `/tmp/zobs-${process.pid}-${path.basename(dataDir).slice(-6).split('').map((c) => (c.charCodeAt(0) % 16).toString(16)).join('')}abcd`;
+  assert.equal(fs.existsSync(socketRoot), false);
+  fs.writeFileSync(markerFile, 'interrupted', { mode: 0o600 });
+  fs.writeFileSync(path.join(root, 'state.json'), JSON.stringify({
+    schema: 1, generation: 42, nonce: 'interrupted',
+    parent: { pid: process.pid, startSec: 1, startUsec: 1 },
+    root, markerFile, marker: `fdpath:${markerFile}`, socketRoot,
+    socketOwnerFile: path.join(socketRoot, '.observer-owner.json'), port,
+  }), { mode: 0o600 });
+  for (phase of ['parent-alive', 'census-error', 'listener-open']) {
+    await assert.rejects(containment.reconcilePersisted(), { code: 'reconcile_failed' });
+    assert.equal(fs.existsSync(root), true, `${phase} must retain durable state`);
+  }
+  await new Promise((resolve) => listener.close(resolve));
+  phase = 'clean';
+  assert.deepEqual(await containment.reconcilePersisted(), [{ generation: 42, reconciled: true }]);
+  assert.ok(commands.includes('reconcile') && commands.includes('census'));
+  assert.equal(fs.existsSync(root), false);
+  assert.deepEqual(await containment.reconcilePersisted(), []);
+});

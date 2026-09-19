@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
 import { ObserverService, OBSERVER_WEBSOCKET_PROTOCOL } from '../src/lib/observer-service.js';
+import { ObserverCoordinator } from '../src/lib/observer-coordinator.js';
+import { ObserverManager } from '../src/lib/observer-manager.js';
 import { connectObserverWebSocket } from '../src/lib/observer-websocket.js';
 import { shutdownDashboardTransports } from '../src/lib/dashboard-shutdown.js';
 
@@ -484,4 +489,124 @@ test('lease release closes a pending upstream connection before WebSocket admiss
     assert.equal(upstreams[0].closed, true);
     assert.equal(service.streams.size, 0);
   } finally { await app.close(); }
+});
+
+
+test('recovery cannot clear a startup failure while persisted survivors remain', async (t) => {
+  for (const recovery of ['disable', 'uninstall', 'preUninstall']) await t.test(recovery, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-service-recovery-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const configPath = path.join(directory, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ observer: { enabled: true, generation: 7 } }));
+    const desired = () => JSON.parse(fs.readFileSync(configPath, 'utf8')).observer;
+    const failure = Object.assign(new Error('persisted survivor is still alive'), { code: 'teardown_failed' });
+    let cleanupAllowed = false;
+    let survivors = true;
+    let installed = true;
+    let reconciliations = 0;
+    let starts = 0;
+    const events = [];
+    const containment = {
+      active: null,
+      async stopGeneration() { events.push('stop-active'); },
+      async reconcilePersisted() {
+        reconciliations += 1;
+        events.push('reconcile-persisted');
+        if (reconciliations > 1) {
+          assert.equal(desired().enabled, false, 'retry must durably disable before cleanup');
+          assert.equal(desired().teardownFence, true, 'retry must durably fence before cleanup');
+        }
+        if (!cleanupAllowed) throw failure;
+        survivors = false;
+        events.push('survivors-cleared');
+      },
+    };
+    const installer = {
+      async verify() { return { state: installed ? 'installed' : 'not_installed' }; },
+      async removeInstalledArtifacts() {
+        assert.equal(survivors, false, 'artifacts must outlive persisted survivors');
+        installed = false;
+        events.push('remove-artifacts');
+        return this.verify();
+      },
+    };
+    const authGate = {
+      enabled: true,
+      resolveAuthContext(req) {
+        return req.headers.authorization === 'Bearer admin-token'
+          ? { kind: 'api', principalId: 'admin', scope: 'admin' } : null;
+      },
+      revalidateAuthContext(context) { return context; },
+    };
+    const coordinator = new ObserverCoordinator({
+      configPath, installer,
+      teardown: () => containment.stopGeneration(),
+      reconcilePersisted: () => containment.reconcilePersisted(),
+      start: async () => { starts += 1; throw new Error('unexpected start'); },
+    });
+    const manager = new ObserverManager({ coordinator, containment, authGate });
+    const service = new ObserverService({ coordinator, containment, manager, authGate });
+    const app = await startHttp(service);
+    const request = async (route, method = 'POST', authenticated = true) => {
+      const response = await fetch(`${app.origin}/api/observer/${route}`, {
+        method, headers: authenticated ? { Authorization: 'Bearer admin-token' } : {},
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const recover = async () => {
+      if (recovery === 'preUninstall') return service.preUninstall();
+      return request(recovery === 'disable' ? 'disable' : 'install', recovery === 'disable' ? 'POST' : 'DELETE');
+    };
+    try {
+      await service.startup();
+      assert.equal(reconciliations, 1);
+      assert.equal(service.startupError, failure);
+      // Recovery endpoints retain the same authentication gate even during failure.
+      assert.equal((await request('disable', 'POST', false)).status, 401);
+      assert.equal((await request('install', 'DELETE', false)).status, 401);
+      assert.equal(reconciliations, 1);
+      if (recovery === 'preUninstall') {
+        await assert.rejects(recover(), { code: 'removal_failed' });
+      } else {
+        const failed = await recover();
+        assert.equal(failed.status, 503);
+        assert.equal(failed.body.error, recovery === 'disable' ? 'teardown_failed' : 'removal_failed');
+      }
+      assert.equal(reconciliations, 2, 'recovery must retry persisted cleanup with active=null');
+      assert.equal(service.startupError, failure);
+      assert.equal(manager._runtimeError, failure);
+      assert.equal(desired().enabled, false);
+      assert.equal(desired().teardownFence, true);
+      assert.equal(survivors, true);
+      assert.equal(installed, true);
+      for (const route of ['enable', 'install', 'leases']) {
+        const blocked = await request(route);
+        assert.equal(blocked.status, 503);
+        assert.equal(blocked.body.error, 'teardown_failed');
+      }
+      assert.equal(starts, 0);
+      cleanupAllowed = true;
+      const result = await recover();
+      if (recovery !== 'preUninstall') assert.equal(result.status, 200);
+      assert.equal(reconciliations, 3);
+      assert.equal(survivors, false);
+      assert.equal(service.startupError, null);
+      assert.equal(manager._runtimeError, null);
+      assert.equal(desired().enabled, false);
+      assert.equal(desired().teardownFence, true);
+      assert.equal(installed, recovery === 'disable');
+      if (recovery !== 'disable') {
+        assert.ok(events.indexOf('survivors-cleared') < events.indexOf('remove-artifacts'));
+        assert.equal(desired().removalState, null);
+      }
+      // Recovery clears the startup error, but never implicitly admits a viewer.
+      const disabled = await request('leases');
+      assert.equal(disabled.status, 404);
+      assert.equal(disabled.body.error, 'observer_disabled');
+      assert.equal(starts, 0);
+    } finally {
+      await service.shutdown();
+      await app.close();
+    }
+  });
 });

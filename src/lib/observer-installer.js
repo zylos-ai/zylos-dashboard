@@ -361,7 +361,15 @@ export class ObserverInstaller {
       throw new ObserverInstallError('unsafe_removal', 'Observer manifest did not resolve to the managed artifact directory');
     }
     try {
-      await this.assertArtifactChain(expectedDirectory);
+      await assertPrivateDirectory(this.paths.root);
+      await assertPrivateDirectory(this.paths.artifacts);
+      try {
+        await assertPrivateDirectory(expectedDirectory, 'unsafe_artifact_path');
+      } catch (error) {
+        // A prior removal may have completed before manifest unlink failed.
+        // Only the exact leaf may be absent; parents must still be safe.
+        if (error?.code !== 'ENOENT') throw error;
+      }
     } catch (error) {
       throw new ObserverInstallError('unsafe_removal', 'Observer artifact parent chain is not safe to remove', error);
     }

@@ -35,8 +35,8 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     dataset: { observerPreset: name },
     classList: { active: false, toggle(_name, active) { this.active = active; }, remove() { this.active = false; } }
   }));
-  const settings = Object.fromEntries(['status', 'state', 'platform', 'install', 'enable', 'disable', 'uninstall'].map((name) => [
-    name === 'status' || name === 'state' || name === 'platform' ? `#observer-settings-${name}` : `#observer-${name}`, { hidden: true, textContent: '', disabled: false }
+  const settings = Object.fromEntries(['status', 'state', 'platform', 'recovery', 'install', 'enable', 'disable', 'uninstall'].map((name) => [
+    name === 'status' || name === 'state' || name === 'platform' || name === 'recovery' ? `#observer-settings-${name}` : `#observer-${name}`, { hidden: true, textContent: '', disabled: false }
   ]));
   const buttons = ['install', 'enable', 'disable', 'uninstall'].map((name) => settings[`#observer-${name}`]);
   const calls = [];
@@ -1533,7 +1533,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=66/);
+  assert.match(index, /app\.js\?v=67/);
   assert.match(index, /style\.css\?v=48/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
@@ -1601,7 +1601,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=66/);
+  assert.match(index, /app\.js\?v=67/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -1859,4 +1859,46 @@ test('subagent list is height-capped with internal scroll (#259)', () => {
   assert.ok(block, '#subagent-list rule must exist');
   assert.match(block[0], /max-height:\s*\d+px/);
   assert.match(block[0], /overflow-y:\s*auto/);
+});
+
+
+test('Observer recovery status survives refresh and exposes cleanup without viewer admission', async (t) => {
+  const cases = [
+    { state: 'installed', desired: { enabled: false, teardownFence: true, lastError: 'teardown_failed' } },
+    { state: 'installed', desired: { enabled: true }, startupError: 'lock_timeout' },
+    { state: 'not_installed', desired: { enabled: false }, startupError: 'teardown_failed' },
+    { state: 'installed', desired: { enabled: false, teardownFence: true, removalState: 'failed' } },
+    { state: 'installed', desired: { enabled: true, teardownFence: true } },
+  ];
+  for (const status of cases) await t.test(JSON.stringify(status), async () => {
+    const h = observerUiHarness();
+    h.setFetch((url) => {
+      assert.ok(String(url).endsWith('/status'), 'recovery must not request a lease or enable/install');
+      return Promise.resolve(observerResponse(status));
+    });
+    await h.context.refreshObserverStatus();
+    assert.equal(h.settings['#observer-settings-state'].textContent, 'observer.state_recovery');
+    assert.equal(h.settings['#observer-settings-recovery'].hidden, false);
+    assert.ok(h.settings['#observer-settings-recovery'].textContent.includes(status.desired.removalState ? 'observer.removal_recovery_hint' : 'observer.recovery_hint'));
+    assert.equal(h.settings['#observer-disable'].hidden, Boolean(status.desired.removalState));
+    assert.equal(h.settings['#observer-disable'].textContent, 'observer.retry_cleanup');
+    assert.equal(h.settings['#observer-uninstall'].textContent, status.desired.removalState ? 'observer.retry_uninstall' : 'observer.uninstall');
+    assert.equal(h.settings['#observer-uninstall'].hidden, false);
+    assert.equal(h.settings['#observer-enable'].hidden, true);
+    assert.equal(h.settings['#observer-install'].hidden, true);
+    assert.equal(h.elements['#observer-tab'].hidden, true);
+    await h.context.runObserverLifecycle('enable');
+    await h.context.runObserverLifecycle('install');
+    await h.context.openObserver();
+    assert.equal(h.context.state.observer.lease, null);
+    assert.equal(h.elements['#observer-notice'].dataset.state, 'error');
+    // A subsequent clean status must restore ordinary disabled controls.
+    h.setFetch(() => Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: false, teardownFence: true } })));
+    await h.context.refreshObserverStatus();
+    assert.equal(h.settings['#observer-settings-state'].textContent, 'observer.state_disabled');
+    assert.equal(h.settings['#observer-settings-recovery'].hidden, true);
+    assert.equal(h.settings['#observer-enable'].hidden, false);
+    assert.equal(h.settings['#observer-disable'].hidden, true);
+    assert.equal(h.elements['#observer-tab'].hidden, true);
+  });
 });

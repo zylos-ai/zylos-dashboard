@@ -129,6 +129,8 @@ assert.notEqual(permanentIdentityFailure.status, 0, 'permanent identity failure 
 assert.match(permanentIdentityFailure.stdout, new RegExp(`"event":"census-error","errno":5,"queryPid":${identityOwned.pid}`));
 assert.equal(identityOwned.exitCode, null, 'permanent identity failure signaled an unknown identity');
 
+// Target-specific calls 1–2 establish a stable census identity; call 3 checks
+// the tracked identity. Fail there before any TERM pass can complete.
 const identityGuardian = spawn(guardianPath, [
   'watch',
   '3',
@@ -138,7 +140,7 @@ const identityGuardian = spawn(guardianPath, [
   marker,
   '8000',
 ], {
-  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${identityOwned.pid}:2-20` },
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${identityOwned.pid}:3-20` },
   stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
 });
 let identityGuardianOutput = '';
@@ -165,7 +167,7 @@ const identityElapsedMs = Math.round(performance.now() - identityStarted);
 assert.equal(identityGuardianCode, 0, identityGuardianError || identityGuardianOutput);
 const identityGuardianEvents = events(identityGuardianOutput);
 const identityErrorIndex = identityGuardianEvents.findIndex((event) =>
-  event.pid === identityOwned.pid && (event.event === 'identity-error' || event.event === 'census-error'));
+  event.pid === identityOwned.pid && event.event === 'identity-error');
 const identityOwnedIndex = identityGuardianEvents.findIndex((event) => event.event === 'owned' && event.pid === identityOwned.pid);
 const identityKillIndex = identityGuardianEvents.findIndex((event) => event.event === 'kill' && event.pid === identityOwned.pid);
 assert.ok(identityErrorIndex >= 0 && identityOwnedIndex > identityErrorIndex && identityKillIndex > identityOwnedIndex,
@@ -317,7 +319,7 @@ const survivorArgs = [
 ];
 const survivorUnknown = spawnSync(guardianPath, survivorArgs, {
   encoding: 'utf8',
-  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${survivorOwned.pid}:2-1000` },
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${survivorOwned.pid}:3-1000` },
 });
 assert.equal(survivorUnknown.status, 3, survivorUnknown.stderr || survivorUnknown.stdout);
 const survivorUnknownEvents = events(survivorUnknown.stdout);
@@ -331,7 +333,7 @@ const collapsedSurvivor = spawnSync(guardianPath, [...survivorArgs.slice(0, -1),
   encoding: 'utf8',
   env: {
     ...process.env,
-    ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${survivorOwned.pid}:2-1000`,
+    ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${survivorOwned.pid}:3-1000`,
     ZYLOS_GUARDIAN_TEST_COLLAPSE_IDENTITY_ERROR: '1',
   },
 });
@@ -344,10 +346,12 @@ await once(survivorOwned, 'exit');
 
 const signalOwned = spawn(markedExecPath, [markerPath, '/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 60'], { stdio: 'ignore' });
 await waitForOwned(signalOwned.pid);
+// Calls 1–2 are census, 3 is tracked liveness, and 4 is the final
+// identity check immediately before sending TERM.
 const signalGuardian = spawn(guardianPath, [
   'reconcile', String(process.pid), String(absentParentStartSec), String(absentParentStartUsec), marker, '4000',
 ], {
-  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${signalOwned.pid}:3-3` },
+  env: { ...process.env, ZYLOS_GUARDIAN_TEST_FAIL_IDENTITY: `${signalOwned.pid}:4-4` },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let signalRecheckOutput = '';
@@ -361,6 +365,9 @@ assert.equal(signalRecheckCode, 0, signalRecheckError || signalRecheckOutput);
 const signalRecheckEvents = events(signalRecheckOutput);
 const signalUnknownIndex = signalRecheckEvents.findIndex((event) =>
   event.event === 'identity-error' && event.pid === signalOwned.pid);
+const signalOwnedIndex = signalRecheckEvents.findIndex((event) => event.event === 'owned' && event.pid === signalOwned.pid);
+assert.ok(signalOwnedIndex >= 0 && signalOwnedIndex < signalUnknownIndex,
+  'signal fault did not reach the pre-signal check after establishing tracked liveness');
 const signalTermIndex = signalRecheckEvents.findIndex((event) => event.event === 'term' && event.pid === signalOwned.pid);
 const signalKillIndex = signalRecheckEvents.findIndex((event) => event.event === 'kill' && event.pid === signalOwned.pid);
 assert.ok(signalUnknownIndex >= 0 && signalTermIndex > signalUnknownIndex && signalKillIndex > signalTermIndex,

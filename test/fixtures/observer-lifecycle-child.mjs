@@ -23,6 +23,7 @@ const coordinator = new ObserverCoordinator({
   configPath,
   installer,
   teardown: ({ reason }) => containment.stopGeneration({ reason }),
+  reconcilePersisted: () => containment.reconcilePersisted(),
   start: ({ generation, binaryPath }) => containment.startGeneration({ generation, binaryPath, runtime: 'codex' }),
 });
 const manager = new ObserverManager({

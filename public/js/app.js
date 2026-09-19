@@ -2034,7 +2034,7 @@ async function openObserver() {
       status = null;
     }
     if (!observerSessionCurrent(generation, targetKey)) return;
-    if (status?.state !== 'installed' || status.desired?.enabled !== true) {
+    if (status?.state !== 'installed' || status.desired?.enabled !== true || observerRecoveryReason(status)) {
       throw new Error(t('observer.not_available'));
     }
     observer.endpointPrefix = endpoints;
@@ -3550,6 +3550,7 @@ function createSettingsModal() {
         <strong id="observer-settings-state">${esc(t('status.loading'))}</strong>
         <span id="observer-settings-platform"></span>
       </div>
+      <p class="modal-status" id="observer-settings-recovery" hidden></p>
       <div class="action-row observer-settings-actions">
         <button class="action-btn action-btn-primary" id="observer-install" type="button">${esc(t('observer.install_enable'))}</button>
         <button class="action-btn" id="observer-enable" type="button">${esc(t('observer.enable'))}</button>
@@ -3610,6 +3611,7 @@ function applySettingsReadOnly(readOnly) {
 
 function observerStatusLabel(status) {
   if (!status) return t('value.unknown');
+  if (observerRecoveryReason(status)) return t('observer.state_recovery');
   if (status.state === 'installed' && status.desired?.enabled) return t('observer.state_enabled');
   if (status.state === 'installed') return t('observer.state_disabled');
   if (status.state === 'not_installed') return t('observer.state_not_installed');
@@ -3619,13 +3621,24 @@ function observerStatusLabel(status) {
   return status.state || t('value.unknown');
 }
 
+function observerRecoveryReason(status) {
+  return status?.startupError || status?.desired?.lastError || status?.desired?.removalState ||
+    (status?.desired?.enabled && status?.desired?.teardownFence ? 'teardown_fenced' : null);
+}
+
 function renderObserverStatus(status = state.observer.status) {
+  const recoveryReason = observerRecoveryReason(status);
   const tab = $('#observer-tab');
-  const available = status?.state === 'installed' && status.desired?.enabled === true && !remoteIsReadOnly();
+  const available = status?.state === 'installed' && status.desired?.enabled === true && !recoveryReason && !remoteIsReadOnly();
   if (tab) tab.hidden = !available;
   const stateEl = settingsModal?.querySelector('#observer-settings-state');
   const platformEl = settingsModal?.querySelector('#observer-settings-platform');
   if (stateEl) stateEl.textContent = observerStatusLabel(status);
+  const recoveryEl = settingsModal?.querySelector('#observer-settings-recovery');
+  if (recoveryEl) {
+    recoveryEl.hidden = !recoveryReason;
+    recoveryEl.textContent = recoveryReason ? `${t(status?.desired?.removalState ? 'observer.removal_recovery_hint' : 'observer.recovery_hint')} (${recoveryReason})` : '';
+  }
   if (platformEl) {
     const version = status?.version ? ` · Zellij ${status.version}` : '';
     platformEl.textContent = status?.platform ? `${status.platform}${version}` : '';
@@ -3635,10 +3648,16 @@ function renderObserverStatus(status = state.observer.status) {
   const enable = settingsModal?.querySelector('#observer-enable');
   const disable = settingsModal?.querySelector('#observer-disable');
   const uninstall = settingsModal?.querySelector('#observer-uninstall');
-  if (install) install.hidden = status?.state !== 'not_installed';
-  if (enable) enable.hidden = status?.state !== 'installed' || status?.desired?.enabled === true;
-  if (disable) disable.hidden = status?.state !== 'installed' || status?.desired?.enabled !== true;
-  if (uninstall) uninstall.hidden = status?.state !== 'installed' && status?.state !== 'failed';
+  if (install) install.hidden = Boolean(recoveryReason) || status?.state !== 'not_installed';
+  if (enable) enable.hidden = Boolean(recoveryReason) || status?.state !== 'installed' || status?.desired?.enabled === true;
+  if (disable) {
+    disable.hidden = Boolean(status?.desired?.removalState) || (!recoveryReason && (status?.state !== 'installed' || status?.desired?.enabled !== true));
+    disable.textContent = t(recoveryReason ? 'observer.retry_cleanup' : 'observer.disable');
+  }
+  if (uninstall) {
+    uninstall.hidden = !recoveryReason && status?.state !== 'installed' && status?.state !== 'failed';
+    uninstall.textContent = t(status?.desired?.removalState ? 'observer.retry_uninstall' : 'observer.uninstall');
+  }
   for (const button of [install, enable, disable, uninstall]) {
     if (button) button.disabled = readOnly || Boolean(state.observer.lifecyclePending);
   }
@@ -3673,6 +3692,7 @@ async function refreshObserverStatus({ quiet = false } = {}) {
 
 async function runObserverLifecycle(action) {
   if (remoteIsReadOnly()) return;
+  if (['install', 'enable'].includes(action) && observerRecoveryReason(state.observer.status)) return;
   const targetKey = observerTargetKey();
   const generation = state.observer.lifecycleGeneration = (state.observer.lifecycleGeneration || 0) + 1;
   state.observer.lifecyclePending = generation;

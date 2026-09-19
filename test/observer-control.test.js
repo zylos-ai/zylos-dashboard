@@ -67,3 +67,18 @@ test('an old corrupt coordinator owner record is safely recovered', async (t) =>
   await server.start();
   await server.close();
 });
+
+
+test('closing a failed contender preserves the owning producer control socket', async (t) => {
+  const { dataDir, configPath } = fixture(t);
+  let calls = 0;
+  const owner = new ObserverControlServer({ dataDir, onPreUninstall: async () => { calls += 1; } });
+  await owner.start();
+  t.after(() => owner.close());
+  const contender = new ObserverControlServer({ dataDir, onPreUninstall: async () => {} });
+  await assert.rejects(contender.start(), { code: 'coordinator_active' });
+  await contender.close();
+  assert.equal(fs.existsSync(owner.socketPath), true);
+  assert.deepEqual(await runObserverPreUninstall({ dataDir, configPath }), { mode: 'online' });
+  assert.equal(calls, 1);
+});
