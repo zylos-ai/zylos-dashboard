@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
+import { mutateConfig } from './config-mutation.js';
 import { sendHtml, sendJson, sendText } from './http.js';
 
 const SCRYPT_KEYLEN = 64;
@@ -49,15 +49,13 @@ function isPlaintext(password) {
   return typeof password === 'string' && password.length > 0 && !password.startsWith('scrypt:');
 }
 
-export function migratePasswordIfNeeded(config) {
+export async function migratePasswordIfNeeded(config) {
   if (!isPlaintext(config.auth?.password)) return;
   const hashed = hashPassword(config.auth.password);
   try {
-    const existing = fs.existsSync(config.configPath)
-      ? JSON.parse(fs.readFileSync(config.configPath, 'utf8'))
-      : {};
-    existing.auth = { ...(existing.auth || {}), password: hashed };
-    fs.writeFileSync(config.configPath, `${JSON.stringify(existing, null, 2)}\n`);
+    await mutateConfig(config.configPath, (existing) => {
+      existing.auth = { ...(existing.auth || {}), password: hashed };
+    });
     config.auth.password = hashed;
     console.log('[dashboard] Auth: migrated plaintext password to scrypt hash');
   } catch (err) {
@@ -69,6 +67,12 @@ function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
+function authContext(kind, principalId, scope, credentialId) {
+  const context = { kind, principalId, scope };
+  Object.defineProperty(context, 'credentialId', { value: credentialId, enumerable: false });
+  return context;
+}
+
 function createSession(remember = false) {
   const token = crypto.randomBytes(64).toString('hex');
   const now = Date.now();
@@ -78,22 +82,26 @@ function createSession(remember = false) {
   return token;
 }
 
-function validateSession(token) {
-  if (!token) return false;
-  if (!_store) return false;
-  const hash = sha256(token);
+function validateSessionHash(hash, { touch = true } = {}) {
+  if (!hash || !_store) return null;
   const session = _store.getSession(hash);
-  if (!session) return false;
+  if (!session) return null;
   const now = Date.now();
   const absoluteMs = session.remember ? REMEMBER_ABSOLUTE_MS : SESSION_ABSOLUTE_MS;
   const idleMs = session.remember ? REMEMBER_IDLE_MS : SESSION_IDLE_MS;
   if (now - session.created_at > absoluteMs ||
       now - session.last_activity_at > idleMs) {
     _store.deleteSession(hash);
-    return false;
+    return null;
   }
-  _store.touchSession(hash, now);
-  return true;
+  if (touch) _store.touchSession(hash, now);
+  return authContext('cookie', hash, 'admin', hash);
+}
+
+function validateSession(token) {
+  if (!token || !_store) return null;
+  const hash = sha256(token);
+  return validateSessionHash(hash);
 }
 
 function destroySession(token) {
@@ -271,6 +279,7 @@ function nextTarget(req, base) {
 }
 
 function needsAdminApiAccess(pathname, method) {
+  if (pathname === '/api/observer' || pathname.startsWith('/api/observer/')) return true;
   if (pathname.startsWith('/api/actions')) return true;
   if (pathname === '/api/settings' && method === 'PUT') return true;
   if (pathname === '/api/fleet/agents' || pathname.startsWith('/api/fleet/agents/')) return true;
@@ -323,7 +332,7 @@ export function validateApiSession(token) {
   if (!session) return null;
   if (session.key_revoked_at) return null;
   if (Date.now() > session.expires_at) return null;
-  return { scope: session.scope };
+  return authContext('api', String(session.api_key_id), session.scope, hash);
 }
 
 function getBearerToken(req) {
@@ -336,7 +345,6 @@ export class AuthGate {
   constructor(config, store) {
     this.config = config;
     _store = store || null;
-    migratePasswordIfNeeded(this.config);
     if (_store) {
       this._cleanupTimer = setInterval(() => {
         const now = Date.now();
@@ -356,7 +364,10 @@ export class AuthGate {
     if (!bearer) return null;
     if (bearer.startsWith(API_SESSION_PREFIX)) {
       const result = validateApiSession(bearer);
-      if (result) req._apiToken = bearer;
+      if (result) {
+        req._apiToken = bearer;
+        req._authContext = result;
+      }
       return result;
     }
     return null;
@@ -364,8 +375,32 @@ export class AuthGate {
 
   isAuthenticated(req) {
     if (!this.enabled) return true;
-    if (validateSession(getSessionCookie(req))) return true;
-    return !!this.getApiAuth(req);
+    return Boolean(this.resolveAuthContext(req));
+  }
+
+  resolveAuthContext(req) {
+    if (!this.enabled) return null;
+    const cookieAuth = validateSession(getSessionCookie(req));
+    if (cookieAuth) {
+      req._authContext = cookieAuth;
+      return cookieAuth;
+    }
+    return this.getApiAuth(req);
+  }
+
+  revalidateAuthContext(context) {
+    if (!this.enabled || !context || context.scope !== 'admin') return null;
+    if (context.kind === 'cookie') {
+      const refreshed = validateSessionHash(context.principalId);
+      return refreshed?.principalId === context.principalId ? refreshed : null;
+    }
+    if (context.kind === 'api' && context.credentialId) {
+      const session = _store?.getApiSession(context.credentialId);
+      if (!session || session.key_revoked_at || Date.now() > session.expires_at ||
+          String(session.api_key_id) !== context.principalId || session.scope !== 'admin') return null;
+      return authContext('api', context.principalId, session.scope, context.credentialId);
+    }
+    return null;
   }
 
   async handle(req, res, url) {
@@ -386,14 +421,16 @@ export class AuthGate {
 
     if (!this.enabled) return false;
 
-    if (validateSession(getSessionCookie(req))) {
+    const authContext = this.resolveAuthContext(req);
+    if (authContext?.kind === 'cookie') {
       res.setHeader('Cache-Control', 'no-store');
       return false;
     }
 
-    const apiAuth = this.getApiAuth(req);
-    if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/'))) {
-      const needsAdmin = needsAdminApiAccess(pathname, req.method);
+    const apiAuth = authContext?.kind === 'api' ? authContext : null;
+    const observerResource = pathname === '/observer/frame' || pathname === '/observer/stream';
+    if (apiAuth && (pathname.startsWith('/api/') || pathname.startsWith('/fleet/') || observerResource)) {
+      const needsAdmin = observerResource || needsAdminApiAccess(pathname, req.method);
       if (needsAdmin && apiAuth.scope !== 'admin') {
         sendJson(res, 403, { error: 'insufficient_scope', required: 'admin' });
         return true;
@@ -406,7 +443,7 @@ export class AuthGate {
       return false;
     }
 
-    if (pathname.startsWith('/api/')) {
+    if (pathname.startsWith('/api/') || observerResource) {
       sendJson(res, 401, { error: 'unauthorized' });
       return true;
     }

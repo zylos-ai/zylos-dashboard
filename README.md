@@ -36,6 +36,7 @@
 - **Actions modal** — runtime switch, model/effort change, threshold, zylos/CC upgrade
 - **Full i18n** — English + Chinese with locale toggle
 - **Codex compatible** — PM2, system health, communication, scheduler on all runtimes
+- **Optional Observer** — authenticated terminal display; see [availability, setup and recovery](docs/observer.md)
 
 ## Install
 
