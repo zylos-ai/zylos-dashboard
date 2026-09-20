@@ -37,8 +37,12 @@ it is not evidence for newly built shared helpers.
 `src/lib/observer-containment-posix.js` owns start, stop, cleanup deadlines and
 persisted-generation reconciliation. Darwin and Linux modules retain their
 public adapter names and select native helper names/architecture manifests.
-Linux x64 and arm64 adapter availability is experimental; it does not add either
-platform to the product artifact catalog.
+The product bundles helpers for macOS arm64, Linux x64 and Linux arm64. The
+Dashboard server selects the matching installer artifact and adapter from its
+own operating system and architecture; a Fleet request uses the target server's
+selection. Bundled helper manifests retain the original build provenance. Their
+build-time status is not a product-support switch: the artifact catalog defines
+enabled targets, and product-path validation must cover the shipped bytes.
 
 Both adapters remove inherited XDG/Zellij roots and session overrides, then set
 private HOME, config, cache, data, state, socket and temporary directories.

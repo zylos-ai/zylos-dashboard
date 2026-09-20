@@ -36,7 +36,7 @@ export const OBSERVER_ARTIFACT_CATALOG = Object.freeze({
     binarySha256: '2a2c0621e6f3b11ecbb05d66939a48000a2508604620aa20727a5fd61c49f451',
     archiveEntry: 'zellij',
     format: 'tar.gz',
-    supportState: 'lifecycle_adapter_required',
+    supportState: 'validated',
   }),
   'linux-x64': Object.freeze({
     platform: 'linux-x64',
@@ -47,7 +47,7 @@ export const OBSERVER_ARTIFACT_CATALOG = Object.freeze({
     binarySha256: 'd006c521dcb475a6005d741e9dd7c5758e5a23b28dd60a5c10cebfa4876319dd',
     archiveEntry: 'zellij',
     format: 'tar.gz',
-    supportState: 'lifecycle_adapter_required',
+    supportState: 'validated',
   }),
   'win32-x64': Object.freeze({
     platform: 'win32-x64',

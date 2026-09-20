@@ -11,8 +11,29 @@ private copy; it does not replace a system Zellij installation.
 | --- | --- |
 | macOS Apple Silicon (`darwin-arm64`) | Enabled |
 | macOS Intel (`darwin-x64`) | Not enabled; native validation required |
-| Linux x64 and arm64 | Not enabled; experimental adapters and validation tooling only |
+| Linux x64 (`linux-x64`) | Enabled |
+| Linux arm64 (`linux-arm64`) | Enabled |
 | Windows x64 | Not enabled; lifecycle adapter required |
+
+Dashboard automatically selects the pinned artifact and bundled native helpers
+for the server's operating system and CPU architecture. No manual platform
+selection is needed. In Fleet, selection happens on the target agent's server,
+not on the Fleet server or the computer running your browser. Installation and
+enabling remain explicit actions in Settings.
+
+Linux requires accessible procfs and kernel support for `pidfd_open` and
+`pidfd_send_signal`, as used by the native guardian to identify and signal owned
+processes. The bundled Linux helpers are dynamically linked:
+
+| Helper target | Required userspace |
+| --- | --- |
+| Linux x64 | glibc 2.28 or newer, `/lib64/ld-linux-x86-64.so.2`, `libutil.so.1` |
+| Linux arm64 | glibc 2.38 or newer, `/lib/ld-linux-aarch64.so.1` |
+
+The ARM64 bundle does not run on older glibc hosts such as Ubuntu 22.04 or
+Debian 12. Musl-only hosts cannot use these bundled helpers, even though the
+separate Zellij download uses musl. The architecture entries above do not imply
+support for every Linux distribution, kernel, or restricted container environment.
 
 The upstream artifact catalog includes targets that the product does not enable.
 A successful helper build or isolated native test does not change this table.

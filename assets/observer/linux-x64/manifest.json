@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "platform": "linux-x64",
+  "buildMachine": "x86_64",
+  "status": "experimental-native-validation-required",
+  "compiler": "gcc (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0",
+  "flags": [
+    "-std=c11",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-D_FILE_OFFSET_BITS=64"
+  ],
+  "binaries": {
+    "linux-guardian": {
+      "sha256": "2530465ed871bdfffdc3f790b194b5eeff360198b2626c9746f75d7d508214b6",
+      "source": "src/native/observer/guardian.c",
+      "sourceSha256": "a15d1d4577bf9c56c734dec7a8347073ea15f52f75ba975a2b8085105bbdfa64",
+      "command": [
+        "/usr/bin/gcc",
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-D_FILE_OFFSET_BITS=64",
+        "/home/evanow/zylos/workspace/pr299-validation/harness-r3/pkg/linux/frozen/src/native/observer/guardian.c",
+        "-o",
+        "/home/evanow/zylos/workspace/pr299-validation/harness-r3/helpers/linux-guardian"
+      ]
+    },
+    "marked-exec": {
+      "sha256": "f6bf3680680821927147a2a73b62fffd35afa2f1689db68f96d0f06d21654361",
+      "source": "src/native/observer/marked-exec.c",
+      "sourceSha256": "7bbf3abcdb9714b98bffdac1654880191cd02f9884c209922770781ccf5e67db",
+      "command": [
+        "/usr/bin/gcc",
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-D_FILE_OFFSET_BITS=64",
+        "/home/evanow/zylos/workspace/pr299-validation/harness-r3/pkg/linux/frozen/src/native/observer/marked-exec.c",
+        "-o",
+        "/home/evanow/zylos/workspace/pr299-validation/harness-r3/helpers/marked-exec"
+      ]
+    },
+    "pty-marked-exec": {
+      "sha256": "2709fe78a5aad9f5a97dc86baf32521af537521e24f08cec7aedc77d0ca6b204",
+      "source": "src/native/observer/pty-marked-exec.c",
+      "sourceSha256": "812a441d1d6d0f1f62d63748d098964d447b3f38e3c5323d6d6faf3a4dd45ab0",
+      "command": [
+        "/usr/bin/gcc",
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-D_FILE_OFFSET_BITS=64",
+        "/home/evanow/zylos/workspace/pr299-validation/harness-r3/pkg/linux/frozen/src/native/observer/pty-marked-exec.c",
+        "-o",
+        "/home/evanow/zylos/workspace/pr299-validation/harness-r3/helpers/pty-marked-exec",
+        "-lutil"
+      ]
+    }
+  },
+  "buildScriptSha256": "fa07c00a1f481a1a088a6ff13a0e922107c78dd7b2e2653ddb53a5d9e44ffd3e"
+}

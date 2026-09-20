@@ -5,13 +5,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { observerArtifactFor } from '../src/lib/observer-artifacts.js';
 import { ObserverInstaller } from '../src/lib/observer-installer.js';
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function makeArtifactFixture(t, { symlink = false } = {}) {
+function makeArtifactFixture(t, { symlink = false, platform = 'darwin-arm64' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-artifact-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'source');
@@ -29,7 +30,7 @@ function makeArtifactFixture(t, { symlink = false } = {}) {
     root,
     archive,
     artifact: {
-      platform: 'darwin-arm64',
+      platform,
       version: '0.45.1',
       url: 'https://example.invalid/zellij.tar.gz',
       archiveSha256: sha256(archive),
@@ -49,8 +50,8 @@ function installerFor(t, fixture, overrides = {}) {
   }));
   return new ObserverInstaller({
     dataDir,
-    platform: 'darwin',
-    arch: 'arm64',
+    platform: fixture.artifact.platform.split('-')[0],
+    arch: fixture.artifact.platform.split('-')[1],
     artifact: fixture.artifact,
     fetchImpl,
     licensePath,
@@ -58,10 +59,10 @@ function installerFor(t, fixture, overrides = {}) {
   });
 }
 
-test('installer verifies both digests, version, permissions, and bundled notice', async (t) => {
-  const fixture = makeArtifactFixture(t);
+for (const platform of ['darwin-arm64', 'linux-x64', 'linux-arm64']) test(`${platform} installer verifies both digests, version, permissions, and bundled notice`, async (t) => {
+  const fixture = makeArtifactFixture(t, { platform });
   const installer = installerFor(t, fixture);
-  assert.deepEqual(await installer.verify(), { state: 'not_installed', platform: 'darwin-arm64' });
+  assert.deepEqual(await installer.verify(), { state: 'not_installed', platform });
   const installed = await installer.install();
   assert.equal(installed.state, 'installed');
   assert.equal(fs.statSync(installed.binaryPath).mode & 0o777, 0o755);
@@ -72,6 +73,25 @@ test('installer verifies both digests, version, permissions, and bundled notice'
   assert.equal(manifest.archiveSha256, fixture.artifact.archiveSha256);
   assert.equal(manifest.binarySha256, fixture.artifact.binarySha256);
   assert.equal((await installer.verify()).state, 'installed');
+});
+
+for (const [platform, arch] of [['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
+  test(`${platform}-${arch} installer selects its pinned catalog artifact without injection`, async (t) => {
+    const fixture = makeArtifactFixture(t);
+    const installer = new ObserverInstaller({
+      dataDir: path.join(fixture.root, 'platform-selection'), platform, arch,
+    });
+    assert.equal(installer.artifact, observerArtifactFor(platform, arch));
+    assert.equal(installer.artifact.platform, `${platform}-${arch}`);
+    assert.deepEqual(await installer.verify(), { state: 'not_installed', platform: `${platform}-${arch}` });
+  });
+}
+
+test('installer defaults resolve the running server artifact without an override', (t) => {
+  const fixture = makeArtifactFixture(t);
+  const installer = new ObserverInstaller({ dataDir: path.join(fixture.root, 'host-default') });
+  assert.equal(installer.platformKey, `${process.platform}-${process.arch}`);
+  assert.equal(installer.artifact, observerArtifactFor());
 });
 
 test('archive and extracted-binary digest failures do not publish installation state', async (t) => {
@@ -101,14 +121,13 @@ test('unsupported platforms never attempt a download', async (t) => {
   let fetched = false;
   const installer = new ObserverInstaller({
     dataDir: path.join(fixture.root, 'unsupported'),
-    platform: 'linux',
+    platform: 'win32',
     arch: 'x64',
-    artifact: null,
     fetchImpl: async () => { fetched = true; throw new Error('must not fetch'); },
   });
   assert.deepEqual(await installer.verify(), {
     state: 'unsupported',
-    platform: 'linux-x64',
+    platform: 'win32-x64',
     artifactAvailable: true,
     version: '0.45.1',
     supportState: 'lifecycle_adapter_required',

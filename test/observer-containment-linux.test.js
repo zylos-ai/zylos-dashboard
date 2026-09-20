@@ -26,7 +26,7 @@ function writeHelpers(helperDir, platform = 'linux-x64') {
   fs.writeFileSync(path.join(helperDir, 'manifest.json'), JSON.stringify({ schema: 1, platform, binaries }));
 }
 
-test('factory preserves Darwin selection and keeps Linux installation gated', async (t) => {
+test('factory preserves Darwin selection and selects Linux helpers and artifacts', async (t) => {
   const dataDir = fixture(t);
   const darwin = createObserverContainment({ dataDir, platform: 'darwin', arch: 'arm64' });
   assert.equal(darwin.constructor, DarwinObserverContainment);
@@ -36,7 +36,7 @@ test('factory preserves Darwin selection and keeps Linux installation gated', as
   assert.equal(linux.constructor, LinuxObserverContainment);
   assert.equal(path.basename(linux.helperPaths.guardian), 'linux-guardian');
   assert.equal(path.basename(linux.helperDir), 'linux-x64');
-  assert.equal(observerArtifactFor('linux', 'x64'), null);
+  assert.equal(observerArtifactFor('linux', 'x64').platform, 'linux-x64');
 });
 
 test('Linux verifies platform, executable bytes, and helper identity before launch', async (t) => {
@@ -119,7 +119,7 @@ test('Linux ARM64 selects its own manifest and rejects x64 artifacts', async (t)
   await assert.rejects(containment.verifyHelpers(), { code: 'invalid_helper_manifest' });
   writeHelpers(helperDir, 'linux-arm64');
   assert.equal((await containment.verifyHelpers()).guardian, path.join(helperDir, 'linux-guardian'));
-  assert.equal(observerArtifactFor('linux', 'arm64'), null);
+  assert.equal(observerArtifactFor('linux', 'arm64').platform, 'linux-arm64');
 });
 
 test('empty Linux and unsupported hosts reconcile without helpers, persisted state fails closed', async (t) => {
