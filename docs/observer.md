@@ -15,30 +15,22 @@ private copy; it does not replace a system Zellij installation.
 | Linux arm64 (`linux-arm64`) | Enabled |
 | Windows x64 | Not enabled; lifecycle adapter required |
 
-Dashboard automatically selects the pinned artifact and bundled native helpers
-for the server's operating system and CPU architecture. No manual platform
-selection is needed. In Fleet, selection happens on the target agent's server,
-not on the Fleet server or the computer running your browser. Installation and
-enabling remain explicit actions in Settings.
+Dashboard automatically selects the pinned Zellij artifact for the server's
+operating system and CPU architecture. No manual platform selection is needed.
+In Fleet, selection happens on the target agent's server, not on the Fleet server
+or the computer running your browser. Installation and enabling remain explicit
+actions in Settings.
 
-Linux requires accessible procfs and kernel support for `pidfd_open` and
-`pidfd_send_signal`, as used by the native guardian to identify and signal owned
-processes. The bundled Linux helpers are dynamically linked:
+Observer requires an available tmux with support for `-N` (do not start a missing
+server), the pinned private Zellij installation, and Dashboard's existing
+SQLite dependency. Its coordinator and runtime data must be on a local filesystem
+with working SQLite file locking. The private-tmux lifecycle does not use the
+bundled native guardian helpers or their glibc/pidfd prerequisites.
 
-| Helper target | Required userspace |
-| --- | --- |
-| Linux x64 | glibc 2.28 or newer, `/lib64/ld-linux-x86-64.so.2`, `libutil.so.1` |
-| Linux arm64 | glibc 2.38 or newer, `/lib/ld-linux-aarch64.so.1` |
-
-The ARM64 bundle does not run on older glibc hosts such as Ubuntu 22.04 or
-Debian 12. Musl-only hosts cannot use these bundled helpers, even though the
-separate Zellij download uses musl. The architecture entries above do not imply
-support for every Linux distribution, kernel, or restricted container environment.
-
-The upstream artifact catalog includes targets that the product does not enable.
-A successful helper build or isolated native test does not change this table.
-Native helper development and platform differences are documented in
-[the shared-source guide](../src/native/observer/README.md).
+The architecture entries describe managed-host support, not every Linux
+distribution, container, filesystem or tmux build. The upstream artifact catalog
+also includes targets that the product does not enable. A successful build or
+isolated native probe does not establish product lifecycle support.
 
 ## Viewing and access
 
@@ -58,9 +50,12 @@ anything shown by the agent.
 Viewing uses short-lived leases tied to the authenticated session and target.
 Closing the last viewer stops the private generation after the idle grace period
 (five seconds by default). Expired authentication or leases close the stream.
-Dashboard shutdown closes streams and attempts cleanup. A restart reconciles
-persisted generations before allowing new viewing; an enabled setting alone
-does not start a viewer.
+Normal Dashboard shutdown closes streams and cleans the private generation.
+An unexpected Dashboard crash may leave Observer processes running locally. The
+Dashboard viewing connection ends; the private service remains loopback-only and
+still requires its credential. Dashboard restart cleans the previous generation
+before allowing fresh viewing, without reusing the old session. An enabled
+setting alone does not start a viewer.
 
 ## Disable, uninstall and recovery
 
@@ -83,19 +78,28 @@ Do not delete ownership markers or persisted runtime records to bypass a cleanup
 failure. Preserve the error and runtime evidence for diagnosis. Interrupted
 removal can be retried even if the owned socket directory or artifact leaf has
 already been removed; existing parent paths and remaining ownership records must
-still validate. Component uninstallation also performs Observer cleanup and may
-fail until that cleanup can be proved.
+still validate. Component uninstallation also performs Observer cleanup, both while Dashboard
+is running and after it has crashed, and fails until that cleanup can be proved.
 
-## Containment limits
+A startup worker continues independently if Dashboard crashes. If that worker,
+the operating system, or Zellij itself fails before the private session's startup
+is conclusively acknowledged, the remaining state may require operator
+investigation. Retry can finish a startup still in
+progress; restarting Dashboard or the host does not automatically discard an
+unresolved record. Generations left by an older native-helper implementation
+require its original cleanup path or explicit operator recovery before using the
+replacement lifecycle.
 
-Observer manages its own marked processes and private sockets. Linux uses procfs
-identity and pidfds; macOS uses libproc and birth-identity checks. Unreadable,
-untracked processes are reported and skipped where marker inspection returns
-permission errors. Cleanup uncertainty for tracked processes remains a failure.
-This is cooperative process cleanup, not a security boundary against hostile
-processes running as the same user.
+## Cleanup scope and limits
 
-Bounded synthetic lifecycle runs cover their exact platform, source and helper
-hashes. They do not establish arbitrary descendant discovery, cross-boot recovery,
-all host configurations, or isolation of real agent workloads. Historical probe
-results apply only to their recorded revisions.
+Observer uses its own private tmux server, Zellij session, foreground web process
+and private sockets. It first closes the exact private Zellij session, then the
+private tmux server, and checks the recorded roles and private endpoints before
+removing their records. It never closes the Agent's tmux server or signals an
+unrelated service occupying a port. Cleanup uncertainty remains a failure.
+
+This is cooperative process management on supported managed hosts, not a security
+boundary against hostile processes running as the same user. Its evidence covers
+known roles and the unique private namespace, not arbitrary descendant discovery.
+Platform runs establish only their recorded source, binaries and host conditions;
+historical probes do not validate a later implementation.

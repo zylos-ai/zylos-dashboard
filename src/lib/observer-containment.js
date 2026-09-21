@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DarwinObserverContainment, ObserverContainmentError } from './observer-containment-darwin.js';
-import { LinuxObserverContainment } from './observer-containment-linux.js';
+import { ObserverContainmentError } from './observer-containment-posix.js';
+import { TmuxObserverContainment } from './observer-containment-tmux.js';
 
 class UnsupportedObserverContainment extends EventEmitter {
   constructor({ dataDir, platform, arch }) {
@@ -39,7 +39,7 @@ export function createObserverContainment(options) {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const resolved = { ...options, platform, arch };
-  if (platform === 'darwin' && arch === 'arm64') return new DarwinObserverContainment(resolved);
-  if (platform === 'linux' && ['x64', 'arm64'].includes(arch)) return new LinuxObserverContainment(resolved);
+  if (platform === 'darwin' && arch === 'arm64') return new TmuxObserverContainment(resolved);
+  if (platform === 'linux' && ['x64', 'arm64'].includes(arch)) return new TmuxObserverContainment(resolved);
   return new UnsupportedObserverContainment(resolved);
 }

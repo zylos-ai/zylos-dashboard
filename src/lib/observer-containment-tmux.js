@@ -1,0 +1,313 @@
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { command, delay, digest, exists, failure, finalName, fixedLayout, identity, mkdirPrivate, outerArgs,
+  privateEnvironment, privatePath, processSnapshot, readJson, readReceipt, removePrivateTree,
+  socketParent, syncDirectory, targetArgs, validateState, writeAtomic, zellijArgs } from './observer-tmux-state.js';
+
+const workerPath = fileURLToPath(new URL('./observer-tmux-worker.js', import.meta.url));
+const defaultConfig = fileURLToPath(new URL('../../assets/observer/zellij-config.kdl', import.meta.url));
+async function freePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+async function socketClosed(socketPath) {
+  return new Promise((resolve, reject) => {
+    const client = net.createConnection(socketPath);
+    client.setTimeout(1000, () => { client.destroy(); reject(new Error('Socket observation timed out')); });
+    client.once('connect', () => { client.destroy(); resolve(false); });
+    client.once('error', (error) => {
+      client.destroy();
+      if (['ENOENT', 'ECONNREFUSED'].includes(error.code)) resolve(true); else reject(error);
+    });
+  });
+}
+async function socketsUnder(root, budget = { count: 0 }) {
+  if (!await exists(root)) return [];
+  const stat = await fs.promises.lstat(root);
+  if (++budget.count > 4096 || stat.isSymbolicLink() || stat.uid !== process.getuid()) throw failure('unsafe_runtime_state', 'Invalid socket tree');
+  if (stat.isSocket()) return [root];
+  if (!stat.isDirectory()) return [];
+  const sockets = [];
+  for (const name of await fs.promises.readdir(root)) sockets.push(...await socketsUnder(path.join(root, name), budget));
+  return sockets;
+}
+
+export class TmuxObserverContainment extends EventEmitter {
+  constructor({ dataDir, tmuxPath = 'tmux', tmuxSocket = null, zellijConfig = defaultConfig,
+    platform = process.platform, arch = process.arch, exec = command, spawnImpl = spawn,
+    startupTimeoutMs = 20000, cleanupTimeoutMs = 20000, phase = async () => {}, choosePort = freePort, observe = identity, snapshot = processSnapshot } = {}) {
+    super();
+    // dataDir is a trusted deployment input; resolve OS aliases once, then reject
+    // any symlink below this canonical boundary when validating managed state.
+    this.dataDir = fs.realpathSync(dataDir);
+    this.runtimeRoot = path.join(this.dataDir, 'observer', 'runtime', 'generations');
+    Object.assign(this, { tmuxPath, tmuxSocket, zellijConfig, platform, arch, exec, spawn: spawnImpl,
+      startupTimeoutMs, cleanupTimeoutMs, phase, choosePort, observe, snapshot });
+    this.active = null;
+    this.owned = new Set();
+    this._stopping = null;
+    this._healthTimer = null;
+    this._checking = false;
+  }
+
+  async verifyHelpers() {
+    if (!((this.platform === 'darwin' && this.arch === 'arm64') ||
+        (this.platform === 'linux' && ['x64', 'arm64'].includes(this.arch)))) throw failure('unsupported_platform', 'Unsupported Observer platform');
+    // Historical method name retained for coordinator compatibility; no helper
+    // bundle is loaded by the tmux adapter.
+    return { tmux: this.tmuxPath };
+  }
+
+  async _publish({ generation, binaryPath, runtime }) {
+    await this.verifyHelpers();
+    const target = runtime === 'codex' ? 'codex-main' : runtime === 'claude' ? 'claude-main' : null;
+    if (!target) throw failure('unsupported_runtime', 'Unsupported Observer runtime');
+    if (!Number.isSafeInteger(generation) || generation < 0) throw failure('unsafe_runtime_state', 'Invalid generation');
+    const preflight = { tmuxSocket: this.tmuxSocket };
+    await this.exec(this.tmuxPath, targetArgs(preflight, 'has-session', '-t', `=${target}`));
+    const result = await this.exec(this.tmuxPath, targetArgs(preflight, 'display-message', '-p', '-t', `=${target}`, '#{socket_path}'));
+    const tmuxSocket = result.stdout.trim();
+    if (!path.isAbsolute(tmuxSocket) || /[\r\n]/.test(tmuxSocket)) throw failure('target_unavailable', 'Target socket was not resolved');
+    binaryPath = path.resolve(binaryPath);
+    const binaryStat = await fs.promises.lstat(binaryPath);
+    if (!binaryStat.isFile() || binaryStat.isSymbolicLink() || !(binaryStat.mode & 0o111)) throw failure('unsafe_runtime_state', 'Invalid Observer binary');
+    await mkdirPrivate(this.runtimeRoot);
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const name = `g-${generation}-${nonce}`;
+    const root = path.join(this.runtimeRoot, name);
+    const staging = path.join(this.runtimeRoot, `.staging-${name}`);
+    await fs.promises.mkdir(staging, { mode: 0o700 });
+    await this.phase('staging-created', { root, staging });
+    const state = { schema: 2, generation, nonce, root,
+      socketRoot: path.join(await socketParent(), `zobs2-${nonce.slice(0, 16)}`),
+      sessionName: `observer-${nonce.slice(0, 16)}`, port: await this.choosePort(), target,
+      tmuxPath: this.tmuxPath, tmuxSocket, binaryPath,
+      layoutFile: path.join(root, 'readonly-tmux.kdl'), tmuxConfig: path.join(root, 'tmux.conf'),
+      configFile: path.join(root, 'zellij.kdl'), tokenFile: path.join(root, 'read-only-token'),
+      parent: await this.observe(process.pid), platform: this.platform, arch: this.arch };
+    state.outerSocket = path.join(state.socketRoot, 'tmux');
+    const layout = fixedLayout(state);
+    const files = { layoutFile: layout, tmuxConfig: 'set-option -g remain-on-exit on\n', configFile: await fs.promises.readFile(this.zellijConfig) };
+    state.hashes = { binary: digest(await fs.promises.readFile(binaryPath)) };
+    for (const [key, content] of Object.entries(files)) {
+      const handle = await fs.promises.open(path.join(staging, path.basename(state[key])), 'wx', 0o600);
+      try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); }
+      state.hashes[key] = digest(content);
+      await this.phase(`staged-${key}`, state);
+    }
+    await writeAtomic(path.join(staging, 'state.json'), state);
+    await this.phase('staged-metadata', state);
+    await fs.promises.mkdir(path.join(staging, 'pending'), { mode: 0o700 });
+    await syncDirectory(staging);
+    await this.phase('before-publication', state);
+    if (await exists(root)) throw failure('unsafe_runtime_state', 'Generation collision');
+    await fs.promises.rename(staging, root);
+    await syncDirectory(this.runtimeRoot);
+    this.owned.add(root);
+    await this.phase('published', state);
+    return state;
+  }
+
+  async _launchWorker(state) {
+    const fd = fs.openSync(path.join(state.root, 'startup.log'), 'a', 0o600);
+    try {
+      const child = this.spawn(process.execPath, [workerPath, state.root], {
+        detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, LC_ALL: 'C' },
+      });
+      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      child.unref();
+    } finally { fs.closeSync(fd); }
+  }
+
+  async _waitReceipt(state, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      try { return await readReceipt(state); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      await delay(50);
+    } while (Date.now() < deadline);
+    throw failure('startup_incomplete', `Observer ${state.generation} has not acknowledged launch settlement; inspect ${state.root}/startup.log`);
+  }
+
+  async startGeneration(options) {
+    if (this.active) {
+      if (this.active.generation === options.generation) return this.active;
+      throw failure('generation_active', 'Observer generation already active');
+    }
+    // A previous unresolved start must block every subsequent request.
+    await this.reconcilePersisted();
+    const state = await this._publish(options);
+    try {
+      await this._launchWorker(state);
+      const receipt = await this._waitReceipt(state, this.startupTimeoutMs);
+      if (receipt.outcome !== 'ready') throw failure(receipt.error?.code || 'startup_failed', receipt.error?.message || 'Observer failed to start');
+      this.active = { ...state, receipt };
+      this._healthTimer = setInterval(() => this._checkActive().catch((error) => this._failActive(error)), 2000);
+      this._healthTimer.unref();
+      return this.active;
+    } catch (error) {
+      // Even if active was never assigned, this instance owns failed-start state.
+      try { await this._cleanup(state); } catch (cleanupError) { error.cleanupError = cleanupError; }
+      throw error;
+    }
+  }
+
+  _failActive(error) {
+    if (!this.active || this.active.failed || this._stopping) return;
+    this.active.failed = true;
+    clearInterval(this._healthTimer);
+    this._healthTimer = null;
+    this.emit('failure', error);
+  }
+
+  async _checkActive() {
+    if (!this.active || this._checking || this._stopping) return;
+    const active = this.active;
+    this._checking = true;
+    try {
+      const snapshot = await this.snapshot();
+      for (const role of Object.values(active.receipt.roles)) {
+        const current = role && await this.observe(role.pid, snapshot);
+        if (!current || current.start !== role.start || current.status.startsWith('Z')) throw failure('child_exit', 'Observer role exited');
+      }
+      const clients = await this.exec(active.tmuxPath, targetArgs(active, 'list-clients', '-t', `=${active.target}`, '-F', '#{client_pid}|#{client_readonly}|#{session_name}'));
+      const expected = `${active.receipt.roles.inner.pid}|1|${active.target}`;
+      if (!clients.stdout.split('\n').includes(expected)) throw failure('child_exit', 'Observer read-only target attachment lost');
+    } catch (error) { if (this.active === active) this._failActive(error); }
+    finally { this._checking = false; }
+  }
+
+  async _sameProcess(record, snapshot) {
+    if (!record) return false;
+    const current = await this.observe(record.pid, snapshot);
+    return !!current && current.start === record.start;
+  }
+
+  async _assertOwnerGone(state) {
+    if (this.owned.has(state.root)) return;
+    // No historical PID signaling or reboot override. Unknown identity is an
+    // error; a recycled identity is not the original producer.
+    if (await this._sameProcess(state.parent, await this.snapshot())) throw failure('coordinator_active', 'Recorded Observer producer is still alive');
+  }
+
+  async _absence(state, receipt) {
+    const snapshot = await this.snapshot();
+    for (const role of Object.values(receipt.roles)) if (await this._sameProcess(role, snapshot)) return false;
+    if (snapshot.some((entry) => entry.pid !== process.pid &&
+        (entry.command.includes(state.root) || entry.command.includes(state.socketRoot)))) return false;
+    for (const socket of await socketsUnder(state.socketRoot)) if (!await socketClosed(socket)) return false;
+    // The target server may legitimately have disappeared. -N never bootstraps.
+    try {
+      const clients = await this.exec(state.tmuxPath, targetArgs(state, 'list-clients', '-F', '#{client_pid}'));
+      if (receipt.roles.inner && clients.stdout.split(/\s+/).includes(String(receipt.roles.inner.pid))) return false;
+    } catch (error) { if (!await socketClosed(state.tmuxSocket)) throw error; }
+    if (receipt.sessionIssued && await exists(state.socketRoot)) {
+      try {
+        const sessions = await this.exec(state.binaryPath, zellijArgs(state, 'list-sessions', '--short'), { env: privateEnvironment(state) });
+        if (sessions.stdout.split('\n').includes(state.sessionName)) return false;
+      } catch (error) {
+        // Zellij reports no sessions with exit 1. It is corroborated by exact
+        // process/socket absence, not used alone as a shutdown acknowledgement.
+        if (error.code !== 1) throw error;
+      }
+    }
+    // Foreground web has no surviving listener child: known identity and private
+    // scope absence prove our listener gone. A foreign port occupant is untouched.
+    return true;
+  }
+
+  async _retire(state) {
+    await writeAtomic(path.join(state.root, 'retirement.json'), { nonce: state.nonce, socketRemoval: true });
+    if (await exists(state.socketRoot)) await removePrivateTree(state.socketRoot);
+    await this.phase('socket-scope-removed', state);
+    const retired = path.join(this.runtimeRoot, `.retired-${path.basename(state.root)}-${state.nonce}`);
+    await fs.promises.rename(state.root, retired);
+    await syncDirectory(this.runtimeRoot);
+    await this.phase('retired', state);
+    await removePrivateTree(retired);
+    this.owned.delete(state.root);
+  }
+
+  async _cleanup(state) {
+    await this._assertOwnerGone(state);
+    try {
+      await fs.promises.rename(path.join(state.root, 'pending'), path.join(state.root, 'cancelled'));
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (await exists(path.join(state.root, 'cancelled'))) {
+      if (await exists(path.join(state.root, 'starting'))) throw failure('unsafe_runtime_state', 'Conflicting Observer permits');
+      // Cancellation means no worker can have touched the socket scope.
+      if (await exists(state.socketRoot)) throw failure('unsafe_runtime_state', 'Unexpected cancelled socket scope');
+      await this._retire(state);
+      return;
+    }
+    if (!await exists(path.join(state.root, 'starting'))) throw failure('unsafe_runtime_state', 'Missing Observer creation permit');
+    const receipt = await this._waitReceipt(state, this.cleanupTimeoutMs);
+    if (await exists(state.socketRoot)) {
+      await privatePath(state.socketRoot);
+      try {
+        const owner = await readJson(path.join(state.socketRoot, 'owner.json'));
+        if (owner.root !== state.root || owner.nonce !== state.nonce) throw failure('unsafe_runtime_state', 'Socket scope ownership mismatch');
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        const retirement = await readJson(path.join(state.root, 'retirement.json'));
+        if (retirement.nonce !== state.nonce || retirement.socketRemoval !== true) throw failure('unsafe_runtime_state', 'Incomplete socket ownership');
+      }
+    }
+    await writeAtomic(path.join(state.root, 'teardown.json'), { requested: true });
+    const env = privateEnvironment(state);
+    if (receipt.sessionIssued) {
+      try { await this.exec(state.binaryPath, zellijArgs(state, 'kill-session', state.sessionName), { env }); }
+      catch (error) {
+        // Already-absent endpoints are allowed only after receipt closure. All
+        // identities/endpoints still have to pass the independent absence gate.
+        if (typeof error.code !== 'number') throw error;
+      }
+    }
+    try { await this.exec(state.tmuxPath, outerArgs(state, 'kill-server'), { env }); }
+    catch (error) { if (!await socketClosed(state.outerSocket)) throw error; }
+    const deadline = Date.now() + this.cleanupTimeoutMs;
+    do {
+      if (await this._absence(state, receipt)) { await this._retire(state); return; }
+      await delay(100);
+    } while (Date.now() < deadline);
+    throw failure('cleanup_timeout', 'Observer resources remain; retained state fences new starts and uninstall');
+  }
+
+  stopGeneration({ reason = 'stop' } = {}) {
+    clearInterval(this._healthTimer);
+    this._healthTimer = null;
+    if (!this._stopping) this._stopping = this.reconcilePersisted().then((results) => {
+      this.active = null;
+      return { stopped: true, reason, count: results.length };
+    }).finally(() => { this._stopping = null; });
+    return this._stopping;
+  }
+
+  async reconcilePersisted() {
+    if (!await exists(this.runtimeRoot)) return [];
+    await privatePath(this.runtimeRoot);
+    const results = [];
+    for (const name of await fs.promises.readdir(this.runtimeRoot)) {
+      const root = path.join(this.runtimeRoot, name);
+      if (/^\.staging-g-\d+-[0-9a-f]{32}$/.test(name) || /^\.retired-g-\d+-([0-9a-f]{32})-\1$/.test(name)) {
+        await removePrivateTree(root);
+        results.push({ reconciled: true });
+        continue;
+      }
+      if (!finalName.test(name)) throw failure('legacy_containment_state', 'Unrecognized/native Observer state requires old-version recovery');
+      const state = await validateState(root);
+      await this._cleanup(state);
+      if (this.active?.root === root) this.active = null;
+      results.push({ generation: state.generation, reconciled: true });
+    }
+    return results;
+  }
+}

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Optional authenticated, read-only terminal Observer for local and Fleet agents, with explicit private Zellij installation, viewing leases, and disable/uninstall controls (#299).
+- Private tmux lifecycle for Observer: normal shutdown and uninstall clean its resources; after an unexpected Dashboard crash, restart cleans the previous generation before starting a new viewer on demand. Cleanup failures retain recovery records and leave other Dashboard features available (#299).
+
 ## [0.5.5] - 2026-09-15
 
 ### Fixed

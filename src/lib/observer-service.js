@@ -88,6 +88,7 @@ export class ObserverService {
     this.ensureCoordinatorOwnership = ensureCoordinatorOwnership || (async () => {});
     this.streams = new Set();
     this._startup = null;
+    this._initialized = false;
     this.startupError = null;
     this.containment.on?.('failure', (error) => {
       this._closeAllStreams(1011, 'child_failure');
@@ -98,6 +99,7 @@ export class ObserverService {
   startup() {
     if (this._startup) return this._startup;
     this._startup = (async () => {
+      await this.ensureCoordinatorOwnership();
       await this.containment.reconcilePersisted();
       const status = await this.coordinator.reconcileStartup();
       this.startupError = null;
@@ -105,7 +107,7 @@ export class ObserverService {
     })().catch((error) => {
       this.startupError = error;
       return null;
-    });
+    }).finally(() => { this._initialized = true; });
     return this._startup;
   }
 
@@ -361,12 +363,14 @@ export class ObserverService {
   }
 
   async shutdown(reason = 'dashboard_shutdown') {
+    await this.ensureCoordinatorOwnership();
     this._closeAllStreams(1001, reason);
     return this.manager.shutdown(reason);
   }
 
   async preUninstall() {
     await this._ready({ allowRecovery: true });
+    await this.ensureCoordinatorOwnership();
     this._closeAllStreams(1001, 'component_uninstall');
     const result = await this.manager.invalidateAndUninstall();
     this.startupError = null;

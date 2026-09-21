@@ -7,16 +7,18 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { ObserverControlServer, runObserverPreUninstall } from '../src/lib/observer-control.js';
 import { hashPassword } from '../src/lib/auth.js';
 
 test('Dashboard listens while unavailable Observer ownership blocks admission', { timeout: 25_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-startup-'));
   const dataDir = path.join(root, 'components', 'dashboard');
   const controlRoot = path.join(dataDir, 'observer', 'runtime', 'control');
-  fs.mkdirSync(controlRoot, { recursive: true });
-  const lockPath = path.join(controlRoot, 'coordinator.lock');
-  const owner = JSON.stringify({ pid: process.pid, nonce: 'other-producer', createdAt: Date.now() });
-  fs.writeFileSync(lockPath, owner);
+  fs.mkdirSync(controlRoot, { recursive: true, mode: 0o700 });
+  const owner = new ObserverControlServer({ dataDir, onPreUninstall: async () => {} });
+  await owner.acquire();
+  const lockPath = owner.lock.lockPath;
+  const lockInode = fs.statSync(lockPath).ino;
   const reservation = net.createServer();
   reservation.listen(0, '127.0.0.1');
   await once(reservation, 'listening');
@@ -26,8 +28,11 @@ test('Dashboard listens while unavailable Observer ownership blocks admission', 
     port, host: '127.0.0.1', auth: { enabled: true, password: hashPassword('startup-test') },
     observer: { enabled: true, generation: 1 },
   }));
+  const bin = path.join(root, 'test-bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'pm2'), "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 });
   const child = spawn(process.execPath, [fileURLToPath(new URL('../src/index.js', import.meta.url))], {
-    env: { ...process.env, ZYLOS_DIR: root }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HOME: root, ZYLOS_DIR: root, PATH: `${bin}:${process.env.PATH}`, TMUX: '', ZELLIJ: '' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
   child.stdout.on('data', (chunk) => { logs += chunk; });
@@ -40,6 +45,7 @@ test('Dashboard listens while unavailable Observer ownership blocks admission', 
       await exited;
       clearTimeout(timer);
     }
+    await owner.close();
     fs.rmSync(root, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${port}`;
@@ -54,7 +60,7 @@ test('Dashboard listens while unavailable Observer ownership blocks admission', 
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.ok(healthy, logs);
-  assert.match(logs, /control startup failed: coordinator_active/);
+  assert.match(logs, /startup failed: coordinator_active/);
   const login = await fetch(`${base}/login`, {
     method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'password=startup-test',
@@ -70,5 +76,9 @@ test('Dashboard listens while unavailable Observer ownership blocks admission', 
     assert.equal(response.status, 503, endpoint);
     assert.equal((await response.json()).error, 'coordinator_active', endpoint);
   }
-  assert.equal(fs.readFileSync(lockPath, 'utf8'), owner);
+  assert.equal(fs.statSync(lockPath).ino, lockInode);
+  await owner.close();
+  const recovered = await fetch(`${base}/api/observer/disable`, { method: 'POST', headers });
+  assert.equal(recovered.status, 200, await recovered.text());
+  assert.deepEqual(await runObserverPreUninstall({ dataDir, configPath: path.join(dataDir, 'config.json') }), { mode: 'online' });
 });

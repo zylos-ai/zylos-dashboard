@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import Database from 'better-sqlite3';
+import { privateParents } from './observer-tmux-state.js';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -10,87 +12,47 @@ import { observerPaths } from './observer-paths.js';
 const MAX_MESSAGE_BYTES = 4 * 1024;
 const CONNECT_TIMEOUT_MS = 2_000;
 const OPERATION_TIMEOUT_MS = 15_000;
-const INCOMPLETE_LOCK_STALE_MS = 10_000;
-
-function isProcessAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
-}
-
-async function readOwner(lockPath) {
-  try {
-    const stat = await fs.promises.lstat(lockPath);
-    const ownerPath = stat.isDirectory() && !stat.isSymbolicLink()
-      ? path.join(lockPath, 'owner.json')
-      : lockPath;
-    const value = JSON.parse(await fs.promises.readFile(ownerPath, 'utf8'));
-    return value && typeof value === 'object' ? value : null;
-  } catch { return null; }
-}
-
-async function writeOwner(lockPath, owner) {
-  await fs.promises.writeFile(lockPath, `${JSON.stringify(owner)}\n`, {
-    flag: 'wx', mode: 0o600,
-  });
-}
-
-async function recoverIncompleteLock(lockPath, staleMs, now = Date.now()) {
-  let stat;
-  try { stat = await fs.promises.lstat(lockPath); } catch (error) {
-    if (error?.code === 'ENOENT') return true;
-    throw error;
-  }
-  if (stat.isSymbolicLink() || now - stat.mtimeMs < staleMs) return false;
-  const quarantinePath = path.join(path.dirname(lockPath), `.stale-${crypto.randomBytes(12).toString('hex')}`);
-  try {
-    await fs.promises.rename(lockPath, quarantinePath);
-    const movedStat = await fs.promises.lstat(quarantinePath);
-    if (movedStat.dev !== stat.dev || movedStat.ino !== stat.ino) {
-      try { await fs.promises.rename(quarantinePath, lockPath); } catch {}
-      return false;
-    }
-    const movedOwner = await readOwner(quarantinePath);
-    if (movedOwner && isProcessAlive(Number(movedOwner.pid))) {
-      try { await fs.promises.rename(quarantinePath, lockPath); } catch {}
-      return false;
-    }
-    await fs.promises.rm(quarantinePath, { recursive: movedStat.isDirectory(), force: true });
-    return true;
-  } catch (error) {
-    if (error?.code === 'ENOENT') return true;
-    return false;
-  }
-}
-
 async function acquireCoordinatorLock(controlRoot, { timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
+  const trustedData = await fs.promises.realpath(path.resolve(controlRoot, '../../..'));
+  controlRoot = path.join(trustedData, 'observer', 'runtime', 'control');
+  await privateParents(controlRoot);
   await fs.promises.mkdir(controlRoot, { recursive: true, mode: 0o700 });
-  await fs.promises.chmod(controlRoot, 0o700);
-  const lockPath = path.join(controlRoot, 'coordinator.lock');
-  const owner = { pid: process.pid, nonce: crypto.randomBytes(16).toString('hex'), createdAt: Date.now() };
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
+  const directory = await fs.promises.lstat(controlRoot);
+  if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) ||
+      directory.uid !== process.getuid()) throw new Error('Unsafe Observer control directory');
+  // Legacy producers use a different lock protocol. Never reap their state while
+  // switching protocols: even an unreadable owner is not evidence of absence.
+  try {
+    await fs.promises.lstat(path.join(controlRoot, 'coordinator.lock'));
+    throw Object.assign(new Error('Legacy Observer lock requires recovery'), { code: 'legacy_coordinator_lock' });
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const lockPath = path.join(controlRoot, 'coordinator-lock.sqlite');
+  for (const file of [lockPath, `${lockPath}-journal`, `${lockPath}-wal`, `${lockPath}-shm`]) {
     try {
-      await writeOwner(lockPath, owner);
-      return {
-        owner,
-        lockPath,
-        async release() {
-          const current = await readOwner(lockPath);
-          if (current?.nonce === owner.nonce) await fs.promises.unlink(lockPath);
-        },
-      };
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      const staleOwner = await readOwner(lockPath);
-      if (staleOwner && isProcessAlive(Number(staleOwner.pid))) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        continue;
+      const stat = await fs.promises.lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o077)) {
+        throw new Error('Unsafe Observer lock file');
       }
-      if (await recoverIncompleteLock(lockPath, INCOMPLETE_LOCK_STALE_MS)) continue;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  throw Object.assign(new Error('Observer coordinator is already active'), { code: 'coordinator_active' });
+  // Create privately before SQLite opens it. The inode is permanent, including
+  // after uninstall, so all contenders always lock the same database.
+  try { const fd = await fs.promises.open(lockPath, 'wx', 0o600); await fd.close(); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const database = new Database(lockPath, { timeout: 0 });
+  const deadline = Date.now() + timeoutMs;
+  try {
+    do {
+      try {
+        database.exec('BEGIN EXCLUSIVE');
+        return { lockPath, async release() { if (database.open) { database.exec('ROLLBACK'); database.close(); } } };
+      } catch (error) {
+        if (error.code !== 'SQLITE_BUSY') throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } while (Date.now() <= deadline);
+    throw Object.assign(new Error('Observer coordinator is already active'), { code: 'coordinator_active' });
+  } catch (error) { database.close(); throw error; }
 }
 
 function controlSocketPath(dataDir) {
@@ -126,20 +88,27 @@ function readLine(socket, timeoutMs) {
 
 export class ObserverControlServer {
   constructor({ dataDir, onPreUninstall }) {
-    this.dataDir = dataDir;
+    this.dataDir = fs.realpathSync(dataDir);
     this.onPreUninstall = onPreUninstall;
-    this.socketPath = controlSocketPath(dataDir);
+    this.socketPath = controlSocketPath(this.dataDir);
     this.server = null;
     this.lock = null;
     this._starting = null;
+    this._acquiring = null;
+  }
+
+  async acquire() {
+    if (this.lock) return;
+    if (!this._acquiring) this._acquiring = acquireCoordinatorLock(observerPaths(this.dataDir).control)
+      .then((lock) => { this.lock = lock; }).finally(() => { this._acquiring = null; });
+    return this._acquiring;
   }
 
   async start() {
     if (this.server) return;
     if (this._starting) return this._starting;
     this._starting = (async () => {
-      const controlRoot = observerPaths(this.dataDir).control;
-      this.lock = await acquireCoordinatorLock(controlRoot);
+      await this.acquire();
       try {
         try { await fs.promises.unlink(this.socketPath); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
         this.server = net.createServer((socket) => {
@@ -161,8 +130,8 @@ export class ObserverControlServer {
       } catch (error) {
         try { this.server?.close(); } catch {}
         this.server = null;
-        await this.lock?.release();
-        this.lock = null;
+        // Socket publication failure must not relinquish lifecycle ownership.
+        // Recovery can retry publication; shutdown releases after cleanup.
         throw error;
       }
     })().finally(() => { this._starting = null; });
@@ -170,8 +139,9 @@ export class ObserverControlServer {
   }
 
   async close() {
+    if (this._acquiring) { try { await this._acquiring; } catch { return; } }
     if (this._starting) {
-      try { await this._starting; } catch { return; }
+      try { await this._starting; } catch { /* Release retained ownership below. */ }
     }
     // A failed contender must never unlink the current producer's socket.
     if (!this.lock) return;
@@ -201,7 +171,7 @@ async function requestRunningProducer(dataDir) {
 
 export async function runObserverPreUninstall({ dataDir, configPath }) {
   try {
-    return await requestRunningProducer(dataDir);
+    return await requestRunningProducer(await fs.promises.realpath(dataDir));
   } catch (error) {
     if (!['ENOENT', 'ECONNREFUSED'].includes(error?.code)) throw error;
   }

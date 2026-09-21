@@ -26,13 +26,13 @@ function writeHelpers(helperDir, platform = 'linux-x64') {
   fs.writeFileSync(path.join(helperDir, 'manifest.json'), JSON.stringify({ schema: 1, platform, binaries }));
 }
 
-test('factory preserves Darwin selection and selects Linux helpers and artifacts', async (t) => {
+test('preserved native adapters retain their original helper selection', async (t) => {
   const dataDir = fixture(t);
-  const darwin = createObserverContainment({ dataDir, platform: 'darwin', arch: 'arm64' });
+  const darwin = new DarwinObserverContainment({ dataDir, platform: 'darwin', arch: 'arm64' });
   assert.equal(darwin.constructor, DarwinObserverContainment);
   assert.equal(path.basename(darwin.helperPaths.guardian), 'darwin-guardian');
   await darwin.verifyHelperManifest();
-  const linux = createObserverContainment({ dataDir, platform: 'linux', arch: 'x64' });
+  const linux = new LinuxObserverContainment({ dataDir, platform: 'linux', arch: 'x64' });
   assert.equal(linux.constructor, LinuxObserverContainment);
   assert.equal(path.basename(linux.helperPaths.guardian), 'linux-guardian');
   assert.equal(path.basename(linux.helperDir), 'linux-x64');
@@ -91,7 +91,7 @@ for (const platform of ['darwin', 'linux']) test(`${platform} isolates inherited
       else process.env[key] = value;
     }
   });
-  const containment = createObserverContainment({ dataDir, platform, arch: 'arm64' });
+  const containment = platform === 'darwin' ? new DarwinObserverContainment({ dataDir, platform, arch: 'arm64' }) : new LinuxObserverContainment({ dataDir, platform, arch: 'arm64' });
   const environment = await containment._privateEnvironment(root, socketRoot);
   for (const key of keys) {
     if (['XDG_UNKNOWN_ROOT', 'ZELLIJ_SESSION_NAME', 'ZELLIJ', 'ZYLOS_GUARDIAN_TEST_INJECT'].includes(key)) {
@@ -113,7 +113,7 @@ for (const platform of ['darwin', 'linux']) test(`${platform} isolates inherited
 test('Linux ARM64 selects its own manifest and rejects x64 artifacts', async (t) => {
   const dataDir = fixture(t);
   const helperDir = path.join(dataDir, 'helpers');
-  const containment = createObserverContainment({ dataDir, helperDir, platform: 'linux', arch: 'arm64' });
+  const containment = new LinuxObserverContainment({ dataDir, helperDir, platform: 'linux', arch: 'arm64' });
   assert.equal(containment.constructor, LinuxObserverContainment);
   writeHelpers(helperDir, 'linux-x64');
   await assert.rejects(containment.verifyHelpers(), { code: 'invalid_helper_manifest' });
@@ -127,7 +127,7 @@ test('empty Linux and unsupported hosts reconcile without helpers, persisted sta
     const dataDir = fixture(t);
     const containment = createObserverContainment({ dataDir, platform, arch, helperDir: path.join(dataDir, 'missing') });
     assert.deepEqual(await containment.reconcilePersisted(), []);
-    fs.mkdirSync(containment.runtimeRoot, { recursive: true });
+    fs.mkdirSync(containment.runtimeRoot, { recursive: true, mode: 0o700 });
     assert.deepEqual(await containment.reconcilePersisted(), []);
     fs.mkdirSync(path.join(containment.runtimeRoot, 'persisted'));
     await assert.rejects(containment.reconcilePersisted());

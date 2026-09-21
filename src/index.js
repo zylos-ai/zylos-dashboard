@@ -158,7 +158,10 @@ const observerControl = new ObserverControlServer({
   dataDir: config.dataDir,
   onPreUninstall: () => observerService.preUninstall(),
 });
-observerService.ensureCoordinatorOwnership = () => observerControl.start();
+observerService.ensureCoordinatorOwnership = async () => {
+  await observerControl.acquire();
+  if (observerService._initialized) await observerControl.start();
+};
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
@@ -1731,9 +1734,9 @@ if (isMain && process.argv.includes('--smoke')) {
   }, null, 2));
   store.close();
 } else if (isMain) {
-  const observerStartupStatus = await observerService.startup();
-  if (observerStartupStatus && (['installed', 'failed'].includes(observerStartupStatus.state) ||
-      observerStartupStatus.desired?.enabled || observerStartupStatus.desired?.removalState)) {
+  await observerService.startup();
+  if (observerService.startupError) process.stderr.write(`[observer] startup failed: ${observerService.startupError.code || 'startup_failed'}\n`);
+  if (observerControl.lock) {
     try {
       await observerControl.start();
     } catch (error) {

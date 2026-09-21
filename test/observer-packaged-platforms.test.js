@@ -6,6 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { OBSERVER_ARTIFACTS } from '../src/lib/observer-artifacts.js';
+import { DarwinObserverContainment } from '../src/lib/observer-containment-darwin.js';
+import { LinuxObserverContainment } from '../src/lib/observer-containment-linux.js';
+import { TmuxObserverContainment } from '../src/lib/observer-containment-tmux.js';
 import { createObserverContainment } from '../src/lib/observer-containment.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -14,10 +17,10 @@ const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex'
 // Inspect every shipped target without executing foreign-architecture binaries.
 // This catches an enabled catalog entry whose normal runtime bundle is missing.
 for (const target of ['darwin-arm64', 'linux-x64', 'linux-arm64']) {
-  test(`${target} enabled product ships source-bound native helpers`, async () => {
+  test(`${target} preserves source-bound historical native helpers`, async () => {
     assert.equal(OBSERVER_ARTIFACTS[target]?.platform, target);
     const [platform, arch] = target.split('-');
-    const adapter = createObserverContainment({ dataDir: os.tmpdir(), platform, arch });
+    const adapter = platform === 'darwin' ? new DarwinObserverContainment({ dataDir: os.tmpdir(), platform, arch }) : new LinuxObserverContainment({ dataDir: os.tmpdir(), platform, arch });
     const helpers = await adapter.verifyHelpers();
     assert.equal(adapter.helperDir, path.join(root, 'assets', 'observer', target));
     const manifest = JSON.parse(fs.readFileSync(path.join(adapter.helperDir, 'manifest.json')));
@@ -38,5 +41,13 @@ for (const target of ['darwin-arm64', 'linux-x64', 'linux-arm64']) {
         assert.equal(bytes.readUInt32LE(4), 0x0100000c);
       }
     }
+  });
+}
+
+for (const [platform, arch] of [['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
+  test(`${platform}-${arch} product selects tmux without native helpers`, async () => {
+    const adapter = createObserverContainment({ dataDir: os.tmpdir(), platform, arch, helperDir: '/missing-native-bundle' });
+    assert.ok(adapter instanceof TmuxObserverContainment);
+    assert.deepEqual(await adapter.verifyHelpers(), { tmux: 'tmux' });
   });
 }

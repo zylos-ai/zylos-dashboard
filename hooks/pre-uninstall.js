@@ -10,7 +10,9 @@ const projectRoot = path.resolve(__dirname, '..');
 const zylosDir = process.env.ZYLOS_DIR || path.join(os.homedir(), 'zylos');
 const dataDir = process.env.ZYLOS_DASHBOARD_DATA_DIR || path.join(zylosDir, 'components', 'dashboard');
 
-await runObserverPreUninstall({ dataDir, configPath: path.join(dataDir, 'config.json') });
+const observerResult = await runObserverPreUninstall({ dataDir, configPath: path.join(dataDir, 'config.json') });
+
+console.log(`observer cleanup: ${observerResult.mode}`);
 
 const installer = new HookInstaller(projectRoot, zylosDir);
 const result = installer.uninstall();
