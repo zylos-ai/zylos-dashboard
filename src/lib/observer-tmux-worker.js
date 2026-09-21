@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ObserverUpstream } from './observer-upstream.js';
 import { command, delay, digest, failure, identity, privateEnvironment, processSnapshot, targetArgs,
-  outerArgs, zellijArgs, validateState, writeAtomic, privatePath } from './observer-tmux-state.js';
+  outerArgs, zellijArgs, validateState, writeAtomic, privatePath, exists, validRole } from './observer-tmux-state.js';
 
 async function until(check, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
@@ -43,11 +44,36 @@ async function initializedSession(state) {
   } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
 
+async function startPrivateServer(state, env) {
+  // The shell cannot exec tmux until its PID/start identity is durable. exec
+  // preserves that identity, closing the spawn-to-record interruption window
+  // even on platforms where tmux rewrites its process title.
+  const gate = 'permit=$1; cancelled=$2; shift 2; while [ ! -f "$permit" ]; do [ ! -e "$cancelled" ] || exit 0; sleep 0.05; done; [ ! -e "$cancelled" ] || exit 0; exec "$@"';
+  const child = spawn('/bin/sh', ['-c', gate, 'observer-tmux-server',
+    path.join(state.root, 'starting', 'server-permit.json'), path.join(state.root, 'recovery.json'),
+    state.tmuxPath, '-D', '-S', state.outerSocket, '-f', state.tmuxConfig], {
+    stdio: 'ignore', env,
+  });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  child.unref();
+  return child.pid;
+}
+
 // Dependency injection is module-local for deterministic tests, never an
 // environment variable or production control endpoint.
-export async function runStartupWorker(root, { exec = command, probe = (active) => new ObserverUpstream({ active }), phase = async () => {}, observe = identity, snapshot = processSnapshot, wait = until } = {}) {
+export async function runStartupWorker(root, { exec = command, probe = (active) => new ObserverUpstream({ active }), phase = async () => {}, observe = identity, snapshot = processSnapshot, wait = until, launchServer = startPrivateServer, workerIdentity = () => identity(process.pid) } = {}) {
   const state = await validateState(root);
-  try { await fs.rename(path.join(root, 'pending'), path.join(root, 'starting')); }
+  try {
+    if (state.startupRecovery === 1) {
+      // Populate the permit before claiming it. Cancellation moves the whole
+      // directory, so it either wins or sees the complete worker identity.
+      await fs.mkdir(path.join(root, 'pending', 'claim'), { mode: 0o700 });
+      const worker = await workerIdentity();
+      if (!validRole(worker)) throw failure('process_query_failed', 'Startup worker identity unavailable');
+      await writeAtomic(path.join(root, 'pending', 'claim', 'worker.json'), { nonce: state.nonce, role: worker });
+    }
+    await fs.rename(path.join(root, 'pending'), path.join(root, 'starting'));
+  }
   catch (error) { if (['ENOENT', 'EEXIST', 'ENOTEMPTY'].includes(error.code)) return { claimed: false }; throw error; }
   // No native command, probe or timer may precede this successful claim.
   await phase('claimed', state);
@@ -56,7 +82,13 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
     outcome: 'failed', sessionIssued: false, webLaunch: 'not-issued',
     roles: { outer: null, client: null, daemon: null, inner: null, web: null } };
   let creationSettled = true;
-  const run = (file, args, options = {}) => exec(file, args, { env, ...options });
+  const checkCancelled = async () => {
+    if (await exists(path.join(root, 'recovery.json'))) throw failure('startup_cancelled', 'Observer startup cancelled');
+  };
+  const run = async (file, args, options = {}) => {
+    await checkCancelled();
+    return exec(file, args, { env, ...options });
+  };
   const outer = (...args) => run(state.tmuxPath, outerArgs(state, ...args));
   const zellij = (...args) => run(state.binaryPath, zellijArgs(state, ...args));
   const paneInfo = async (target) => {
@@ -85,9 +117,24 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
     }
     await phase('before-outer', state);
     creationSettled = false;
-    // Mutation commands have no timeout: a timed-out client is not proof that
-    // its server won't create a pane later. Parent request deadlines are separate.
-    await run(state.tmuxPath, ['-S', state.outerSocket, '-f', state.tmuxConfig, 'new-session', '-d', '-s', 'observer', '-n', 'client', '-x', '100', '-y', '30',
+    // Foreground server creation has one identifiable producer. Every later
+    // mutation uses -N and therefore cannot recreate it after recovery kills it.
+    if (state.startupRecovery === 1) {
+      await checkCancelled();
+      const serverPid = await launchServer(state, env);
+      const server = await observe(serverPid);
+      if (!server) throw new Error('Private tmux server disappeared');
+      await writeAtomic(path.join(root, 'starting', 'server.json'), { nonce: state.nonce, role: server });
+      await checkCancelled();
+      await writeAtomic(path.join(root, 'starting', 'server-permit.json'), { nonce: state.nonce });
+      await phase('outer-server-started', state);
+      await wait(async () => {
+        await outer('show-options', '-g', 'exit-empty');
+        return true;
+      });
+    }
+    await run(state.tmuxPath, [...(state.startupRecovery === 1 ? outerArgs(state) : ['-S', state.outerSocket, '-f', state.tmuxConfig]),
+      'new-session', '-d', '-s', 'observer', '-n', 'client', '-x', '100', '-y', '30',
       '/usr/bin/env', '-u', 'TMUX', '-u', 'ZELLIJ', state.binaryPath, ...zellijArgs(state, '--new-session-with-layout', state.layoutFile, '--session', state.sessionName)], { timeout: 0 });
     receipt.sessionIssued = true;
     await phase('outer-acknowledged', state);
@@ -166,6 +213,7 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
     receipt.error = { code: error.code || 'startup_failed', message: error.message };
   }
   await phase('before-receipt', state);
+  await checkCancelled();
   await writeAtomic(path.join(root, 'receipt.json'), receipt);
   // Absolutely no native operations may follow terminal receipt publication.
   return { claimed: true, settled: true, outcome: receipt.outcome };

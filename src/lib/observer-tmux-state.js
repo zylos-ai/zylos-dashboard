@@ -103,6 +103,7 @@ export async function sameProcess(record, snapshot) {
   const current = await identity(record.pid, snapshot);
   return !!current && current.start === record.start;
 }
+export const tmuxConfigText = 'set-option -g remain-on-exit on\nset-option -g exit-empty off\n';
 export function fixedLayout(state) {
   return `layout {\n  pane command=${JSON.stringify(state.tmuxPath)} focus=true {\n    args ${targetArgs(state, 'attach-session', '-r', '-t', `=${state.target}`).map((value) => JSON.stringify(value)).join(' ')}\n    close_on_exit false\n    start_suspended false\n  }\n}\n`;
 }
@@ -112,7 +113,7 @@ export async function validateState(root) {
   await privatePath(root);
   const state = await readJson(path.join(root, 'state.json'));
   if (state.schema !== 2) throw failure('legacy_containment_state', 'Native Observer state requires old-version recovery');
-  if (!Number.isSafeInteger(state.generation) || state.generation < 0 || !/^[0-9a-f]{32}$/.test(state.nonce) ||
+  if ((state.startupRecovery !== undefined && state.startupRecovery !== 1) || !Number.isSafeInteger(state.generation) || state.generation < 0 || !/^[0-9a-f]{32}$/.test(state.nonce) ||
       path.basename(root) !== `g-${state.generation}-${state.nonce}` || state.root !== root ||
       state.socketRoot !== path.join(await socketParent(), `zobs2-${state.nonce.slice(0, 16)}`) ||
       state.outerSocket !== path.join(state.socketRoot, 'tmux') ||
@@ -140,12 +141,12 @@ export async function validateState(root) {
     throw failure('unsafe_runtime_state', 'Observer executable changed');
   }
   if (await fs.readFile(state.layoutFile, 'utf8') !== fixedLayout(state) ||
-      await fs.readFile(state.tmuxConfig, 'utf8') !== 'set-option -g remain-on-exit on\n') {
+      await fs.readFile(state.tmuxConfig, 'utf8') !== (state.startupRecovery === 1 ? tmuxConfigText : 'set-option -g remain-on-exit on\n')) {
     throw failure('unsafe_runtime_state', 'Observer fixed layout changed');
   }
   return state;
 }
-function validRole(role) {
+export function validRole(role) {
   return !!role && Number.isSafeInteger(role.pid) && role.pid > 0 &&
     Number.isSafeInteger(role.ppid) && role.ppid >= 0 &&
     typeof role.start === 'string' && role.start.length > 0 && role.start.length <= 128 &&

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { command, delay, digest, exists, failure, finalName, fixedLayout, identity, mkdirPrivate, outerArgs,
   privateEnvironment, privatePath, processSnapshot, readJson, readReceipt, removePrivateTree,
-  socketParent, syncDirectory, targetArgs, validateState, writeAtomic, zellijArgs } from './observer-tmux-state.js';
+  socketParent, syncDirectory, targetArgs, validateState, writeAtomic, zellijArgs, tmuxConfigText, validRole } from './observer-tmux-state.js';
 
 const workerPath = fileURLToPath(new URL('./observer-tmux-worker.js', import.meta.url));
 const defaultConfig = fileURLToPath(new URL('../../assets/observer/zellij-config.kdl', import.meta.url));
@@ -43,14 +43,14 @@ async function socketsUnder(root, budget = { count: 0 }) {
 export class TmuxObserverContainment extends EventEmitter {
   constructor({ dataDir, tmuxPath = 'tmux', tmuxSocket = null, zellijConfig = defaultConfig,
     platform = process.platform, arch = process.arch, exec = command, spawnImpl = spawn,
-    startupTimeoutMs = 20000, cleanupTimeoutMs = 20000, phase = async () => {}, choosePort = freePort, observe = identity, snapshot = processSnapshot } = {}) {
+    startupTimeoutMs = 20000, cleanupTimeoutMs = 20000, phase = async () => {}, choosePort = freePort, observe = identity, snapshot = processSnapshot, signal = (pid, name) => process.kill(pid, name) } = {}) {
     super();
     // dataDir is a trusted deployment input; resolve OS aliases once, then reject
     // any symlink below this canonical boundary when validating managed state.
     this.dataDir = fs.realpathSync(dataDir);
     this.runtimeRoot = path.join(this.dataDir, 'observer', 'runtime', 'generations');
     Object.assign(this, { tmuxPath, tmuxSocket, zellijConfig, platform, arch, exec, spawn: spawnImpl,
-      startupTimeoutMs, cleanupTimeoutMs, phase, choosePort, observe, snapshot });
+      startupTimeoutMs, cleanupTimeoutMs, phase, choosePort, observe, snapshot, signal });
     this.active = null;
     this.owned = new Set();
     this._stopping = null;
@@ -86,7 +86,7 @@ export class TmuxObserverContainment extends EventEmitter {
     const staging = path.join(this.runtimeRoot, `.staging-${name}`);
     await fs.promises.mkdir(staging, { mode: 0o700 });
     await this.phase('staging-created', { root, staging });
-    const state = { schema: 2, generation, nonce, root,
+    const state = { schema: 2, startupRecovery: 1, generation, nonce, root,
       socketRoot: path.join(await socketParent(), `zobs2-${nonce.slice(0, 16)}`),
       sessionName: `observer-${nonce.slice(0, 16)}`, port: await this.choosePort(), target,
       tmuxPath: this.tmuxPath, tmuxSocket, binaryPath,
@@ -95,7 +95,7 @@ export class TmuxObserverContainment extends EventEmitter {
       parent: await this.observe(process.pid), platform: this.platform, arch: this.arch };
     state.outerSocket = path.join(state.socketRoot, 'tmux');
     const layout = fixedLayout(state);
-    const files = { layoutFile: layout, tmuxConfig: 'set-option -g remain-on-exit on\n', configFile: await fs.promises.readFile(this.zellijConfig) };
+    const files = { layoutFile: layout, tmuxConfig: tmuxConfigText, configFile: await fs.promises.readFile(this.zellijConfig) };
     state.hashes = { binary: digest(await fs.promises.readFile(binaryPath)) };
     for (const [key, content] of Object.entries(files)) {
       const handle = await fs.promises.open(path.join(staging, path.basename(state[key])), 'wx', 0o600);
@@ -142,7 +142,7 @@ export class TmuxObserverContainment extends EventEmitter {
       if (this.active.generation === options.generation) return this.active;
       throw failure('generation_active', 'Observer generation already active');
     }
-    // A previous unresolved start must block every subsequent request.
+    // Reconcile any interrupted previous start before admitting fresh demand.
     await this.reconcilePersisted();
     const state = await this._publish(options);
     try {
@@ -200,8 +200,8 @@ export class TmuxObserverContainment extends EventEmitter {
 
   async _absence(state, receipt) {
     const snapshot = await this.snapshot();
-    for (const role of Object.values(receipt.roles)) if (await this._sameProcess(role, snapshot)) return false;
-    if (snapshot.some((entry) => entry.pid !== process.pid &&
+    for (const role of Object.values(receipt.roles)) if (await this._sameProcess(role, snapshot) && !(await this.observe(role.pid, snapshot))?.status.startsWith('Z')) return false;
+    if (snapshot.some((entry) => entry.pid !== process.pid && !entry.status.startsWith('Z') &&
         (entry.command.includes(state.root) || entry.command.includes(state.socketRoot)))) return false;
     for (const socket of await socketsUnder(state.socketRoot)) if (!await socketClosed(socket)) return false;
     // The target server may legitimately have disappeared. -N never bootstraps.
@@ -236,6 +236,75 @@ export class TmuxObserverContainment extends EventEmitter {
     this.owned.delete(state.root);
   }
 
+  async _signalExact(record, name) {
+    if (!validRole(record) || record.pid === process.pid) throw failure('unsafe_runtime_state', 'Invalid recovery process identity');
+    const current = await this.observe(record.pid);
+    if (!current || current.start !== record.start || current.status.startsWith('Z')) return false;
+    try { this.signal(record.pid, name); }
+    catch (error) { if (error.code !== 'ESRCH') throw error; }
+    return true;
+  }
+
+  async _recoverStartup(state) {
+    // This marker is an enduring cancellation, never a fabricated ready receipt.
+    // Kill the registered issuer first; a stalled callback or command cannot
+    // resume and create more resources after its exact process has disappeared.
+    await writeAtomic(path.join(state.root, 'recovery.json'), { nonce: state.nonce, cancelled: true });
+    const worker = await readJson(path.join(state.root, 'starting', 'claim', 'worker.json'));
+    if (worker.nonce !== state.nonce || !validRole(worker.role)) throw failure('unsafe_runtime_state', 'Invalid startup worker identity');
+    await this._signalExact(worker.role, 'SIGKILL');
+    const deadline = Date.now() + this.cleanupTimeoutMs;
+    while (await this._sameProcess(worker.role, await this.snapshot())) {
+      const current = await this.observe(worker.role.pid);
+      if (!current || current.status.startsWith('Z')) break;
+      if (Date.now() >= deadline) throw failure('cleanup_timeout', 'Observer startup worker has not stopped');
+      await delay(50);
+    }
+    const records = new Map();
+    try {
+      const server = await readJson(path.join(state.root, 'starting', 'server.json'));
+      if (server.nonce !== state.nonce || !validRole(server.role)) throw failure('unsafe_runtime_state', 'Invalid private server identity');
+      records.set(server.role.pid, server.role);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // Freeze each scoped producer before collecting its descendants. Repeating
+    // inventory after the stop catches children forked during the first scan.
+    // Before server.json exists the child is still a gated shell whose argv
+    // contains this generation; only its recorded PID can later exec tmux.
+    let changed;
+    do {
+      changed = false;
+      const inventory = await this.snapshot();
+      const selected = new Set();
+      for (const record of records.values()) if (await this._sameProcess(record, inventory)) selected.add(record.pid);
+      for (const entry of inventory) {
+        if (entry.command.includes(state.root) || entry.command.includes(state.socketRoot)) selected.add(entry.pid);
+      }
+      let added;
+      do {
+        added = false;
+        for (const entry of inventory) if (selected.has(entry.ppid) && !selected.has(entry.pid)) {
+          selected.add(entry.pid); added = true;
+        }
+      } while (added);
+      for (const entry of inventory) {
+        if (!selected.has(entry.pid) || entry.status.startsWith('Z')) continue;
+        const record = await this.observe(entry.pid, inventory);
+        if (!record || record.pid === process.pid) continue;
+        if (records.get(record.pid)?.start !== record.start) changed = true;
+        records.set(record.pid, record);
+        await this._signalExact(record, 'SIGSTOP');
+      }
+      if (Date.now() >= deadline && changed) throw failure('cleanup_timeout', 'Observer startup resources did not settle');
+    } while (changed);
+    for (const record of records.values()) await this._signalExact(record, 'SIGKILL');
+    const receipt = { roles: Object.fromEntries([...records].map(([pid, role]) => [pid, role])), sessionIssued: false };
+    do {
+      if (await this._absence(state, receipt)) { await this._retire(state); return; }
+      await delay(50);
+    } while (Date.now() < deadline);
+    throw failure('cleanup_timeout', 'Observer interrupted-start resources remain');
+  }
+
   async _cleanup(state) {
     await this._assertOwnerGone(state);
     try {
@@ -249,7 +318,19 @@ export class TmuxObserverContainment extends EventEmitter {
       return;
     }
     if (!await exists(path.join(state.root, 'starting'))) throw failure('unsafe_runtime_state', 'Missing Observer creation permit');
-    const receipt = await this._waitReceipt(state, this.cleanupTimeoutMs);
+    let receipt;
+    try { receipt = await this._waitReceipt(state, state.startupRecovery === 1 ? 0 : this.cleanupTimeoutMs); }
+    catch (error) {
+      if (error.code !== 'startup_incomplete' || state.startupRecovery !== 1) throw error;
+      if (await exists(state.socketRoot)) {
+        await privatePath(state.socketRoot);
+        try {
+          const owner = await readJson(path.join(state.socketRoot, 'owner.json'));
+          if (owner.root !== state.root || owner.nonce !== state.nonce) throw failure('unsafe_runtime_state', 'Socket scope ownership mismatch');
+        } catch (ownerError) { if (ownerError.code !== 'ENOENT') throw ownerError; }
+      }
+      return this._recoverStartup(state);
+    }
     if (await exists(state.socketRoot)) {
       await privatePath(state.socketRoot);
       try {

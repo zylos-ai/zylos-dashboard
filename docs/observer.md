@@ -81,21 +81,28 @@ already been removed; existing parent paths and remaining ownership records must
 still validate. Component uninstallation also performs Observer cleanup, both while Dashboard
 is running and after it has crashed, and fails until that cleanup can be proved.
 
-A startup worker continues independently if Dashboard crashes. If that worker,
-the operating system, or Zellij itself fails before the private session's startup
-is conclusively acknowledged, the remaining state may require operator
-investigation. Retry can finish a startup still in
-progress; restarting Dashboard or the host does not automatically discard an
-unresolved record. Generations left by an older native-helper implementation
-require its original cleanup path or explicit operator recovery before using the
-replacement lifecycle.
+A startup worker continues independently if Dashboard crashes. For new
+generations, a worker that exits without acknowledging startup, or stalls until
+the startup deadline, is automatically cancelled. Recovery stops that exact
+worker and its private resources, verifies their absence, and retires the old
+records before a later viewing request starts a fresh generation. Dashboard
+restart uses the same recovery path; it does not resume the interrupted session.
+
+Persistent operating-system or filesystem failures, unsafe ownership records,
+or resources that cannot be proved absent still require investigation. Restart
+does not discard unresolved records merely because time has passed or a PID is
+missing. Older generations without the startup-recovery contract retain their
+previous cleanup requirements; native-helper generations require their original
+cleanup path or explicit operator recovery.
 
 ## Cleanup scope and limits
 
 Observer uses its own private tmux server, Zellij session, foreground web process
-and private sockets. It first closes the exact private Zellij session, then the
-private tmux server, and checks the recorded roles and private endpoints before
-removing their records. It never closes the Agent's tmux server or signals an
+and private sockets. For acknowledged startup, it first closes the exact private
+Zellij session, then the private tmux server. Interrupted-start recovery instead
+cancels creation and stops the exact worker and private producers before draining
+their scoped descendants. Both paths check private processes and endpoints before
+removing their records. They never close the Agent's tmux server or signal an
 unrelated service occupying a port. Cleanup uncertainty remains a failure.
 
 This is cooperative process management on supported managed hosts, not a security

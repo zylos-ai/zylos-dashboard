@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TmuxObserverContainment } from '../src/lib/observer-containment-tmux.js';
@@ -73,12 +74,17 @@ test('claim and cancellation compete on the actual permit; late worker cannot cr
   assert.equal(commands, 0);
 });
 
-test('claimed startup without terminal receipt stays fenced despite total process absence', async (t) => {
+test('claimed startup without terminal receipt recovers a dead worker and allows fresh demand', async (t) => {
   const f = await fixture(t); const state = await f.publish();
+  await fs.mkdir(path.join(state.root, 'pending', 'claim'));
+  await writeAtomic(path.join(state.root, 'pending', 'claim', 'worker.json'), { nonce: state.nonce, role: role(109) });
   await fs.rename(path.join(state.root, 'pending'), path.join(state.root, 'starting'));
-  await assert.rejects(f.adapter.reconcilePersisted(), { code: 'startup_incomplete' });
-  assert.equal(await exists(state.root), true);
+  f.adapter.observe = async () => null;
+  await f.adapter.reconcilePersisted();
+  assert.equal(await exists(state.root), false);
   assert.equal(await exists(f.binaryPath), true);
+  const fresh = await f.publish();
+  assert.notEqual(fresh.root, state.root);
 });
 
 test('ready receipt requires all roles and acknowledged running web; failed prelaunch receipt remains valid', async (t) => {
@@ -120,6 +126,7 @@ async function workerFixture(t, { log = initializationLog, held = false, webExit
     daemon: role(112, `${state.binaryPath} --server ${state.socketRoot}/${state.sessionName}`),
     inner: role(113, 'tmux attach-session', 112), web: role(114, `${state.binaryPath} web --start`) };
   const opts = {
+    workerIdentity: async () => role(109), launchServer: async () => 110,
     observe: async (pid) => held && pid === 113 ? null : Object.values(roles).find((r) => r.pid === pid) || null,
     snapshot: async () => Object.values(roles),
     wait: async (check) => { const result = await check(); if (!result) throw new Error('unsettled fixture'); return result; },
@@ -334,4 +341,105 @@ test('optional Observer import does not resolve a platform-specific temp directo
   const moduleUrl = new URL('../src/lib/observer-containment.js', import.meta.url).href;
   const script = `import fs from 'node:fs/promises'; fs.realpath = async () => { throw new Error('unsupported temp'); }; await import(${JSON.stringify(moduleUrl)});`;
   await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script]);
+});
+
+test('interrupted startup cancels issuer before freezing private producers and catches a late child', async (t) => {
+  const f = await fixture(t); const s = await f.publish();
+  await fs.mkdir(path.join(s.root, 'pending', 'claim'));
+  const worker = role(109, `node worker ${s.root}`);
+  const server = role(110, 'tmux: server');
+  const daemon = role(112, `zellij --server ${s.socketRoot}/session`);
+  const inner = role(113, 'tmux attach-session -r', 112);
+  const foreign = role(999, 'foreign listener');
+  await writeAtomic(path.join(s.root, 'pending', 'claim', 'worker.json'), { nonce: s.nonce, role: worker });
+  await fs.rename(path.join(s.root, 'pending'), path.join(s.root, 'starting'));
+  await writeAtomic(path.join(s.root, 'starting', 'server.json'), { nonce: s.nonce, role: server });
+  const live = new Map([worker, server, daemon, inner, foreign].map((r) => [r.pid, r]));
+  const signals = [];
+  let lateChild = false;
+  f.adapter.observe = async (pid) => live.get(pid) || null;
+  f.adapter.snapshot = async () => [...live.values()];
+  f.adapter.cleanupTimeoutMs = 1000;
+  f.adapter.signal = (pid, signal) => {
+    assert.equal(fsSync.existsSync(path.join(s.root, 'recovery.json')), true, 'cancel marker precedes all signals');
+    signals.push([pid, signal]);
+    if (pid === 110 && signal === 'SIGSTOP' && !lateChild) {
+      live.set(115, role(115, 'child forked just before server stopped', 110));
+      lateChild = true;
+    }
+    if (signal === 'SIGKILL') live.delete(pid);
+  };
+  await f.adapter.reconcilePersisted();
+  assert.deepEqual(signals[0], [109, 'SIGKILL']);
+  assert.ok(signals.some(([pid, signal]) => pid === 115 && signal === 'SIGKILL'));
+  assert.ok(signals.some(([pid, signal]) => pid === 113 && signal === 'SIGKILL'));
+  assert.equal(signals.some(([pid]) => pid === 999), false);
+  assert.deepEqual([...live.keys()], [999]);
+  assert.equal(await exists(s.root), false);
+});
+
+test('reused recorded server PID does not authorize its foreign replacement or descendants', async (t) => {
+  const f = await fixture(t); const s = await f.publish();
+  await fs.mkdir(path.join(s.root, 'pending', 'claim'));
+  await writeAtomic(path.join(s.root, 'pending', 'claim', 'worker.json'), { nonce: s.nonce, role: role(109) });
+  await fs.rename(path.join(s.root, 'pending'), path.join(s.root, 'starting'));
+  await writeAtomic(path.join(s.root, 'starting', 'server.json'), { nonce: s.nonce, role: role(110) });
+  const live = [{ ...role(110, 'unrelated server'), start: 'replacement' }, role(111, 'foreign child', 110)];
+  f.adapter.observe = async (pid) => live.find((r) => r.pid === pid) || null;
+  f.adapter.snapshot = async () => live;
+  f.adapter.signal = () => assert.fail('foreign process signaled');
+  await f.adapter.reconcilePersisted();
+  assert.equal(await exists(s.root), false);
+});
+
+test('cancelled worker held before outer launch cannot issue a late native command', async (t) => {
+  const f = await workerFixture(t);
+  let launches = 0;
+  f.opts.launchServer = async () => { launches++; return 110; };
+  f.opts.phase = async (name) => {
+    if (name === 'before-outer') await writeAtomic(path.join(f.state.root, 'recovery.json'), { nonce: f.state.nonce, cancelled: true });
+  };
+  assert.deepEqual(await runStartupWorker(f.state.root, f.opts), { claimed: true, settled: false });
+  assert.equal(launches, 0);
+  assert.equal(f.commands.length, 0);
+  assert.equal(await exists(path.join(f.state.root, 'receipt.json')), false);
+});
+
+test('all tmux pane creation disables server bootstrap and follows persisted server identity', async (t) => {
+  const f = await workerFixture(t);
+  const exec = f.opts.exec;
+  f.opts.exec = async (file, args) => {
+    if (args.includes('new-session') || args.includes('new-window')) {
+      assert.equal(args[0], '-N');
+      const server = JSON.parse(await fs.readFile(path.join(f.state.root, 'starting', 'server.json'), 'utf8'));
+      assert.equal(server.nonce, f.state.nonce);
+      assert.equal(server.role.pid, 110);
+      assert.equal(await exists(path.join(f.state.root, 'starting', 'server-permit.json')), true);
+    }
+    return exec(file, args);
+  };
+  assert.equal((await runStartupWorker(f.state.root, f.opts)).outcome, 'ready');
+});
+
+test('malformed claimed worker identity fails closed without signals', async (t) => {
+  const f = await fixture(t); const s = await f.publish();
+  await fs.mkdir(path.join(s.root, 'pending', 'claim'));
+  await writeAtomic(path.join(s.root, 'pending', 'claim', 'worker.json'), { nonce: 'wrong', role: role(109) });
+  await fs.rename(path.join(s.root, 'pending'), path.join(s.root, 'starting'));
+  f.adapter.signal = () => assert.fail('malformed authority must not signal');
+  await assert.rejects(f.adapter.reconcilePersisted(), { code: 'unsafe_runtime_state' });
+  assert.equal(await exists(s.root), true);
+});
+
+test('historical receipt-only generation without recovery contract remains fenced', async (t) => {
+  const f = await fixture(t); const s = await f.publish();
+  delete s.startupRecovery;
+  const config = 'set-option -g remain-on-exit on\n';
+  await fs.writeFile(s.tmuxConfig, config);
+  s.hashes.tmuxConfig = digest(config);
+  await writeAtomic(path.join(s.root, 'state.json'), s);
+  await fs.rename(path.join(s.root, 'pending'), path.join(s.root, 'starting'));
+  f.adapter.signal = () => assert.fail('old generation must not enter new recovery');
+  await assert.rejects(f.adapter.reconcilePersisted(), { code: 'startup_incomplete' });
+  assert.equal(await exists(s.root), true);
 });
