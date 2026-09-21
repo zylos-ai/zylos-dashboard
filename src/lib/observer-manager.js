@@ -53,6 +53,7 @@ export class ObserverManager {
     this._idleStopping = null;
     this._revalidationTimer = null;
     this._runtimeError = null;
+    this._retiring = null;
     this._shuttingDown = false;
     this._lifecycleTransitions = 0;
   }
@@ -64,14 +65,20 @@ export class ObserverManager {
   }
 
   async _ensureGeneration(context) {
+    if (this._retiring) await this._retiring;
     if (this._idleStopping) await this._idleStopping;
     if (this._shuttingDown || this._lifecycleTransitions > 0) {
       throw new ObserverManagerError('operation_obsolete', 'Observer lifecycle is changing');
     }
+    context = this.authGate.revalidateAuthContext(context);
+    if (!context) throw new ObserverManagerError('auth_required', 'Observer authentication expired');
     if (this._runtimeError) throw new ObserverManagerError('teardown_failed', 'Observer cleanup requires administrator recovery');
     if (this.containment.active && this.generation !== null) return this.containment.active;
     if (this._starting) return this._starting;
-    this._starting = this.coordinator.firstLease(context).then((active) => {
+    this._starting = this.coordinator.firstLease(context).catch((error) => {
+      if (error.cleanupError) this._runtimeError = error.cleanupError;
+      throw error;
+    }).then((active) => {
       this.generation = active.generation;
       this._startRevalidation();
       return active;
@@ -99,13 +106,13 @@ export class ObserverManager {
 
   _scheduleIdleStop() {
     if (this.leases.size > 0 || this._pendingLeases > 0 || this._starting || this._shuttingDown ||
-        this._lifecycleTransitions > 0 ||
+        this._lifecycleTransitions > 0 || this._retiring || this._runtimeError ||
         this._idleTimer || !this.containment.active) return;
     const expectedGeneration = this.generation;
     this._idleTimer = setTimeout(() => {
       this._idleTimer = null;
       if (this.leases.size > 0 || this._pendingLeases > 0 || this._starting || this._shuttingDown ||
-          this._lifecycleTransitions > 0 ||
+          this._lifecycleTransitions > 0 || this._retiring || this._runtimeError ||
           this.generation !== expectedGeneration) return;
       this._idleStopping = this.containment.stopGeneration({ reason: 'last_lease' }).then(() => {
         if (this.generation === expectedGeneration) this.generation = null;
@@ -132,7 +139,11 @@ export class ObserverManager {
       if (this.leases.size + this._pendingLeases > this.maxViewers) {
         throw new ObserverManagerError('capacity_exceeded', 'Observer viewer capacity reached');
       }
+      context = this.authGate.revalidateAuthContext(context);
+      if (!context) throw new ObserverManagerError('auth_required', 'Observer authentication expired');
       const active = await this._ensureGeneration(context);
+      context = this.authGate.revalidateAuthContext(context);
+      if (!context) throw new ObserverManagerError('auth_required', 'Observer authentication expired');
       if (epoch !== this._epoch || active !== this.containment.active || active.generation !== this.generation) {
         throw new ObserverManagerError('operation_obsolete', 'Observer lease start was superseded');
       }
@@ -228,6 +239,7 @@ export class ObserverManager {
     this.leases.clear();
     this.generation = null;
     try {
+      if (this._retiring) await this._retiring;
       if (this._idleStopping) await this._idleStopping;
       const starting = this._starting;
       if (starting) {
@@ -255,6 +267,7 @@ export class ObserverManager {
     this.leases.clear();
     this.generation = null;
     try {
+      if (this._retiring) await this._retiring;
       if (this._idleStopping) await this._idleStopping;
       const starting = this._starting;
       if (starting) {
@@ -280,6 +293,7 @@ export class ObserverManager {
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
+    if (this._retiring) await this._retiring;
     if (this._idleStopping) await this._idleStopping;
     const starting = this._starting;
     if (starting) {
@@ -314,16 +328,37 @@ export class ObserverManager {
     throw originalError;
   }
 
-  async handleContainmentFailure(error) {
+  runtimeStatus() {
+    return {
+      state: this._retiring ? 'retiring' : this._runtimeError ? 'blocked' :
+        this.containment.active && this.generation !== null ? 'live' : 'idle',
+      error: this._runtimeError?.code || (this._runtimeError ? 'teardown_failed' : null),
+    };
+  }
+
+  handleContainmentFailure(error, active = this.containment.active) {
+    // Fence admission synchronously, before stream close can trigger new demand.
+    if (!active || active !== this.containment.active) return Promise.resolve();
+    if (this._retiring) return this._retiring;
     this._epoch += 1;
+    const epoch = this._epoch;
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
-    this._runtimeError = error || new Error('Observer containment failed');
-    try { await this.containment.stopGeneration({ reason: 'child_failure' }); } catch (cleanupError) {
-      this._runtimeError = cleanupError;
-    }
     this.generation = null;
+    const retirement = Promise.resolve().then(async () => {
+      try {
+        await this.containment.stopGeneration({ reason: 'child_failure' });
+        if (this._epoch === epoch) this._runtimeError = null;
+      } catch (cleanupError) {
+        // Lifecycle operations wait for us before attempting their own cleanup.
+        this._runtimeError = cleanupError;
+      }
+    }).finally(() => {
+      if (this._retiring === retirement) this._retiring = null;
+    });
+    this._retiring = retirement;
+    return retirement;
   }
 }
 

@@ -443,3 +443,24 @@ test('historical receipt-only generation without recovery contract remains fence
   await assert.rejects(f.adapter.reconcilePersisted(), { code: 'startup_incomplete' });
   assert.equal(await exists(s.root), true);
 });
+
+test('target preflight distinguishes verified absence from command failures', async (t) => {
+  const f = await fixture(t);
+  const missing = Object.assign(new Error('tmux has-session failed'), { code: 1, stderr: "can't find session: codex-main\n" });
+  f.adapter.exec = async (_file, args) => {
+    if (args.includes('has-session')) throw missing;
+    return { stdout: 'sentinel\n' };
+  };
+  await assert.rejects(f.publish(), { code: 'target_unavailable' });
+  assert.equal(await exists(f.adapter.runtimeRoot), false);
+  for (const error of [Object.assign(new Error('permission'), { code: 1, stderr: 'permission denied' }),
+    Object.assign(new Error('binary'), { code: 'ENOENT' }),
+    Object.assign(new Error('timeout'), { code: 1, killed: true })]) {
+    f.adapter.exec = async () => { throw error; };
+    await assert.rejects(f.publish(), (actual) => actual === error);
+  }
+  const socket = path.join(f.dataDir, 'missing-target.sock');
+  f.adapter.exec = async () => { throw Object.assign(new Error('absent'), { code: 1, stderr: `error connecting to ${socket} (No such file or directory)\n` }); };
+  await assert.rejects(f.publish(), { code: 'target_unavailable' });
+  assert.equal(await exists(f.adapter.runtimeRoot), false);
+});

@@ -6,6 +6,7 @@
   "tab.trends": "趋势",
   "observer.title": "终端观察",
   "observer.target": "正在观察 {name} · 仅显示",
+  "observer.waiting_for_agent": "连接中断，正在等待 Agent 恢复…",
   "observer.connecting": "正在连接只读终端…",
   "observer.live_read_only": "实时 · 键盘、粘贴和控制输入均已阻断",
   "observer.disconnected": "Observer 已断开，隔离会话正在回收。",

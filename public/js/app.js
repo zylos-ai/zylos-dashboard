@@ -1974,8 +1974,43 @@ function releaseObserverLease(endpoints, lease) {
   }).catch(() => {});
 }
 
-async function closeObserver({ release = true, preserveNotice = false } = {}) {
+function observerRequestError(data, status) {
+  return Object.assign(new Error(data.error || t('observer.connect_failed')), { code: data.error, status });
+}
+
+function observerRetryable(error) {
+  if ([401, 403].includes(error?.status)) return false;
+  if (error?.status === 429) return true;
+  return !error?.code && !error?.status ||
+    ['upstream_unreachable', 'target_unavailable', 'operation_obsolete', 'lease_not_found', 'lease_expired', 'lease_mismatch'].includes(error?.code);
+}
+
+async function recoverObserver(error) {
   const observer = state.observer;
+  const intent = observer.intent;
+  if (!intent || intent.targetKey !== observerTargetKey()) return;
+  const retry = observerRetryable(error);
+  await closeObserver({ preserveNotice: true, preserveIntent: retry });
+  if (!retry) {
+    setObserverNotice(error?.message || t('observer.not_available'), 'error');
+    return;
+  }
+  if (observer.intent !== intent) return;
+  setObserverNotice(t('observer.waiting_for_agent'), 'connecting');
+  const delay = [1000, 2000, 4000, 8000, 15000][Math.min(intent.attempt++, 4)];
+  observer.retryTimer = setTimeout(() => {
+    observer.retryTimer = null;
+    if (observer.intent === intent && intent.targetKey === observerTargetKey()) openObserver().catch(() => {});
+  }, delay);
+}
+
+async function closeObserver({ release = true, preserveNotice = false, preserveIntent = false } = {}) {
+  const observer = state.observer;
+  clearTimeout(observer.retryTimer);
+  observer.retryTimer = null;
+  if (!preserveIntent) observer.intent = null;
+  observer.abort?.abort();
+  observer.abort = null;
   observer.generation = (Number.isInteger(observer.generation) ? observer.generation : 0) + 1;
   clearInterval(observer.renewTimer);
   observer.renewTimer = null;
@@ -2005,7 +2040,7 @@ async function renewObserverLease(generation, targetKey, lease, endpointPrefix) 
     method: 'POST', headers: { 'Content-Type': 'application/json' }
   });
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.error || 'lease_renew_failed');
+  if (!resp.ok) throw observerRequestError(data, resp.status);
   if (!observerSessionCurrent(generation, targetKey) || state.observer.lease?.id !== lease.id) return;
   state.observer.lease = data;
 }
@@ -2013,6 +2048,11 @@ async function renewObserverLease(generation, targetKey, lease, endpointPrefix) 
 async function openObserver() {
   const observer = state.observer;
   if (observer.opening || observer.lease) return;
+  clearTimeout(observer.retryTimer);
+  observer.retryTimer = null;
+  if (!observer.intent) observer.intent = { targetKey: observerTargetKey(), attempt: 0 };
+  const abort = typeof AbortController === 'function' ? new AbortController() : null;
+  observer.abort = abort;
   const generation = observer.generation = (Number.isInteger(observer.generation) ? observer.generation : 0) + 1;
   const targetKey = observerTargetKey();
   const endpoints = {
@@ -2023,7 +2063,7 @@ async function openObserver() {
   observer.opening = true;
   setObserverNotice(t('observer.connecting'), 'connecting');
   try {
-    let status = await refreshObserverStatus();
+    let status = await refreshObserverStatus({ signal: abort?.signal });
     // A same-target refresh may supersede our request. Follow the current
     // request, including further supersessions, without abandoning the open.
     while (!status && observerSessionCurrent(generation, targetKey)) {
@@ -2035,24 +2075,26 @@ async function openObserver() {
     }
     if (!observerSessionCurrent(generation, targetKey)) return;
     if (status?.state !== 'installed' || status.desired?.enabled !== true || observerRecoveryReason(status)) {
-      throw new Error(t('observer.not_available'));
+      throw Object.assign(new Error(t(observerRecoveryReason(status) ? 'observer.recovery_hint' : 'observer.not_available')), { code: 'observer_unavailable' });
     }
     observer.endpointPrefix = endpoints;
+    // Keep lease acquisition observable after cancellation so a late ID can be
+    // released against its original target. Frame/status fetches are abortable.
     const leaseResp = await fetch(`${endpoints.api}/leases`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }
     });
     const lease = await leaseResp.json().catch(() => ({}));
-    if (!leaseResp.ok) throw new Error(lease.error || t('observer.connect_failed'));
+    if (!leaseResp.ok) throw observerRequestError(lease, leaseResp.status);
     if (!observerSessionCurrent(generation, targetKey)) {
       releaseObserverLease(endpoints, lease);
       return;
     }
     observer.lease = lease;
 
-    const frameResp = await fetch(endpoints.frame, { headers: { 'X-Observer-Lease': lease.id } });
+    const frameResp = await fetch(endpoints.frame, { signal: abort?.signal, headers: { 'X-Observer-Lease': lease.id } });
     if (!frameResp.ok) {
       const data = await frameResp.json().catch(() => ({}));
-      throw new Error(data.error || t('observer.connect_failed'));
+      throw observerRequestError(data, frameResp.status);
     }
     const frameDocument = await frameResp.text();
     if (!observerSessionCurrent(generation, targetKey) || observer.lease?.id !== lease.id) return;
@@ -2087,6 +2129,7 @@ async function openObserver() {
         return;
       }
       if (event.data instanceof ArrayBuffer && event.data.byteLength <= 262144) {
+        if (observer.intent) observer.intent.attempt = 0;
         observer.channel?.postMessage({ type: 'render', bytes: event.data }, [event.data]);
       }
     };
@@ -2095,14 +2138,12 @@ async function openObserver() {
     };
     ws.onclose = () => {
       if (!observerSessionCurrent(generation, targetKey) || observer.ws !== ws) return;
-      setObserverNotice(t('observer.disconnected'), 'error');
-      closeObserver({ release: true, preserveNotice: true }).catch(() => {});
+      recoverObserver().catch(() => {});
     };
     observer.renewTimer = setInterval(() => {
-      renewObserverLease(generation, targetKey, lease, endpoints).catch(() => {
+      renewObserverLease(generation, targetKey, lease, endpoints).catch((error) => {
         if (!observerSessionCurrent(generation, targetKey) || observer.lease?.id !== lease.id) return;
-        setObserverNotice(t('observer.session_expired'), 'error');
-        closeObserver({ release: false, preserveNotice: true }).catch(() => {});
+        recoverObserver(error).catch(() => {});
       });
     }, 10_000);
     syncObserverPreset(lease.preset || 'standard');
@@ -2110,8 +2151,7 @@ async function openObserver() {
     if (target) target.textContent = t('observer.target', { name: viewedAgentName() || t('value.unknown') });
   } catch (error) {
     if (!observerSessionCurrent(generation, targetKey)) return;
-    setObserverNotice(error.message || t('observer.connect_failed'), 'error');
-    await closeObserver({ release: true, preserveNotice: true });
+    await recoverObserver(error);
   } finally {
     if (observer.generation === generation) observer.opening = false;
   }
@@ -3622,7 +3662,7 @@ function observerStatusLabel(status) {
 }
 
 function observerRecoveryReason(status) {
-  return status?.startupError || status?.desired?.lastError || status?.desired?.removalState ||
+  return (status?.runtime?.state === 'blocked' ? status.runtime.error || 'teardown_failed' : null) || status?.startupError || status?.desired?.lastError || status?.desired?.removalState ||
     (status?.desired?.enabled && status?.desired?.teardownFence ? 'teardown_fenced' : null);
 }
 
@@ -3663,7 +3703,7 @@ function renderObserverStatus(status = state.observer.status) {
   }
 }
 
-async function refreshObserverStatus({ quiet = false } = {}) {
+async function refreshObserverStatus({ quiet = false, signal } = {}) {
   const targetKey = observerTargetKey();
   const requestGeneration = state.observer.statusGeneration =
     (Number.isInteger(state.observer.statusGeneration) ? state.observer.statusGeneration : 0) + 1;
@@ -3672,12 +3712,16 @@ async function refreshObserverStatus({ quiet = false } = {}) {
   state.observer.statusRequest = request;
   request.promise = (async () => {
     try {
-      const resp = await fetch(endpoint, { cache: 'no-store' });
+      const resp = await fetch(endpoint, { cache: 'no-store', signal });
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(data.error || t('observer.load_failed'));
+      if (!resp.ok) throw observerRequestError(data, resp.status);
       if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;
       state.observer.status = data;
       renderObserverStatus(data);
+      if (data && state.observer.intent && (data.desired?.enabled !== true || observerRecoveryReason(data))) {
+        await closeObserver({ preserveNotice: true });
+        setObserverNotice(t(observerRecoveryReason(data) ? 'observer.recovery_hint' : 'observer.not_available'), 'error');
+      }
       return data;
     } catch (error) {
       if (state.observer.statusGeneration !== requestGeneration || observerTargetKey() !== targetKey) return null;

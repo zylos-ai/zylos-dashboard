@@ -348,3 +348,81 @@ for (const action of ['disable', 'uninstall']) {
     assert.equal(containment.active?.generation, 1);
   });
 }
+
+function deferredCleanup(f) {
+  let finish;
+  let stops = 0;
+  f.containment.stopGeneration = () => {
+    stops++;
+    return new Promise((resolve, reject) => { finish = (error) => {
+      if (error) reject(error);
+      else { f.containment.active = null; resolve(); }
+    }; });
+  };
+  return { finish: (error) => finish(error), stops: () => stops };
+}
+
+test('failure retirement fences immediately, coalesces, and supports repeated fresh demand', async () => {
+  const f = fixture();
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const oldLease = await f.manager.createLease(context('admin'));
+    const old = f.containment.active;
+    const cleanup = deferredCleanup(f);
+    const retiring = f.manager.handleContainmentFailure(new Error('lost'), old);
+    assert.equal(f.manager.runtimeStatus().state, 'retiring');
+    assert.equal(f.manager.leases.size, 0);
+    assert.equal(f.manager.handleContainmentFailure(new Error('duplicate'), old), retiring);
+    const requests = [f.manager.createLease(context('admin')), f.manager.createLease(context('other'))];
+    await new Promise(setImmediate);
+    assert.equal(cleanup.stops(), 1);
+    assert.equal(f.containment.active, old);
+    cleanup.finish();
+    const leases = await Promise.all(requests);
+    await retiring;
+    assert.notEqual(leases[0].id, leases[1].id);
+    assert.notEqual(leases[0].id, oldLease.id);
+    assert.notEqual(f.containment.active, old);
+    assert.equal(f.manager.runtimeStatus().state, 'live');
+    const live = f.containment.active;
+    await f.manager.handleContainmentFailure(new Error('late'), old);
+    assert.equal(f.containment.active, live);
+    assert.equal(f.manager.leases.size, 2);
+    f.manager.leases.clear();
+  }
+});
+
+test('retirement cleanup uncertainty blocks admission and exposes its error', async () => {
+  const f = fixture();
+  await f.manager.createLease(context('admin'));
+  const cleanup = deferredCleanup(f);
+  const retiring = f.manager.handleContainmentFailure(new Error('lost'));
+  const request = f.manager.createLease(context('admin'));
+  await new Promise(setImmediate);
+  cleanup.finish(Object.assign(new Error('survivors'), { code: 'cleanup_timeout' }));
+  await retiring;
+  await assert.rejects(request, { code: 'teardown_failed' });
+  assert.deepEqual(f.manager.runtimeStatus(), { state: 'blocked', error: 'cleanup_timeout' });
+  assert.equal(f.counts().starts, 1);
+});
+
+for (const action of ['disable', 'uninstall', 'shutdown', 'revoke']) {
+  test(`retirement cannot admit a waiting viewer after ${action}`, async () => {
+    const f = fixture();
+    await f.manager.createLease(context('admin'));
+    const originalStop = f.containment.stopGeneration;
+    const cleanup = deferredCleanup(f);
+    const retiring = f.manager.handleContainmentFailure(new Error('lost'));
+    const request = f.manager.createLease(context('admin'));
+    const rejected = assert.rejects(request, (error) => ['auth_required', 'operation_obsolete'].includes(error.code));
+    await new Promise(setImmediate);
+    let lifecycle;
+    if (action === 'revoke') f.validCredentials.clear();
+    else lifecycle = action === 'disable' ? f.manager.invalidateAndDisable() : action === 'uninstall' ? f.manager.invalidateAndUninstall() : f.manager.shutdown();
+    f.containment.stopGeneration = originalStop;
+    cleanup.finish();
+    await Promise.all([retiring, rejected, lifecycle]);
+    assert.equal(f.counts().starts, 1);
+    assert.equal(f.manager.leases.size, 0);
+    assert.equal(f.containment.active, null);
+  });
+}

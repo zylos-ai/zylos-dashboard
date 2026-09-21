@@ -66,16 +66,40 @@ export class TmuxObserverContainment extends EventEmitter {
     return { tmux: this.tmuxPath };
   }
 
+  async _targetAvailable(preflight, target) {
+    try {
+      await this.exec(this.tmuxPath, targetArgs(preflight, 'has-session', '-t', `=${target}`));
+    } catch (error) {
+      if (error.code !== 1 || error.killed || error.signal) throw error;
+      // A successful independent listing proves a missing session. An absent
+      // socket is corroborated by a socket connection, never exit status alone.
+      try {
+        const sessions = await this.exec(this.tmuxPath, targetArgs(preflight, 'list-sessions', '-F', '#{session_name}'));
+        if (!sessions.stdout.split('\n').includes(target)) throw failure('target_unavailable', 'Agent tmux session is unavailable');
+      } catch (probeError) {
+        if (probeError.code === 'target_unavailable') throw probeError;
+        const stderr = String(probeError.stderr || '').trim();
+        const match = /^(?:error connecting to (.+) \((?:No such file or directory|Connection refused)\)|no server running on (.+))$/.exec(stderr);
+        const socket = preflight.tmuxSocket || match?.[1] || match?.[2];
+        if (probeError.code === 1 && match && socket && path.isAbsolute(socket) && await socketClosed(socket)) {
+          throw failure('target_unavailable', 'Agent tmux server is unavailable');
+        }
+        throw error;
+      }
+      throw error;
+    }
+  }
+
   async _publish({ generation, binaryPath, runtime }) {
     await this.verifyHelpers();
     const target = runtime === 'codex' ? 'codex-main' : runtime === 'claude' ? 'claude-main' : null;
     if (!target) throw failure('unsupported_runtime', 'Unsupported Observer runtime');
     if (!Number.isSafeInteger(generation) || generation < 0) throw failure('unsafe_runtime_state', 'Invalid generation');
     const preflight = { tmuxSocket: this.tmuxSocket };
-    await this.exec(this.tmuxPath, targetArgs(preflight, 'has-session', '-t', `=${target}`));
+    await this._targetAvailable(preflight, target);
     const result = await this.exec(this.tmuxPath, targetArgs(preflight, 'display-message', '-p', '-t', `=${target}`, '#{socket_path}'));
     const tmuxSocket = result.stdout.trim();
-    if (!path.isAbsolute(tmuxSocket) || /[\r\n]/.test(tmuxSocket)) throw failure('target_unavailable', 'Target socket was not resolved');
+    if (!path.isAbsolute(tmuxSocket) || /[\r\n]/.test(tmuxSocket)) throw failure('unsafe_runtime_state', 'Target socket was not resolved');
     binaryPath = path.resolve(binaryPath);
     const binaryStat = await fs.promises.lstat(binaryPath);
     if (!binaryStat.isFile() || binaryStat.isSymbolicLink() || !(binaryStat.mode & 0o111)) throw failure('unsafe_runtime_state', 'Invalid Observer binary');
@@ -165,7 +189,7 @@ export class TmuxObserverContainment extends EventEmitter {
     this.active.failed = true;
     clearInterval(this._healthTimer);
     this._healthTimer = null;
-    this.emit('failure', error);
+    this.emit('failure', error, this.active);
   }
 
   async _checkActive() {

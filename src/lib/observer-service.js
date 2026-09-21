@@ -90,9 +90,10 @@ export class ObserverService {
     this._startup = null;
     this._initialized = false;
     this.startupError = null;
-    this.containment.on?.('failure', (error) => {
+    this.containment.on?.('failure', (error, active) => {
+      if (active && active !== this.containment.active) return;
+      this.manager.handleContainmentFailure(error, active).catch(() => {});
       this._closeAllStreams(1011, 'child_failure');
-      this.manager.handleContainmentFailure(error).catch(() => {});
     });
   }
 
@@ -179,7 +180,7 @@ export class ObserverService {
       if (pathname === '/api/observer/status' && req.method === 'GET') {
         await this._ready({ allowRecovery: true });
         const status = await this.coordinator.status();
-        sendJson(res, 200, { ...publicStatus(status), startupError: this.startupError?.code || null });
+        sendJson(res, 200, { ...publicStatus(status), startupError: this.startupError?.code || null, runtime: this.manager.runtimeStatus() });
         return true;
       }
       if (pathname === '/api/observer/install' && req.method === 'POST') {

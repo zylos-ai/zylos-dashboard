@@ -72,9 +72,10 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
       visibilityState: 'visible'
     },
     t: (key) => key,
+    clearTimeout(id) { if (timeouts[id - 1]) timeouts[id - 1].cancelled = true; },
     clearInterval() {},
     setInterval: (handler) => { intervals.push(handler); return intervals.length; },
-    setTimeout: (handler) => { timeouts.push(handler); return timeouts.length; },
+    setTimeout: (handler, delay) => { handler.delay = delay; timeouts.push(handler); return timeouts.length; },
     URL,
     ArrayBuffer,
     window: {
@@ -139,8 +140,8 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
   };
 }
 
-function observerResponse(data, { ok = true } = {}) {
-  return { ok, json: async () => data, text: async () => '<html>renderer</html>' };
+function observerResponse(data, { ok = true, status = ok ? 200 : 503 } = {}) {
+  return { ok, status, json: async () => data, text: async () => '<html>renderer</html>' };
 }
 
 test('prompt source transient display is capped at 5 seconds', () => {
@@ -1247,7 +1248,7 @@ test('Observer open waits for a still-pending superseding status and reports its
     else latest.resolve(observerResponse({ state: 'installed', desired: { enabled: outcome === 'enabled' } }));
     await Promise.all([opening, refreshing]);
     assert.equal(h.sockets.length, outcome === 'enabled' ? 1 : 0);
-    if (outcome !== 'enabled') assert.equal(h.elements['#observer-notice'].dataset.state, 'error');
+    if (outcome !== 'enabled') assert.equal(h.elements['#observer-notice'].dataset.state, outcome === 'error' ? 'connecting' : 'error');
   });
 });
 
@@ -1533,7 +1534,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=67/);
+  assert.match(index, /app\.js\?v=68/);
   assert.match(index, /style\.css\?v=48/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
@@ -1601,7 +1602,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=67/);
+  assert.match(index, /app\.js\?v=68/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -1902,3 +1903,63 @@ test('Observer recovery status survives refresh and exposes cleanup without view
     assert.equal(h.elements['#observer-tab'].hidden, true);
   });
 });
+
+test('Observer reconnect uses fresh leases and bounded delays while intent survives', async () => {
+  const h = observerUiHarness();
+  let attempts = 0;
+  let available = false;
+  h.setFetch((url) => {
+    if (String(url).endsWith('/status')) return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    if (String(url).endsWith('/leases')) {
+      attempts++;
+      return Promise.resolve(available ? observerResponse({ id: `lease-${attempts}` }) : observerResponse({ error: 'target_unavailable' }, { ok: false, status: 503 }));
+    }
+    return Promise.resolve(observerResponse({}));
+  });
+  await h.context.openObserver();
+  for (const delay of [1000, 2000, 4000, 8000, 15000, 15000]) {
+    const timer = h.timeouts.at(-1);
+    assert.equal(timer.delay, delay);
+    timer();
+    await new Promise(setImmediate);
+  }
+  available = true;
+  h.timeouts.at(-1)();
+  await new Promise(setImmediate);
+  assert.equal(h.sockets.length, 1);
+  const first = h.context.state.observer.lease.id;
+  h.sockets[0].onclose();
+  await new Promise(setImmediate);
+  h.timeouts.at(-1)();
+  await new Promise(setImmediate);
+  assert.equal(h.sockets.length, 2);
+  assert.notEqual(h.context.state.observer.lease.id, first);
+});
+
+test('Observer cancelled retry cannot revive viewing, even after returning to the same target', async () => {
+  const h = observerUiHarness();
+  h.setFetch(() => Promise.reject(new Error('network down')));
+  await h.context.openObserver();
+  const timer = h.timeouts.at(-1);
+  assert.equal(timer.delay, 1000);
+  await h.context.closeObserver();
+  assert.equal(timer.cancelled, true);
+  h.context.state.remoteAgent = 'other';
+  h.context.state.remoteAgent = null;
+  const before = h.calls.length;
+  timer(); // Even an already-queued callback is fenced by intent identity.
+  await new Promise(setImmediate);
+  assert.equal(h.calls.length, before);
+  assert.equal(h.context.state.observer.intent, null);
+});
+
+for (const [code, status] of [['auth_required', 401], ['insufficient_scope', 403], ['teardown_failed', 503], ['unsafe_runtime_state', 503], ['not_installed', 404]]) {
+  test(`Observer stops automatic retries for ${code}`, async () => {
+    const h = observerUiHarness();
+    h.setFetch(() => Promise.resolve(observerResponse({ error: code }, { ok: false, status })));
+    await h.context.openObserver();
+    assert.equal(h.timeouts.length, 0);
+    assert.equal(h.context.state.observer.intent, null);
+    assert.equal(h.elements['#observer-notice'].dataset.state, 'error');
+  });
+}

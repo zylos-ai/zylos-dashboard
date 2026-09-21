@@ -6,6 +6,7 @@
   "tab.trends": "Trends",
   "observer.title": "Terminal Observer",
   "observer.target": "Watching {name} · display only",
+  "observer.waiting_for_agent": "Connection interrupted. Waiting for Agent recovery…",
   "observer.connecting": "Connecting to read-only terminal…",
   "observer.live_read_only": "Live · keyboard, paste, and control input are blocked",
   "observer.disconnected": "Observer disconnected. The isolated session is being reclaimed.",

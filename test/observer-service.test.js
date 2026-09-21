@@ -26,6 +26,7 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     async status() { return { state: 'installed', binaryPath: '/private/zellij', desired: { enabled: true } }; },
   };
   const manager = {
+    runtimeStatus() { return { state: 'live', error: null }; },
     validateLease(id, supplied) {
       if (id !== LEASE_ID) throw Object.assign(new Error('missing'), { code: 'lease_not_found' });
       assert.equal(supplied.scope, 'admin');
