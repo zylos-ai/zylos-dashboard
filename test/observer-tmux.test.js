@@ -464,3 +464,101 @@ test('target preflight distinguishes verified absence from command failures', as
   await assert.rejects(f.publish(), { code: 'target_unavailable' });
   assert.equal(await exists(f.adapter.runtimeRoot), false);
 });
+
+test('target disappearance between preflight and socket resolution stays retryable', async (t) => {
+  const f = await fixture(t);
+  const missing = Object.assign(new Error('target disappeared'), { code: 1 });
+  let probes = 0;
+  f.adapter.exec = async (_file, args) => {
+    if (args.includes('has-session') && ++probes === 1) return { stdout: '' };
+    if (args.includes('list-sessions')) return { stdout: 'sentinel\n' };
+    throw missing;
+  };
+  await assert.rejects(f.publish(), (error) => error.code === 'target_unavailable' && error.cause === missing);
+  assert.equal(probes, 2);
+  assert.equal(await exists(f.adapter.runtimeRoot), false);
+});
+
+test('socket resolution preserves unrelated failures and inconclusive target probes', async (t) => {
+  const f = await fixture(t);
+  for (const mode of ['present', 'probe-failed', 'timeout', 'permission']) {
+    const original = Object.assign(new Error(mode), { code: mode === 'permission' ? 'EACCES' : 1,
+      ...(mode === 'timeout' ? { killed: true } : {}) });
+    let probes = 0;
+    f.adapter.exec = async (_file, args) => {
+      if (args.includes('has-session')) {
+        if (++probes === 1 || mode === 'present') return { stdout: '' };
+        throw Object.assign(new Error('probe failed'), { code: 'EACCES' });
+      }
+      throw original;
+    };
+    await assert.rejects(f.publish(), (error) => error === original);
+    assert.equal(probes, ['timeout', 'permission'].includes(mode) ? 1 : 2);
+  }
+});
+
+for (const code of ['startup_failed', 'startup_incomplete', 1]) {
+  test(`failed start ${code} classifies confirmed target absence only after cleanup`, async (t) => {
+    const f = await fixture(t);
+    let cleaned = false;
+    f.adapter._launchWorker = async () => {};
+    const original = Object.assign(new Error('target attach failed'), { code });
+    f.adapter._waitReceipt = async () => { throw original; };
+    const cleanup = f.adapter._cleanup.bind(f.adapter);
+    f.adapter._cleanup = async (state) => { await cleanup(state); cleaned = true; };
+    const exec = f.adapter.exec;
+    let probes = 0;
+    f.adapter.exec = async (file, args) => {
+      if (args.includes('has-session') && ++probes > 1) {
+        assert.equal(cleaned, true);
+        assert.deepEqual(await fs.readdir(f.adapter.runtimeRoot), []);
+        throw Object.assign(new Error('missing target'), { code: 1 });
+      }
+      if (args.includes('list-sessions')) return { stdout: 'sentinel\n' };
+      return exec(file, args);
+    };
+    await assert.rejects(f.adapter.startGeneration({ generation: 1, binaryPath: f.binaryPath, runtime: 'codex' }),
+      (error) => error.code === 'target_unavailable' && error.cause === original);
+    assert.equal(probes, 2);
+    assert.equal(f.adapter.active, null);
+  });
+}
+
+test('failed-start cleanup uncertainty prevents target-loss classification', async (t) => {
+  const f = await fixture(t);
+  const original = Object.assign(new Error('attach failed'), { code: 'startup_failed' });
+  const cleanupError = Object.assign(new Error('absence unproven'), { code: 'cleanup_failed' });
+  f.adapter._launchWorker = async () => { throw original; };
+  f.adapter._cleanup = async () => { throw cleanupError; };
+  const exec = f.adapter.exec;
+  let probes = 0;
+  f.adapter.exec = async (file, args) => {
+    if (args.includes('has-session') && ++probes > 1) throw Object.assign(new Error('target absent'), { code: 1 });
+    if (args.includes('list-sessions')) return { stdout: 'sentinel\n' };
+    return exec(file, args);
+  };
+  await assert.rejects(f.adapter.startGeneration({ generation: 1, binaryPath: f.binaryPath, runtime: 'codex' }),
+    (error) => error === original && error.cleanupError === cleanupError);
+  assert.equal(probes, 1);
+});
+
+test('failed starts preserve target-present, inconclusive and explicit safety errors', async (t) => {
+  for (const mode of ['present', 'probe-failed', 'unsafe_runtime_state', 'EACCES', 'unsupported_runtime']) {
+    const f = await fixture(t);
+    const code = ['present', 'probe-failed'].includes(mode) ? 'startup_failed' : mode;
+    const original = Object.assign(new Error(mode), { code });
+    f.adapter._launchWorker = async () => { throw original; };
+    const exec = f.adapter.exec;
+    let probes = 0;
+    f.adapter.exec = async (file, args) => {
+      if (args.includes('has-session') && ++probes > 1 && mode === 'probe-failed') {
+        throw Object.assign(new Error('probe denied'), { code: 'EACCES' });
+      }
+      return exec(file, args);
+    };
+    await assert.rejects(f.adapter.startGeneration({ generation: 1, binaryPath: f.binaryPath, runtime: 'codex' }),
+      (error) => error === original && !error.cleanupError);
+    assert.deepEqual(await fs.readdir(f.adapter.runtimeRoot), []);
+    assert.equal(probes, ['present', 'probe-failed'].includes(mode) ? 2 : 1);
+  }
+});

@@ -97,7 +97,12 @@ export class TmuxObserverContainment extends EventEmitter {
     if (!Number.isSafeInteger(generation) || generation < 0) throw failure('unsafe_runtime_state', 'Invalid generation');
     const preflight = { tmuxSocket: this.tmuxSocket };
     await this._targetAvailable(preflight, target);
-    const result = await this.exec(this.tmuxPath, targetArgs(preflight, 'display-message', '-p', '-t', `=${target}`, '#{socket_path}'));
+    let result;
+    try {
+      result = await this.exec(this.tmuxPath, targetArgs(preflight, 'display-message', '-p', '-t', `=${target}`, '#{socket_path}'));
+    } catch (error) {
+      throw await this._classifyTargetLoss(error, preflight, target);
+    }
     const tmuxSocket = result.stdout.trim();
     if (!path.isAbsolute(tmuxSocket) || /[\r\n]/.test(tmuxSocket)) throw failure('unsafe_runtime_state', 'Target socket was not resolved');
     binaryPath = path.resolve(binaryPath);
@@ -161,6 +166,20 @@ export class TmuxObserverContainment extends EventEmitter {
     throw failure('startup_incomplete', `Observer ${state.generation} has not acknowledged launch settlement; inspect ${state.root}/startup.log`);
   }
 
+  async _classifyTargetLoss(error, state, target = state.target) {
+    if (error.killed || error.signal || ![1, 'startup_failed', 'startup_incomplete'].includes(error.code)) return error;
+    try {
+      await this._targetAvailable(state, target);
+    } catch (probeError) {
+      if (probeError.code === 'target_unavailable') {
+        probeError.cause = error;
+        return probeError;
+      }
+    }
+    // A failed probe is not evidence of absence; preserve the original error.
+    return error;
+  }
+
   async startGeneration(options) {
     if (this.active) {
       if (this.active.generation === options.generation) return this.active;
@@ -179,8 +198,12 @@ export class TmuxObserverContainment extends EventEmitter {
       return this.active;
     } catch (error) {
       // Even if active was never assigned, this instance owns failed-start state.
-      try { await this._cleanup(state); } catch (cleanupError) { error.cleanupError = cleanupError; }
-      throw error;
+      try { await this._cleanup(state); } catch (cleanupError) {
+        error.cleanupError = cleanupError;
+        throw error;
+      }
+      // Only a settled, fully removed failed start may become retryable.
+      throw await this._classifyTargetLoss(error, state);
     }
   }
 

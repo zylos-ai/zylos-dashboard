@@ -61,6 +61,30 @@ still requires its credential. Dashboard restart cleans the previous generation
 before allowing fresh viewing, without reusing the old session. An enabled
 setting alone does not start a viewer.
 
+## Automatic viewing recovery
+
+Restarting the agent process inside the same tmux pane can leave viewing intact.
+Recreating the target tmux session or server breaks the old read-only attachment.
+Observer then closes the old streams, invalidates their leases and cleans its
+private generation. Fresh viewing is admitted only after that cleanup succeeds.
+
+While the Observer tab remains open, the browser shows a waiting notice and
+retries with delays of 1, 2, 4, 8 and then 15 seconds between attempts, without
+a fixed attempt limit. Each attempt checks current status and requests a fresh
+lease and stream. A verified missing target remains retryable; Observer never
+creates the agent's tmux session or starts its server. Once the target returns,
+successful startup and attachment allow viewing to resume. Multiple viewers can
+join the same new private generation. The same flow applies to Fleet targets,
+including temporary upstream connection failures.
+
+Closing the viewer, leaving Observer, changing targets or disabling Observer
+cancels that browser's retries. Authentication, permission, unsafe state and
+unresolved cleanup errors stop automatic attempts and require attention. Unknown
+startup or command failures are not assumed to mean a missing target. Recovery
+has no fixed completion deadline: it depends on target availability, safe cleanup
+and successful startup. It reconnects the display; it does not resume or restart
+the agent process itself.
+
 ## Disable, uninstall and recovery
 
 - **Disable** ends viewing and stops Observer processes, retaining the downloaded
@@ -69,7 +93,9 @@ setting alone does not start a viewer.
 - **Uninstall** ends viewing, proves cleanup and removes the private artifact.
   It does not remove the agent's tmux session or system tools.
 
-Cleanup uncertainty leaves Observer disabled and fenced against new viewing.
+Cleanup uncertainty fences Observer against new viewing. A runtime failure can
+leave the enabled preference set while admission is blocked; disabling or
+uninstalling explicitly clears that preference.
 Settings reports the failure and offers **Retry cleanup** to retain the artifact,
 or **Uninstall** to remove it after cleanup succeeds. If an uninstall is already
 pending or failed, Settings offers **Retry uninstall** to finish that removal.
