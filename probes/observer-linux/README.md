@@ -1,5 +1,12 @@
 # Experimental Linux native helpers
 
+> **Historical record — frozen sources.** The native helper implementation and its
+> build/probe commands below were removed from the current tree. For the complete
+> pre-cleanup sources and assets, use the [frozen tree at `a5be86088efa8da63f98a73a182bd0ee57a4f004`](https://github.com/zylos-ai/zylos-dashboard/tree/a5be86088efa8da63f98a73a182bd0ee57a4f004).
+> Commands referencing removed files are historical replay instructions, not
+> commands to run from the current checkout. Preserve the original evidence and
+> revision qualifications below; the frozen tree does not change their scope.
+
 These sources preserve the accepted Darwin watch/reconcile event and exit-status
 contract while replacing process inspection and signaling with Linux mechanisms.
 They are **experimental sources**, not product assets or a supported Observer

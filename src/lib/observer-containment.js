@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ObserverContainmentError } from './observer-containment-posix.js';
+import { ObserverContainmentError } from './observer-containment-error.js';
 import { TmuxObserverContainment } from './observer-containment-tmux.js';
 
 class UnsupportedObserverContainment extends EventEmitter {

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ObserverContainmentError } from './observer-containment-posix.js';
+import { ObserverContainmentError } from './observer-containment-error.js';
 
 export { ObserverContainmentError };
 export const runCommand = promisify(execFile);

@@ -1,5 +1,12 @@
 # Linux AMD64 experimental containment handoff
 
+> **Historical record — frozen sources.** The native helper implementation and its
+> build/probe commands below were removed from the current tree. For the complete
+> pre-cleanup sources and assets, use the [frozen tree at `a5be86088efa8da63f98a73a182bd0ee57a4f004`](https://github.com/zylos-ai/zylos-dashboard/tree/a5be86088efa8da63f98a73a182bd0ee57a4f004).
+> Commands referencing removed files are historical replay instructions, not
+> commands to run from the current checkout. Preserve the original evidence and
+> revision qualifications below; the frozen tree does not change their scope.
+
 This is an implementation candidate on accepted F13 `ab2a59cc18df82d705eed6d514901b9e5db6097f`, not a platform acceptance or a release. The existing Darwin helpers and accepted R5/F13 commits remain frozen. The upstream Linux artifact remains excluded from the enabled product catalog.
 
 ## R3 execution scope

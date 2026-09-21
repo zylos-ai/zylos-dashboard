@@ -24,8 +24,12 @@ actions in Settings.
 Observer requires an available tmux with support for `-N` (do not start a missing
 server), the pinned private Zellij installation, and Dashboard's existing
 SQLite dependency. Its coordinator and runtime data must be on a local filesystem
-with working SQLite file locking. The private-tmux lifecycle does not use the
-bundled native guardian helpers or their glibc/pidfd prerequisites.
+with working SQLite file locking. The private-tmux lifecycle does not require
+custom native guardian helpers, their glibc/pidfd prerequisites, or Python.
+The pinned Zellij download is an official precompiled binary. Dashboard's existing
+SQLite dependency may still require Python and a C/C++ toolchain during dependency
+installation if a compatible prebuilt addon is unavailable; that is not an
+Observer runtime requirement.
 
 The architecture entries describe managed-host support, not every Linux
 distribution, container, filesystem or tmux build. The upstream artifact catalog
@@ -93,7 +97,10 @@ or resources that cannot be proved absent still require investigation. Restart
 does not discard unresolved records merely because time has passed or a PID is
 missing. Older generations without the startup-recovery contract retain their
 previous cleanup requirements; native-helper generations require their original
-cleanup path or explicit operator recovery.
+version or explicit operator recovery. The current tree does not include the old
+native adapters or helper binaries; their sources and assets remain available in
+[the frozen pre-cleanup tree](https://github.com/zylos-ai/zylos-dashboard/tree/a5be86088efa8da63f98a73a182bd0ee57a4f004).
+Unknown legacy state is rejected and preserved, never automatically discarded.
 
 ## Cleanup scope and limits
 
