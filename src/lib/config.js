@@ -136,6 +136,13 @@ export function loadConfig() {
       password: null,
       allowUrlTokenOnLocalhost: false
     },
+    observer: {
+      enabled: false,
+      idleGraceMs: 5000,
+      leaseTtlMs: 30000,
+      maxViewers: 4,
+      defaultPreset: 'standard'
+    },
     runtimeModelPrices: DEFAULT_RUNTIME_MODEL_PRICES,
     runtimeServiceTierModelPrices: DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
     runtimeFastModeMultipliers: DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS
@@ -197,6 +204,25 @@ export function loadConfig() {
       ...defaults.auth,
       ...(loaded.auth || {})
     },
+    observer: (() => {
+      const value = loaded.observer && typeof loaded.observer === 'object' && !Array.isArray(loaded.observer)
+        ? loaded.observer
+        : {};
+      const boundedInteger = (candidate, fallback, minimum, maximum) => {
+        const number = Number(candidate);
+        return Number.isSafeInteger(number) && number >= minimum && number <= maximum ? number : fallback;
+      };
+      return {
+        ...value,
+        enabled: value.enabled === true,
+        idleGraceMs: boundedInteger(value.idleGraceMs, defaults.observer.idleGraceMs, 0, 30_000),
+        leaseTtlMs: boundedInteger(value.leaseTtlMs, defaults.observer.leaseTtlMs, 10_000, 120_000),
+        maxViewers: boundedInteger(value.maxViewers, defaults.observer.maxViewers, 1, 16),
+        defaultPreset: ['standard', 'wide', 'large'].includes(value.defaultPreset)
+          ? value.defaultPreset
+          : defaults.observer.defaultPreset,
+      };
+    })(),
     runtimeModelPrices,
     runtimeServiceTierModelPrices,
     modelPrices: runtimeModelPrices.claude,

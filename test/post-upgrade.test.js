@@ -36,3 +36,23 @@ test('post-upgrade — refreshes installed Claude and Codex hooks', () => {
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+
+test('post-upgrade — does not download, enable, or rewrite Observer state', () => {
+  const tmpDir = freshTmpDir();
+  const homeDir = path.join(tmpDir, 'home');
+  const dashboardDir = path.join(tmpDir, 'components', 'dashboard');
+  const configPath = path.join(dashboardDir, 'config.json');
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.mkdirSync(dashboardDir, { recursive: true });
+  const existing = { observer: { enabled: false, generation: 12, installedVersion: '0.44.0' }, sentinel: true };
+  fs.writeFileSync(configPath, `${JSON.stringify(existing, null, 2)}\n`);
+
+  execFileSync('node', [path.resolve('hooks/post-upgrade.js')], {
+    env: { ...process.env, HOME: homeDir, ZYLOS_DIR: tmpDir, ZYLOS_RUNTIME: 'codex' },
+    encoding: 'utf8'
+  });
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(configPath, 'utf8')), existing);
+  assert.equal(fs.existsSync(path.join(dashboardDir, 'observer')), false);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});

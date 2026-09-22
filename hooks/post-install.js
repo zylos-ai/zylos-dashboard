@@ -24,6 +24,9 @@ if (!fs.existsSync(configPath)) {
     auth: {
       enabled: true,
       password: hashPassword(plaintext)
+    },
+    observer: {
+      enabled: false
     }
   };
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });

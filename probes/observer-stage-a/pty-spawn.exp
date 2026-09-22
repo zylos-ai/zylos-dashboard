@@ -1,0 +1,7 @@
+log_user 1
+set timeout -1
+set stty_init "rows 24 columns 80"
+spawn -noecho {*}$argv
+expect eof
+set result [wait]
+exit [lindex $result 3]

@@ -43,6 +43,9 @@ test('post-install — fresh install generates secure config', () => {
 
   assert.equal(config.auth.enabled, true);
   assert.ok(config.auth.password.startsWith('scrypt:'), 'password must be scrypt hash');
+  assert.deepEqual(config.observer, { enabled: false });
+  assert.equal(fs.existsSync(path.join(tmpDir, 'components', 'dashboard', 'observer')), false,
+    'default install must not download or stage Observer artifacts');
 
   const parts = config.auth.password.split(':');
   assert.equal(parts.length, 3);
@@ -85,6 +88,21 @@ test('post-install — does not overwrite existing config', () => {
   const after = fs.readFileSync(configPath(tmpDir), 'utf8');
   assert.equal(before, after, 'existing config must not be overwritten');
 
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('post-install — never downloads or changes an existing Observer installation state', () => {
+  const tmpDir = freshTmpDir();
+  const dashboardDir = path.dirname(configPath(tmpDir));
+  fs.mkdirSync(dashboardDir, { recursive: true });
+  const existing = {
+    auth: { enabled: false },
+    observer: { enabled: true, generation: 9, installedVersion: 'older' },
+  };
+  fs.writeFileSync(configPath(tmpDir), `${JSON.stringify(existing, null, 2)}\n`);
+  runPostInstall(tmpDir);
+  assert.deepEqual(JSON.parse(fs.readFileSync(configPath(tmpDir), 'utf8')), existing);
+  assert.equal(fs.existsSync(path.join(dashboardDir, 'observer')), false);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

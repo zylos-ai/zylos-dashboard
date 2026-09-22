@@ -65,3 +65,8 @@ npm start
 ```
 
 Default URL: `http://127.0.0.1:3470/`
+
+For optional terminal viewing, supported platforms and cleanup recovery, see
+[Observer](docs/observer.md). Observer automatically selects the target Dashboard
+host's platform: macOS Apple Silicon, Linux x64 or Linux ARM64. Install and enable
+it from Settings; the linked guide lists host requirements and cleanup behavior.

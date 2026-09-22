@@ -74,8 +74,14 @@ export function readJsonBody(req, maxBytes = 64 * 1024) {
 }
 
 export function serveStatic(req, res, rootDir) {
-  const url = new URL(req.url, 'http://127.0.0.1');
-  const pathname = decodeURIComponent(url.pathname);
+  let pathname;
+  try {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_request' });
+    return true;
+  }
   const assetPath = pathname.startsWith('/_assets/') ? pathname.slice('/_assets/'.length) : null;
   const relative = assetPath || (pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''));
   const vendorPrefix = 'vendor/';

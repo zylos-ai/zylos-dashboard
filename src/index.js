@@ -3,9 +3,11 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
-import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, validateApiSession } from './lib/auth.js';
+import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, migratePasswordIfNeeded, validateApiSession } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
+import { mutateConfig } from './lib/config-mutation.js';
 import {
   DEFAULT_RUNTIME_FAST_MODE_MULTIPLIERS,
   DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
@@ -37,6 +39,14 @@ import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
+import { createObserverContainment } from './lib/observer-containment.js';
+import { ObserverCoordinator } from './lib/observer-coordinator.js';
+import { ObserverControlServer } from './lib/observer-control.js';
+import { ObserverInstaller } from './lib/observer-installer.js';
+import { ObserverManager } from './lib/observer-manager.js';
+import { ObserverService } from './lib/observer-service.js';
+import { rejectObserverUpgrade } from './lib/observer-websocket.js';
+import { shutdownDashboardTransports } from './lib/dashboard-shutdown.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
@@ -96,6 +106,7 @@ function refreshInstalledVersions() {
 
 const config = loadConfig();
 ensureDataDirs(config);
+await migratePasswordIfNeeded(config);
 let zylosUpgradeResult = consumeZylosUpgradeMarker(config.zylosDir, zylosVersion);
 
 const activeRuntime = loadZylosConfig(config.zylosDir).runtime || process.env.ZYLOS_RUNTIME || 'claude';
@@ -114,6 +125,43 @@ try {
 
 const auth = new AuthGate(config, store);
 const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
+const observerInstaller = new ObserverInstaller({ dataDir: config.dataDir });
+const observerContainment = createObserverContainment({ dataDir: config.dataDir });
+const observerCoordinator = new ObserverCoordinator({
+  configPath: config.configPath,
+  installer: observerInstaller,
+  teardown: ({ reason }) => observerContainment.stopGeneration({ reason }),
+  reconcilePersisted: () => observerContainment.reconcilePersisted(),
+  start: ({ generation, binaryPath }) => observerContainment.startGeneration({
+    generation,
+    binaryPath,
+    runtime: activeRuntime,
+  }),
+});
+const observerManager = new ObserverManager({
+  coordinator: observerCoordinator,
+  containment: observerContainment,
+  authGate: auth,
+  runtime: activeRuntime,
+  maxViewers: config.observer.maxViewers,
+  leaseTtlMs: config.observer.leaseTtlMs,
+  idleGraceMs: config.observer.idleGraceMs,
+  defaultPreset: config.observer.defaultPreset,
+});
+const observerService = new ObserverService({
+  coordinator: observerCoordinator,
+  containment: observerContainment,
+  manager: observerManager,
+  authGate: auth,
+});
+const observerControl = new ObserverControlServer({
+  dataDir: config.dataDir,
+  onPreUninstall: () => observerService.preUninstall(),
+});
+observerService.ensureCoordinatorOwnership = async () => {
+  await observerControl.acquire();
+  if (observerService._initialized) await observerControl.start();
+};
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
@@ -498,35 +546,25 @@ function validateAgentName(name, { allowCurrentSelf = false, currentName = null 
   return null;
 }
 
-function readConfigFileForUpdate() {
-  try {
-    if (fs.existsSync(config.configPath)) return JSON.parse(fs.readFileSync(config.configPath, 'utf8'));
-  } catch {
-    return {};
-  }
-  return {};
-}
-
-function writeConfigFileAtomic(nextConfig) {
-  const tmpPath = config.configPath + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(nextConfig, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmpPath, config.configPath);
-}
-
-function persistFleetConfig(mutator) {
-  const existing = readConfigFileForUpdate();
-  const nextFleet = {
-    ...(existing.fleet || {}),
-    agents: Array.isArray(existing.fleet?.agents) ? existing.fleet.agents.map(a => ({ ...a })) : currentFleetAgents().map(a => ({ ...a }))
-  };
-  const nextAgent = {
-    ...(existing.agent || {}),
-    ...(config.agent || {})
-  };
-  const result = mutator({ existing, fleet: nextFleet, agent: nextAgent });
-  existing.fleet = nextFleet;
-  existing.agent = nextAgent;
-  writeConfigFileAtomic(existing);
+async function persistFleetConfig(mutator) {
+  const { config: existing, result } = await mutateConfig(config.configPath, (lockedConfig) => {
+    const nextFleet = {
+      ...(lockedConfig.fleet || {}),
+      agents: Array.isArray(lockedConfig.fleet?.agents)
+        ? lockedConfig.fleet.agents.map(a => ({ ...a }))
+        : currentFleetAgents().map(a => ({ ...a }))
+    };
+    const nextAgent = {
+      ...(lockedConfig.agent || {}),
+      ...(config.agent || {})
+    };
+    const mutationResult = mutator({ existing: lockedConfig, fleet: nextFleet, agent: nextAgent });
+    lockedConfig.fleet = nextFleet;
+    lockedConfig.agent = nextAgent;
+    return mutationResult;
+  });
+  const nextFleet = existing.fleet;
+  const nextAgent = existing.agent;
   config.fleet = {
     ...(config.fleet || {}),
     ...nextFleet,
@@ -614,7 +652,12 @@ async function handleFleetAgents(req, res) {
       sendJson(res, 400, { error: postProbeNameError });
       return;
     }
-    persistFleetConfig(({ fleet }) => {
+    await persistFleetConfig(({ fleet }) => {
+      if (fleet.agents.some((entry) => entry.name === name)) {
+        const error = new Error('duplicate_name');
+        error.code = 'duplicate_name';
+        throw error;
+      }
       fleet.agents.push(agent);
     });
     fleetPoller.addAgent(config.fleet.agents.find(a => a.name === name));
@@ -628,6 +671,10 @@ async function handleFleetAgents(req, res) {
       }
     });
   } catch (err) {
+    if (err?.code === 'duplicate_name') {
+      sendJson(res, 400, { error: 'duplicate_name' });
+      return;
+    }
     process.stderr.write(`[fleet-config] Failed to save fleet agent: ${err.message}\n`);
     sendJson(res, 500, { error: 'failed_to_save_config' });
   }
@@ -678,7 +725,7 @@ async function handleFleetAgentDelete(req, res, pathname) {
     return;
   }
   try {
-    persistFleetConfig(({ fleet }) => {
+    await persistFleetConfig(({ fleet }) => {
       fleet.agents = fleet.agents.filter(a => a.name !== name);
     });
     fleetPoller.removeAgent(name);
@@ -709,7 +756,7 @@ async function handleAgentRename(req, res) {
     return;
   }
   try {
-    persistFleetConfig(({ agent }) => {
+    await persistFleetConfig(({ agent }) => {
       agent.name = name;
     });
     scheduleFleetStateBroadcast();
@@ -1314,44 +1361,35 @@ async function handleSettingsUpdate(req, res) {
   }
 
   try {
-    let existing = {};
-    try {
-      if (fs.existsSync(config.configPath)) {
-        existing = JSON.parse(fs.readFileSync(config.configPath, 'utf8'));
+    await mutateConfig(config.configPath, (existing) => {
+      if (body.modelPrices !== undefined) {
+        existing.runtimeModelPrices = {
+          ...(existing.runtimeModelPrices || {}),
+          [priceRuntime]: body.modelPrices
+        };
+        if (priceRuntime === 'claude') existing.modelPrices = body.modelPrices;
       }
-    } catch { /* start fresh if corrupt */ }
-
-    if (body.modelPrices !== undefined) {
-      existing.runtimeModelPrices = {
-        ...(existing.runtimeModelPrices || {}),
-        [priceRuntime]: body.modelPrices
-      };
-      if (priceRuntime === 'claude') existing.modelPrices = body.modelPrices;
-    }
-    if (body.fastModeMultiplier !== undefined) {
-      existing.runtimeFastModeMultipliers = {
-        ...(existing.runtimeFastModeMultipliers || {}),
-        [priceRuntime]: body.fastModeMultiplier
-      };
-      if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
-      if (body.fastModeMultiplier === null) {
-        delete existing.runtimeFastModeMultipliers[priceRuntime];
-        delete existing.fastModeMultiplier;
-      }
-    }
-    if (body.priorityModelPrices !== undefined) {
-      existing.runtimeServiceTierModelPrices = {
-        ...(existing.runtimeServiceTierModelPrices || {}),
-        codex: {
-          ...(existing.runtimeServiceTierModelPrices?.codex || {}),
-          priority: body.priorityModelPrices
+      if (body.fastModeMultiplier !== undefined) {
+        existing.runtimeFastModeMultipliers = {
+          ...(existing.runtimeFastModeMultipliers || {}),
+          [priceRuntime]: body.fastModeMultiplier
+        };
+        if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
+        if (body.fastModeMultiplier === null) {
+          delete existing.runtimeFastModeMultipliers[priceRuntime];
+          delete existing.fastModeMultiplier;
         }
-      };
-    }
-
-    const tmpPath = config.configPath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n', { mode: 0o600 });
-    fs.renameSync(tmpPath, config.configPath);
+      }
+      if (body.priorityModelPrices !== undefined) {
+        existing.runtimeServiceTierModelPrices = {
+          ...(existing.runtimeServiceTierModelPrices || {}),
+          codex: {
+            ...(existing.runtimeServiceTierModelPrices?.codex || {}),
+            priority: body.priorityModelPrices
+          }
+        };
+      }
+    });
 
     if (body.modelPrices !== undefined) {
       config.runtimeModelPrices = {
@@ -1498,7 +1536,7 @@ async function handleMemoryApi(req, res, pathname, url) {
 
 export function createServer() {
   const rootDir = publicDir();
-  const fleetProxy = new FleetProxy({ config, rootDir, poller: fleetPoller });
+  const fleetProxy = new FleetProxy({ config, rootDir, poller: fleetPoller, authGate: auth });
 
   function renderIndex(req, res) {
     const browserBase = browserBaseFromRequest(req);
@@ -1509,8 +1547,12 @@ export function createServer() {
     sendHtml(res, 200, html);
   }
 
-  return http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+  const server = http.createServer(async (req, res) => {
+    let url;
+    try { url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`); } catch {
+      sendJson(res, 400, { error: 'invalid_request' });
+      return;
+    }
     let pathname = url.pathname;
 
     // Ingest endpoints: local-only, reject proxied requests
@@ -1546,6 +1588,10 @@ export function createServer() {
     }
 
     if (await auth.handle(req, res, url)) {
+      return;
+    }
+
+    if (await observerService.handle(req, res, url)) {
       return;
     }
 
@@ -1642,7 +1688,7 @@ export function createServer() {
       return;
     }
 
-    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends' || pathname === '/memory') {
+    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends' || pathname === '/memory' || pathname === '/observer') {
       renderIndex(req, res);
       return;
     }
@@ -1651,6 +1697,23 @@ export function createServer() {
       sendText(res, 404, 'not found');
     }
   });
+  server.on('upgrade', (req, socket, head) => {
+    let url;
+    try { url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`); } catch {
+      socket.on('error', () => socket.destroy());
+      rejectObserverUpgrade(socket, 400, 'invalid_request');
+      return;
+    }
+    if (url.pathname.startsWith('/fleet/')) {
+      req._authContext = auth.resolveAuthContext(req);
+      fleetProxy.handleUpgrade(req, socket, head).then((handled) => {
+        if (!handled) socket.destroy();
+      }).catch(() => socket.destroy());
+      return;
+    }
+    observerService.handleUpgrade(req, socket, head).catch(() => socket.destroy());
+  });
+  return server;
 }
 
 const isMain = (
@@ -1671,6 +1734,17 @@ if (isMain && process.argv.includes('--smoke')) {
   }, null, 2));
   store.close();
 } else if (isMain) {
+  await observerService.startup();
+  if (observerService.startupError) process.stderr.write(`[observer] startup failed: ${observerService.startupError.code || 'startup_failed'}\n`);
+  if (observerControl.lock) {
+    try {
+      await observerControl.start();
+    } catch (error) {
+      // Observer is optional; ownership failure fences its API, not Dashboard.
+      observerService.startupError = error;
+      process.stderr.write(`[observer] control startup failed: ${error.code || 'control_failed'}\n`);
+    }
+  }
   const server = createServer();
   server.on('error', (err) => {
     console.error(`[dashboard] Failed to start: ${err.message}`);
@@ -1723,8 +1797,12 @@ if (isMain && process.argv.includes('--smoke')) {
     }, 15_000).unref();
   });
 
+  let shuttingDown = false;
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, () => {
+    process.on(signal, async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      const shutdownDeadline = performance.now() + 10_000;
       pm2Collector.stop();
       systemCollector.stop();
       if (statuslineCollector) statuslineCollector.stop();
@@ -1737,11 +1815,24 @@ if (isMain && process.argv.includes('--smoke')) {
       if (retentionTimer) clearInterval(retentionTimer);
       fleetPoller.stop();
       sse.closeAll();
-      server.close(() => {
-        c4Reader.close();
-        store.close();
-        process.exit(0);
+      let exitCode = 0;
+      const shutdown = await shutdownDashboardTransports({
+        server, observerService, observerControl,
+        deadline: shutdownDeadline,
       });
+      if (shutdown.http.error || shutdown.http.timedOut) {
+        exitCode = 1;
+        process.stderr.write(`[dashboard] HTTP drain ${shutdown.http.timedOut ? 'timed out' : 'failed'} during shutdown\n`);
+      }
+      if (shutdown.observer.error || shutdown.observer.timedOut) {
+        exitCode = 1;
+        const code = shutdown.observer.error?.code ||
+          (shutdown.observer.timedOut ? 'observer_shutdown_timeout' : 'observer_shutdown_failed');
+        process.stderr.write(`[observer] shutdown failed: ${code}\n`);
+      }
+      c4Reader.close();
+      store.close();
+      process.exit(exitCode);
     });
   }
 }

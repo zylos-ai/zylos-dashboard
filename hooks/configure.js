@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
 import path from 'node:path';
+import { mutateConfig } from '../src/lib/config-mutation.js';
 
 const DATA_DIR = process.env.ZYLOS_DATA_DIR
   || path.join(process.env.HOME, 'zylos/components/dashboard');
@@ -28,23 +28,6 @@ function readStdin() {
     process.stdin.on('end', () => resolve(input));
     process.stdin.on('error', reject);
   });
-}
-
-function readJsonFile(filePath, fallback) {
-  try {
-    if (!fs.existsSync(filePath)) return { ...fallback };
-    return { ...fallback, ...JSON.parse(fs.readFileSync(filePath, 'utf8')) };
-  } catch (err) {
-    throw new Error(`Failed to read ${filePath}: ${err.message}`);
-  }
-}
-
-function writeJsonFile(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmpPath, filePath);
-  fs.chmodSync(filePath, 0o600);
 }
 
 function configKeyFromName(name) {
@@ -79,26 +62,29 @@ try {
     throw new Error('Configure input must be a JSON object');
   }
 
-  const config = readJsonFile(CONFIG_PATH, DEFAULT_CONFIG);
-  for (const [name, value] of Object.entries(collected)) {
-    if (value === undefined || value === null || value === '') continue;
-    const stripped = configKeyFromName(name);
-    const mapped = KEY_MAP[stripped];
-    if (mapped) {
-      const coerced = stripped === 'port' || stripped === 'spool_max_bytes'
-        ? Number(value)
-        : value;
-      setNested(config, mapped, coerced);
-    } else {
-      config[stripped] = value;
+  await mutateConfig(CONFIG_PATH, (config) => {
+    for (const [key, value] of Object.entries(DEFAULT_CONFIG)) {
+      if (config[key] === undefined) config[key] = value;
     }
-  }
+    for (const [name, value] of Object.entries(collected)) {
+      if (value === undefined || value === null || value === '') continue;
+      const stripped = configKeyFromName(name);
+      const mapped = KEY_MAP[stripped];
+      if (mapped) {
+        const coerced = stripped === 'port' || stripped === 'spool_max_bytes'
+          ? Number(value)
+          : value;
+        setNested(config, mapped, coerced);
+      } else {
+        config[stripped] = value;
+      }
+    }
 
-  if (config.auth?.password && !config.auth.enabled) {
-    config.auth.enabled = true;
-  }
+    if (config.auth?.password && !config.auth.enabled) {
+      config.auth.enabled = true;
+    }
+  });
 
-  writeJsonFile(CONFIG_PATH, config);
   console.log(`[configure] Wrote config to ${CONFIG_PATH}`);
 } catch (err) {
   console.error(`[configure] ${err.message}`);
