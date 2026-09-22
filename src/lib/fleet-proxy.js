@@ -4,6 +4,7 @@ import { Readable, Transform } from 'node:stream';
 import { browserPath, browserBaseFromRequest } from './browser-base.js';
 import { sendHtml, sendJson, sendText, serveStatic } from './http.js';
 import { validateMemoryQueryPath } from './memory-browser.js';
+import { hasMatchingRequestAuthority } from './request-origin.js';
 import {
   acceptObserverWebSocket,
   connectObserverWebSocket,
@@ -14,16 +15,6 @@ const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-
 const STREAM_GUARD_TAIL_CHARS = 128;
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 const MAX_MEMORY_WRITE_BODY_BYTES = 2 * 1024 * 1024 + 64 * 1024;
-
-function hasExactRequestOrigin(req) {
-  const firstHeader = (value) => String(Array.isArray(value) ? value[0] : value || '').split(',')[0].trim();
-  const forwarded = firstHeader(req.headers['x-forwarded-proto']).toLowerCase();
-  const protocol = forwarded === 'https' || forwarded === 'http' ? forwarded : req.socket?.encrypted ? 'https' : 'http';
-  const host = firstHeader(req.headers.host);
-  const expected = host ? `${protocol}://${host}` : null;
-  if (!expected || typeof req.headers.origin !== 'string') return false;
-  try { return new URL(req.headers.origin).origin === expected && req.headers.origin === expected; } catch { return false; }
-}
 
 function decodeAgentName(value) {
   try {
@@ -310,7 +301,7 @@ export class FleetProxy {
         sendJson(res, 403, { error: 'admin_required' });
         return;
       }
-      if (!['GET', 'HEAD'].includes(req.method) && context.kind === 'cookie' && !hasExactRequestOrigin(req)) {
+      if (!['GET', 'HEAD'].includes(req.method) && context.kind === 'cookie' && !hasMatchingRequestAuthority(req)) {
         sendJson(res, 403, { error: 'origin_required' });
         return;
       }
@@ -490,12 +481,12 @@ export class FleetProxy {
     const agentName = decodeAgentName(match[1]);
     const agent = this.config.fleet?.agents?.find((candidate) => candidate.name === agentName);
     const context = req._authContext;
-    const exactOrigin = hasExactRequestOrigin(req);
+    const matchingAuthority = hasMatchingRequestAuthority(req);
     const protocol = String(req.headers['sec-websocket-protocol'] || '');
     const leaseId = protocol.split(',').map((value) => value.trim()).find((value) => value.startsWith('lease.'))?.slice(6);
     this.pruneObserverLeases();
     const binding = leaseId && this.observerLeases.get(leaseId);
-    if (!agent || !context || context.scope !== 'admin' || (context.kind === 'cookie' && !exactOrigin) || !binding ||
+    if (!agent || !context || context.scope !== 'admin' || (context.kind === 'cookie' && !matchingAuthority) || !binding ||
         binding.agentName !== agentName || !samePrincipal(binding.principal, context)) {
       rejectObserverUpgrade(socket, 404, 'lease_not_found');
       return true;

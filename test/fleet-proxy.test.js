@@ -189,7 +189,7 @@ test('fleet proxy injects session token for API and keeps token out of client re
   }
 });
 
-test('fleet Observer cookie writes require the exact consumer Origin before any upstream write', async () => {
+test('fleet Observer cookie writes require matching consumer authority before any upstream write', async () => {
   let forwarded = 0;
   let tokenFetches = 0;
   const proxy = new FleetProxy({
@@ -208,7 +208,7 @@ test('fleet Observer cookie writes require the exact consumer Origin before any 
   const request = (origin) => {
     const req = Readable.from([]);
     req.method = 'POST';
-    req.headers = { host: 'hub.example.com', ...(origin === undefined ? {} : { origin }) };
+    req.headers = { host: 'hub.example.com', 'x-forwarded-proto': 'http', ...(origin === undefined ? {} : { origin }) };
     req._authContext = principal;
     return req;
   };
@@ -219,7 +219,7 @@ test('fleet Observer cookie writes require the exact consumer Origin before any 
     end() {}
   });
 
-  for (const origin of [undefined, 'https://evil.example.com', 'http://hub.example.com/']) {
+  for (const origin of [undefined, 'null', 'https://evil.example.com', 'http://hub.example.com/', 'https://hub.example.com:8443']) {
     const res = response();
     await proxy.proxyApi(request(origin), res, agent, '/api/observer/disable', '');
     assert.equal(res.status, 403);
@@ -228,7 +228,7 @@ test('fleet Observer cookie writes require the exact consumer Origin before any 
   }
 
   const res = response();
-  await proxy.proxyApi(request('http://hub.example.com'), res, agent, '/api/observer/disable', '');
+  await proxy.proxyApi(request('https://hub.example.com'), res, agent, '/api/observer/disable', '');
   assert.equal(res.status, 200);
   assert.equal(forwarded, 1);
   assert.equal(tokenFetches, 1);
@@ -323,7 +323,7 @@ test('fleet Observer renewals advance the local lease fence and stale bindings a
   }
 });
 
-test('fleet Observer WebSocket relays display only and closes on browser input', async () => {
+test('fleet Observer WebSocket over an HTTP proxy hop validates source and lease then relays display only', async () => {
   const leaseId = 'w'.repeat(32);
   let upstreamAuth = null;
   let upstreamSocket = null;
@@ -356,15 +356,24 @@ test('fleet Observer WebSocket relays display only and closes on browser input',
     req._authContext = principal;
     proxy.handleUpgrade(req, socket, head);
   });
+  const browserOrigin = hub.origin.replace('http:', 'https:');
   let browser;
   try {
-    const lease = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, { method: 'POST', headers: { Origin: hub.origin } });
+    const lease = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, { method: 'POST', headers: { Origin: browserOrigin, 'X-Forwarded-Proto': 'http' } });
     assert.equal(lease.status, 201);
+    for (const [origin, lease] of [['https://sibling.example.com', leaseId], [browserOrigin, 'b'.repeat(32)]]) {
+      await assert.rejects(connectObserverWebSocket({
+        port: hub.server.address().port, path: '/fleet/Remote/observer/stream',
+        headers: { Cookie: 'session=test', Origin: origin, 'X-Forwarded-Proto': 'http', 'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${lease}` },
+      }));
+      assert.equal(upstreamAuth, null);
+    }
     browser = await connectObserverWebSocket({
       port: hub.server.address().port,
       path: '/fleet/Remote/observer/stream',
       headers: {
-        Origin: hub.origin,
+        Origin: browserOrigin,
+        'X-Forwarded-Proto': 'http',
         Cookie: 'session=test',
         'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${leaseId}`,
       },

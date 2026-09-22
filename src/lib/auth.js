@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
 import { mutateConfig } from './config-mutation.js';
 import { sendHtml, sendJson, sendText } from './http.js';
+import { hasMatchingRequestAuthority } from './request-origin.js';
 
 const SCRYPT_KEYLEN = 64;
 const COOKIE_NAME = '__Host-zylos_dashboard_session';
@@ -255,21 +256,8 @@ function redirect(res, location) {
   res.end();
 }
 
-function extractHost(value) {
-  try {
-    return new URL(value).host;
-  } catch {
-    return null;
-  }
-}
-
 function verifyLogoutCsrf(req) {
-  const expectedHost = req.headers.host;
-  const origin = req.headers.origin;
-  const referer = req.headers.referer;
-  if (origin) return extractHost(origin) === expectedHost;
-  if (referer) return extractHost(referer) === expectedHost;
-  return false;
+  return hasMatchingRequestAuthority(req, { allowReferer: true });
 }
 
 function nextTarget(req, base) {
