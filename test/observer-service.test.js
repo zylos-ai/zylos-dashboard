@@ -219,7 +219,7 @@ test('local Observer rejects pre-ready bytes and disconnects without allocating 
   });
 });
 
-test('cookie lifecycle requires exact Origin and frame requires the bound lease header', async () => {
+test('cookie lifecycle requires matching Origin authority and frame requires the bound lease header', async () => {
   const { service } = fixture();
   const app = await startHttp(service);
   try {
@@ -245,6 +245,52 @@ test('cookie lifecycle requires exact Origin and frame requires the bound lease 
     assert.match(html, /connect-src 'none'/);
     assert.doesNotMatch(html, /session_token|auth_token/);
   } finally { await app.close(); }
+});
+
+test('HTTPS browser lifecycle works over HTTP proxy hops but rejects foreign authority before effects', async () => {
+  const { service } = fixture();
+  let installs = 0;
+  service.coordinator.installAndEnable = async () => { installs += 1; return { state: 'installed' }; };
+  const app = await startHttp(service);
+  const browserOrigin = app.origin.replace('http:', 'https:');
+  try {
+    for (const origin of ['https://sibling.example.com', `${browserOrigin}/`, `${browserOrigin}0`, 'null']) {
+      const response = await fetch(`${app.origin}/api/observer/install`, {
+        method: 'POST', headers: { Cookie: 'admin=1', Authorization: 'Bearer admin-token', Origin: origin, 'X-Forwarded-Proto': 'http' },
+      });
+      assert.equal(response.status, 403);
+      assert.equal(installs, 0);
+    }
+    for (const forwarded of [undefined, 'http', 'https', 'http, https']) {
+      const response = await fetch(`${app.origin}/api/observer/install`, {
+        method: 'POST', headers: { Cookie: 'admin=1', Origin: browserOrigin, ...(forwarded ? { 'X-Forwarded-Proto': forwarded } : {}) },
+      });
+      assert.equal(response.status, 200);
+    }
+    assert.equal(installs, 4);
+  } finally { await app.close(); }
+});
+
+test('HTTPS browser WebSocket over an HTTP hop still enforces origin and lease before connecting', async () => {
+  const { service, upstreams } = fixture();
+  const app = await startHttp(service);
+  const browserOrigin = app.origin.replace('http:', 'https:');
+  const connect = (origin, lease = LEASE_ID) => connectObserverWebSocket({
+    port: app.server.address().port, path: '/observer/stream',
+    headers: { Cookie: 'admin=1', Origin: origin, 'X-Forwarded-Proto': 'http', 'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${lease}` },
+  });
+  let socket;
+  try {
+    await assert.rejects(connect('https://sibling.example.com'));
+    await assert.rejects(connect(browserOrigin, 'b'.repeat(32)));
+    assert.equal(upstreams.length, 0);
+    socket = await connect(browserOrigin);
+    assert.equal(upstreams.length, 1);
+  } finally {
+    await service.shutdown();
+    socket?.destroy();
+    await app.close();
+  }
 });
 
 test('exact Observer upgrade authenticates before upstream and rejects browser input', async () => {

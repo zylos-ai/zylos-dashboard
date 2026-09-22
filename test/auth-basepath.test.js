@@ -137,7 +137,7 @@ test('login sets secure cookie and authenticated requests can reach API and SSE'
   }
 });
 
-test('logout requires same-origin POST and respects forwarded prefix', async () => {
+test('logout requires matching source authority and respects forwarded prefix', async () => {
   const { origin, server } = await makeServer();
   try {
     const login = await fetch(`${origin}/login`, {
@@ -155,11 +155,19 @@ test('logout requires same-origin POST and respects forwarded prefix', async () 
     });
     assert.equal(missingCsrf.status, 403);
 
+    for (const originHeader of ['null', `${origin}/`, 'https://sibling.example.com', 'ftp://' + new URL(origin).host]) {
+      const denied = await fetch(`${origin}/logout`, {
+        method: 'POST', headers: { Cookie: cookie, Origin: originHeader, Referer: `${origin}/dashboard/` }, redirect: 'manual',
+      });
+      assert.equal(denied.status, 403);
+    }
+
     const logout = await fetch(`${origin}/logout`, {
       method: 'POST',
       headers: {
         Cookie: cookie,
-        Origin: origin,
+        Origin: origin.replace('http:', 'https:'),
+        'X-Forwarded-Proto': 'http',
         'X-Forwarded-Prefix': '/dashboard'
       },
       redirect: 'manual'

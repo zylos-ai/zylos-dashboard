@@ -224,6 +224,25 @@ Dashboard auth 采用与 zylos-pages 一致的 cookie-based session 方案。
 - 回退检查 `Referer` host
 - 两者都缺失 → 拒绝
 
+#### Browser source authority
+
+Logout and cookie-authenticated Observer mutations/WebSockets (including the
+Fleet consumer) share a strict source-authority check. The serialized HTTP(S)
+`Origin` must match the request `Host`, including its effective port. Only
+logout permits a HTTP(S) `Referer` fallback when `Origin` is absent; malformed
+or `null` origins are rejected, even with a valid Referer. Paths, credentials,
+queries and fragments are not valid Origin values. An explicit default port in
+Host is normalized using the Origin scheme (`https` → 443, `http` → 80).
+
+Proxies must preserve the public Host. This check does not depend on
+`X-Forwarded-Proto`, so HTTPS termination followed by internal HTTP hops needs
+no protocol-trust override for Observer. Scheme isolation relies on the existing
+`Secure; SameSite=Strict` session cookie and modern schemeful SameSite browsers;
+legacy browsers without that behavior are outside this security contract.
+Bearer authentication retains its separate server-to-server path. A valid
+cookie takes precedence over a supplied bearer token, and WebSockets still
+require the principal-bound lease and ongoing session validation.
+
 #### 注意事项
 
 当前 dashboard 使用原生 Node.js `http` 模块（非 Express），auth 中间件需适配原生 request handler 模式。推荐实现为独立模块 `src/lib/auth.js`，在 `createServer` 的 handler 中作为第一层拦截。
