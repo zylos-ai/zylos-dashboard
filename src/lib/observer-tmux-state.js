@@ -104,8 +104,14 @@ export async function sameProcess(record, snapshot) {
   return !!current && current.start === record.start;
 }
 export const tmuxConfigText = 'set-option -g remain-on-exit on\nset-option -g exit-empty off\n';
+// The observer server runs with LC_ALL=C (see command()), which tmux would
+// otherwise treat as a non-UTF-8 client and render every non-ASCII character
+// as "_". -u keeps the read-only view faithful without changing that locale.
+export function innerAttachArgs(state) {
+  return ['-u', ...targetArgs(state, 'attach-session', '-r', '-t', `=${state.target}`)];
+}
 export function fixedLayout(state) {
-  return `layout {\n  pane command=${JSON.stringify(state.tmuxPath)} focus=true {\n    args ${targetArgs(state, 'attach-session', '-r', '-t', `=${state.target}`).map((value) => JSON.stringify(value)).join(' ')}\n    close_on_exit false\n    start_suspended false\n  }\n}\n`;
+  return `layout {\n  pane command=${JSON.stringify(state.tmuxPath)} focus=true {\n    args ${innerAttachArgs(state).map((value) => JSON.stringify(value)).join(' ')}\n    close_on_exit false\n    start_suspended false\n  }\n}\n`;
 }
 export async function validateState(root) {
   if (!finalName.test(path.basename(root))) throw failure('unsafe_runtime_state', 'Worker requires a final generation');

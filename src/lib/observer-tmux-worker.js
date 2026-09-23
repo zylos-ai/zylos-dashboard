@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ObserverUpstream } from './observer-upstream.js';
-import { command, delay, digest, failure, identity, privateEnvironment, processSnapshot, targetArgs,
+import { command, delay, digest, failure, identity, privateEnvironment, processSnapshot, targetArgs, innerAttachArgs,
   outerArgs, zellijArgs, validateState, writeAtomic, privatePath, exists, validRole } from './observer-tmux-state.js';
 
 async function until(check, timeoutMs = 15000) {
@@ -161,7 +161,7 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
       const result = await zellij('--session', state.sessionName, 'action', 'list-panes', '--all', '--json');
       const panes = JSON.parse(result.stdout);
       if (!Array.isArray(panes) || panes.length !== 1 || panes[0].is_plugin ||
-          panes[0].terminal_command !== [state.tmuxPath, ...targetArgs(state, 'attach-session', '-r', '-t', `=${state.target}`)].join(' ')) {
+          panes[0].terminal_command !== [state.tmuxPath, ...innerAttachArgs(state)].join(' ')) {
         throw new Error('Unexpected fixed Observer layout');
       }
       return panes[0];
