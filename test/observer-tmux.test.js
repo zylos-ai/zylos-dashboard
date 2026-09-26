@@ -141,7 +141,7 @@ async function workerFixture(t, { log = initializationLog, held = false, webExit
         pid: 110, pane_pid: args.includes('observer:web') ? 114 : 111,
         pane_dead: args.includes('observer:web') && webExited ? 1 : 0, pane_dead_status: '' }) };
       if (args.includes('list-panes')) return { stdout: JSON.stringify([...(backgroundPlugin ? [{ is_plugin: true, is_suppressed: true, plugin_url: 'zellij:link' }] : []), { is_plugin: false, exited: held,
-        terminal_command: [state.tmuxPath, '-N', '-S', state.tmuxSocket, 'attach-session', '-r', '-t', '=codex-main'].join(' ') }]) };
+        terminal_command: [state.tmuxPath, '-u', '-N', '-S', state.tmuxSocket, 'attach-session', '-r', '-t', '=codex-main'].join(' ') }]) };
       if (args.includes('list-clients')) return { stdout: tmuxCFormat(args.at(-1), { client_pid: 113, client_readonly: 1, session_name: 'codex-main' }) };
       if (args.includes('--create-read-only-token')) return { stdout: 'token_1: 12345678-1234-1234-1234-123456789abc\n' };
       return { stdout: '' };
