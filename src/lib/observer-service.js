@@ -1,3 +1,4 @@
+import { isSameOriginRequest } from './request-origin.js';
 import { observerFrameDocument } from './observer-frame.js';
 import { readJsonBody, sendJson } from './http.js';
 import { ObserverManagerError } from './observer-manager.js';
@@ -22,21 +23,6 @@ class ObserverHttpError extends Error {
 
 function firstHeader(value) {
   return String(Array.isArray(value) ? value[0] : value || '').split(',')[0].trim();
-}
-
-function expectedOrigin(req) {
-  const forwarded = firstHeader(req.headers['x-forwarded-proto']).toLowerCase();
-  const protocol = forwarded === 'https' || forwarded === 'http'
-    ? forwarded
-    : req.socket.encrypted ? 'https' : 'http';
-  const host = firstHeader(req.headers.host);
-  return host ? `${protocol}://${host}` : null;
-}
-
-function hasExactOrigin(req) {
-  const expected = expectedOrigin(req);
-  if (!expected || typeof req.headers.origin !== 'string') return false;
-  try { return new URL(req.headers.origin).origin === expected && req.headers.origin === expected; } catch { return false; }
 }
 
 function parseProtocol(value) {
@@ -117,7 +103,7 @@ export class ObserverService {
     const context = req._authContext || this.authGate.resolveAuthContext(req);
     if (!context) throw new ObserverHttpError(401, 'unauthorized');
     if (context.scope !== 'admin') throw new ObserverHttpError(403, 'insufficient_scope');
-    if (requireOrigin && context.kind === 'cookie' && !hasExactOrigin(req)) {
+    if (requireOrigin && context.kind === 'cookie' && !isSameOriginRequest(req)) {
       throw new ObserverHttpError(403, 'origin_required');
     }
     return context;

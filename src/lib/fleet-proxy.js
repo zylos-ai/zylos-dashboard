@@ -1,3 +1,4 @@
+import { isSameOriginRequest } from './request-origin.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -14,16 +15,6 @@ const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-
 const STREAM_GUARD_TAIL_CHARS = 128;
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 const MAX_MEMORY_WRITE_BODY_BYTES = 2 * 1024 * 1024 + 64 * 1024;
-
-function hasExactRequestOrigin(req) {
-  const firstHeader = (value) => String(Array.isArray(value) ? value[0] : value || '').split(',')[0].trim();
-  const forwarded = firstHeader(req.headers['x-forwarded-proto']).toLowerCase();
-  const protocol = forwarded === 'https' || forwarded === 'http' ? forwarded : req.socket?.encrypted ? 'https' : 'http';
-  const host = firstHeader(req.headers.host);
-  const expected = host ? `${protocol}://${host}` : null;
-  if (!expected || typeof req.headers.origin !== 'string') return false;
-  try { return new URL(req.headers.origin).origin === expected && req.headers.origin === expected; } catch { return false; }
-}
 
 function decodeAgentName(value) {
   try {
@@ -310,7 +301,7 @@ export class FleetProxy {
         sendJson(res, 403, { error: 'admin_required' });
         return;
       }
-      if (!['GET', 'HEAD'].includes(req.method) && context.kind === 'cookie' && !hasExactRequestOrigin(req)) {
+      if (!['GET', 'HEAD'].includes(req.method) && context.kind === 'cookie' && !isSameOriginRequest(req)) {
         sendJson(res, 403, { error: 'origin_required' });
         return;
       }
@@ -490,7 +481,7 @@ export class FleetProxy {
     const agentName = decodeAgentName(match[1]);
     const agent = this.config.fleet?.agents?.find((candidate) => candidate.name === agentName);
     const context = req._authContext;
-    const exactOrigin = hasExactRequestOrigin(req);
+    const exactOrigin = isSameOriginRequest(req);
     const protocol = String(req.headers['sec-websocket-protocol'] || '');
     const leaseId = protocol.split(',').map((value) => value.trim()).find((value) => value.startsWith('lease.'))?.slice(6);
     this.pruneObserverLeases();
