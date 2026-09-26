@@ -218,6 +218,32 @@ Dashboard auth 采用与 zylos-pages 一致的 cookie-based session 方案。
 - 全局限速：30 次失败 / 分钟 → 429
 - IP 来源：仅当请求来自 127.0.0.1 时信任 `X-Forwarded-For`（即 Caddy 转发）
 
+#### Observer request origins
+
+Cookie-authenticated unsafe Observer HTTP requests and WebSocket handshakes,
+including Fleet requests, share one origin check. If `Sec-Fetch-Site` is present,
+only a single `same-origin` value (ignoring surrounding whitespace and case) is
+accepted; empty, malformed, or multiple values are rejected without fallback.
+When the header is absent, a canonical HTTP(S) `Origin` must match the request's
+`Host`, including nondefault ports. Explicit default ports are normalized using
+the **Origin scheme**, not a forwarded protocol. Bearer-token authentication and
+logout CSRF checks are unchanged.
+
+This does not require `X-Forwarded-Proto` or proxy trust. The fallback still
+requires proxies to preserve the external `Host`; browsers that omit Fetch
+Metadata on WebSocket handshakes use that fallback. A rewritten Host can
+therefore reject an otherwise legitimate connection.
+
+The fallback deliberately does not compare schemes. `Secure` restricts cookie
+transmission to secure connections, not the initiating page's scheme; modern
+schemeful `SameSite=Strict` provides the cross-scheme cookie boundary. An older
+browser lacking both schemeful SameSite and Fetch Metadata can remain exposed
+if an attacker can run script on an untrusted HTTP page on the same host.
+Browsers sending Fetch Metadata on the required lease-creation POST reject that
+cross-origin request before a viewer can connect. Use current browsers and keep
+this accepted compatibility limitation in mind; the check does not add a lease
+origin binding.
+
 #### Logout CSRF 防护
 
 - `POST /logout` 检查 `Origin` header host == `req.headers.host`

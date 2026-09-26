@@ -219,7 +219,7 @@ test('local Observer rejects pre-ready bytes and disconnects without allocating 
   });
 });
 
-test('cookie lifecycle requires exact Origin and frame requires the bound lease header', async () => {
+test('cookie lifecycle requires a same-origin request and frame requires the bound lease header', async () => {
   const { service } = fixture();
   const app = await startHttp(service);
   try {
@@ -610,4 +610,75 @@ test('recovery cannot clear a startup failure while persisted survivors remain',
       await app.close();
     }
   });
+});
+
+
+test('local Observer cookie HTTP admission ignores forwarded protocol and rejects hostile metadata', async () => {
+  const { service } = fixture();
+  const app = await startHttp(service);
+  let created = 0;
+  service.manager.createLease = async () => { created += 1; return { id: LEASE_ID }; };
+  const origin = app.origin.replace('http:', 'https:');
+  const post = (headers) => fetch(`${app.origin}/api/observer/leases`, {
+    method: 'POST', headers: { Cookie: 'admin=1', Origin: origin, 'X-Forwarded-Proto': 'http', ...headers },
+  });
+  try {
+    for (const headers of [
+      { 'Sec-Fetch-Site': 'same-origin' },
+      {},
+      { 'Sec-Fetch-Site': 'same-origin', Host: 'rewritten.internal' },
+    ]) {
+      const response = await post(headers);
+      assert.equal(response.status, 201);
+      assert.equal((await response.json()).id, LEASE_ID);
+    }
+    assert.equal(created, 3);
+    for (const headers of [
+      { Origin: 'https://evil.example' },
+      { 'Sec-Fetch-Site': 'same-site' },
+      { 'Sec-Fetch-Site': 'cross-site' },
+      { 'Sec-Fetch-Site': 'none' },
+      { 'Sec-Fetch-Site': '' },
+      { 'Sec-Fetch-Site': 'same-origin, cross-site' },
+    ]) {
+      const response = await post(headers);
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), { error: 'origin_required' });
+    }
+    assert.equal(created, 3, 'rejected requests must not create leases');
+    const bearer = await fetch(`${app.origin}/api/observer/leases`, {
+      method: 'POST', headers: { Authorization: 'Bearer admin-token', 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(bearer.status, 201, 'origin policy only gates cookie authentication');
+  } finally { await app.close(); }
+});
+
+test('local Observer cookie WebSocket admission ignores forwarded protocol with preserved Host', async () => {
+  const { service, upstreams } = fixture();
+  const app = await startHttp(service);
+  const headers = {
+    Cookie: 'admin=1', Origin: app.origin.replace('http:', 'https:'), 'X-Forwarded-Proto': 'http',
+    'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+  };
+  const connect = (extra) => connectObserverWebSocket({
+    port: app.server.address().port, path: '/observer/stream', headers: { ...headers, ...extra },
+  });
+  let socket;
+  try {
+    for (const extra of [
+      { Origin: 'https://evil.example' },
+      { 'Sec-Fetch-Site': 'same-site' },
+      { 'Sec-Fetch-Site': '' },
+      { 'Sec-Fetch-Site': 'same-origin, cross-site' },
+    ]) await assert.rejects(connect(extra), /rejected \(403\)/);
+    assert.equal(upstreams.length, 0, 'rejected handshakes must not allocate upstreams');
+    socket = await connect({});
+    socket.activate();
+    assert.equal(socket.closed, false);
+    assert.equal(upstreams.length, 1);
+  } finally {
+    socket?.destroy();
+    await service.shutdown();
+    await app.close();
+  }
 });

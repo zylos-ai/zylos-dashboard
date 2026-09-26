@@ -1347,3 +1347,106 @@ test('fleet proxy maps a mid-body upstream failure on buffered responses to 502 
     await remote.close();
   }
 });
+
+test('fleet Observer cookie HTTP and WebSocket admission ignore forwarded protocol', async () => {
+  const leaseId = 'p'.repeat(32);
+  const bearerLeaseId = 'b'.repeat(32);
+  const upstreamHeaders = [];
+  const upstreamSockets = [];
+  let writes = 0;
+  const remote = await listen((req, res) => {
+    if (req.method === 'POST' && req.url === '/api/observer/leases') {
+      writes += 1;
+      upstreamHeaders.push(req.headers);
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: writes > 3 ? bearerLeaseId : leaseId, expiresAt: Date.now() + 30_000, preset: 'standard' }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  remote.server.on('upgrade', (req, socket, head) => {
+    upstreamHeaders.push(req.headers);
+    const upstream = acceptObserverWebSocket(req, socket, head, 'zylos-observer-v1');
+    upstreamSockets.push(upstream);
+    upstream.activate();
+    upstream.sendBinary(Buffer.from('PROXIED DISPLAY'));
+  });
+  const principal = { kind: 'cookie', principalId: 'local-admin', scope: 'admin' };
+  const apiPrincipal = { kind: 'api', principalId: 'api-admin', scope: 'admin' };
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin }] } },
+    poller: { getSessionToken: async () => 'remote-admin-token' },
+    authGate: { revalidateAuthContext: (value) => value },
+  });
+  const identify = (req) => {
+    req._authContext = req.headers.authorization === 'Bearer local-admin-token' ? apiPrincipal : principal;
+  };
+  const hub = await listen((req, res) => {
+    identify(req);
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  hub.server.on('upgrade', (req, socket, head) => {
+    identify(req);
+    proxy.handleUpgrade(req, socket, head);
+  });
+  const origin = hub.origin.replace('http:', 'https:');
+  const headers = { Origin: origin, Cookie: 'session=test', 'X-Forwarded-Proto': 'http' };
+  const post = (extra) => fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, {
+    method: 'POST', headers: { ...headers, ...extra },
+  });
+  const connect = (extra) => connectObserverWebSocket({
+    port: hub.server.address().port, path: '/fleet/Remote/observer/stream',
+    headers: { ...headers, 'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${leaseId}`, ...extra },
+  });
+  let browser;
+  try {
+    for (const extra of [
+      { 'Sec-Fetch-Site': 'same-origin' }, {},
+      { 'Sec-Fetch-Site': 'same-origin', Host: 'rewritten.internal' },
+    ]) {
+      const response = await post(extra);
+      assert.equal(response.status, 201);
+      assert.equal((await response.json()).id, leaseId);
+    }
+    assert.equal(writes, 3);
+    for (const extra of [
+      { Origin: 'https://evil.example' },
+      { 'Sec-Fetch-Site': 'same-site' },
+      { 'Sec-Fetch-Site': 'cross-site' },
+      { 'Sec-Fetch-Site': 'none' },
+      { 'Sec-Fetch-Site': '' },
+      { 'Sec-Fetch-Site': 'same-origin, cross-site' },
+    ]) {
+      const response = await post(extra);
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), { error: 'origin_required' });
+      await assert.rejects(connect(extra), /rejected \(404\)/);
+    }
+    assert.equal(writes, 3, 'rejected HTTP requests must not reach the producer');
+    assert.equal(upstreamSockets.length, 0, 'rejected upgrades must not reach the producer');
+    // No Fetch Metadata on this handshake: it exercises the Origin/Host fallback.
+    browser = await connect({});
+    const display = [];
+    browser.on('message', (data) => display.push(data));
+    browser.activate();
+    await waitUntil(() => display.length > 0);
+    assert.equal(Buffer.from(display[0]).toString(), 'PROXIED DISPLAY');
+    browser.destroy();
+    await waitUntil(() => proxy.observerStreams.size === 0);
+    const bearer = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, {
+      method: 'POST', headers: { Authorization: 'Bearer local-admin-token', 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(bearer.status, 201);
+    assert.equal((await bearer.json()).id, bearerLeaseId);
+    browser = await connect({ 'Sec-WebSocket-Protocol': `zylos-observer-v1, lease.${bearerLeaseId}`, Cookie: '', Origin: 'https://evil.example', Authorization: 'Bearer local-admin-token', 'Sec-Fetch-Site': 'cross-site' });
+    browser.activate();
+    assert.equal(browser.closed, false, 'admin bearer WebSocket still bypasses browser origin checks');
+    assert.ok(upstreamHeaders.every((h) => h.authorization === 'Bearer remote-admin-token'));
+    assert.ok(upstreamHeaders.every((h) => !h.cookie), 'consumer cookies must not reach the producer');
+  } finally {
+    browser?.destroy();
+    for (const socket of upstreamSockets) socket.destroy();
+    await hub.close();
+    await remote.close();
+  }
+});
