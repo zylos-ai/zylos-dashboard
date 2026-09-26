@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Observer now renders Chinese and other non-ASCII text instead of `_`: its read-only tmux client inherited `LC_ALL=C` and was treated as non-UTF-8; it now attaches with `tmux -u`.
+- Upgrading no longer strands Observer generations created by the previous release: their layout without `-u` is accepted, by exact match and with its recorded hash, when they are reconciled and retired; new generations and startup workers accept only the `-u` layout.
 
 ## [0.5.5] - 2026-09-15
 
