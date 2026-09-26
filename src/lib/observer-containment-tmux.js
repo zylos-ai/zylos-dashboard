@@ -431,7 +431,7 @@ export class TmuxObserverContainment extends EventEmitter {
         continue;
       }
       if (!finalName.test(name)) throw failure('legacy_containment_state', 'Unrecognized/native Observer state requires old-version recovery');
-      const state = await validateState(root, { allowLegacyLayout: true });
+      const state = await validateState(root);
       await this._cleanup(state);
       if (this.active?.root === root) this.active = null;
       results.push({ generation: state.generation, reconciled: true });

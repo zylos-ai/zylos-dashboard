@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TmuxObserverContainment } from '../src/lib/observer-containment-tmux.js';
 import { runStartupWorker } from '../src/lib/observer-tmux-worker.js';
-import { readReceipt, writeAtomic, exists, validateState, digest, fixedLayout, legacyFixedLayout } from '../src/lib/observer-tmux-state.js';
+import { readReceipt, writeAtomic, exists, validateState, digest } from '../src/lib/observer-tmux-state.js';
 
 const role = (pid, command = 'fixture-process', ppid = 1) => ({ pid, ppid, start: `start-${pid}`, status: 'S', command });
 async function fixture(t, extra = {}) {
@@ -103,48 +103,6 @@ test('immutable metadata rejects malformed hashes and parent identities', async 
     await writeAtomic(path.join(s.root, 'state.json'), { ...s, ...change });
     await assert.rejects(validateState(s.root), { code: 'unsafe_runtime_state' });
   }
-});
-
-// A generation persisted by the release before -u: its layout file and the
-// recorded hash agree, but the layout lacks -u.
-async function persistLayout(s, text, { rehash = true } = {}) {
-  await fs.writeFile(s.layoutFile, text, { mode: 0o600 });
-  if (rehash) await writeAtomic(path.join(s.root, 'state.json'), { ...s, hashes: { ...s.hashes, layoutFile: digest(Buffer.from(text)) } });
-}
-
-test('upgrade reconciles a generation persisted with the pre -u layout, then starts new generations with -u', async (t) => {
-  const f = await fixture(t); const old = await f.publish();
-  await fs.rename(path.join(old.root, 'pending'), path.join(old.root, 'cancelled'));
-  await persistLayout(old, legacyFixedLayout(old));
-  assert.doesNotMatch(await fs.readFile(old.layoutFile, 'utf8'), /"-u"/);
-  await f.adapter.reconcilePersisted();
-  assert.equal(await exists(old.root), false);
-  const fresh = await f.publish();
-  const layout = await fs.readFile(fresh.layoutFile, 'utf8');
-  assert.equal(layout, fixedLayout(fresh));
-  assert.match(layout, /args "-u" /);
-});
-
-test('only reconciliation accepts the pre -u layout; startup workers still refuse it before commands', async (t) => {
-  const f = await fixture(t); const s = await f.publish();
-  await persistLayout(s, legacyFixedLayout(s));
-  await assert.rejects(validateState(s.root), { code: 'unsafe_runtime_state', message: /fixed layout changed/ });
-  assert.equal((await validateState(s.root, { allowLegacyLayout: true })).root, s.root);
-  let commands = 0;
-  await assert.rejects(runStartupWorker(s.root, { exec: async () => { commands++; } }), { code: 'unsafe_runtime_state' });
-  assert.equal(commands, 0);
-});
-
-test('legacy layout acceptance is an exact match and still requires the recorded layout hash', async (t) => {
-  const f = await fixture(t); const s = await f.publish();
-  const edited = legacyFixedLayout(s).replace('close_on_exit false', 'close_on_exit true');
-  await persistLayout(s, edited);
-  await assert.rejects(validateState(s.root, { allowLegacyLayout: true }), { code: 'unsafe_runtime_state', message: /fixed layout changed/ });
-  await assert.rejects(f.adapter.reconcilePersisted(), { code: 'unsafe_runtime_state' });
-  assert.equal(await exists(s.root), true);
-  await writeAtomic(path.join(s.root, 'state.json'), s);
-  await persistLayout(s, legacyFixedLayout(s), { rehash: false });
-  await assert.rejects(validateState(s.root, { allowLegacyLayout: true }), { code: 'unsafe_runtime_state', message: /config changed/ });
 });
 
 // Native tmux with LC_ALL=C renders control characters in format strings as '_'.

@@ -110,19 +110,10 @@ export const tmuxConfigText = 'set-option -g remain-on-exit on\nset-option -g ex
 export function innerAttachArgs(state) {
   return ['-u', ...targetArgs(state, 'attach-session', '-r', '-t', `=${state.target}`)];
 }
-function layoutFor(state, attachArgs) {
-  return `layout {\n  pane command=${JSON.stringify(state.tmuxPath)} focus=true {\n    args ${attachArgs.map((value) => JSON.stringify(value)).join(' ')}\n    close_on_exit false\n    start_suspended false\n  }\n}\n`;
-}
 export function fixedLayout(state) {
-  return layoutFor(state, innerAttachArgs(state));
+  return `layout {\n  pane command=${JSON.stringify(state.tmuxPath)} focus=true {\n    args ${innerAttachArgs(state).map((value) => JSON.stringify(value)).join(' ')}\n    close_on_exit false\n    start_suspended false\n  }\n}\n`;
 }
-// Generations persisted by the previous release attach without -u. They are
-// still accepted, by exact match, so they can be reconciled and retired after
-// an upgrade; new generations and startup workers only accept fixedLayout().
-export function legacyFixedLayout(state) {
-  return layoutFor(state, targetArgs(state, 'attach-session', '-r', '-t', `=${state.target}`));
-}
-export async function validateState(root, { allowLegacyLayout = false } = {}) {
+export async function validateState(root) {
   if (!finalName.test(path.basename(root))) throw failure('unsafe_runtime_state', 'Worker requires a final generation');
   await privateParents(root);
   await privatePath(root);
@@ -155,8 +146,7 @@ export async function validateState(root, { allowLegacyLayout = false } = {}) {
       digest(await fs.readFile(state.binaryPath)) !== state.hashes.binary) {
     throw failure('unsafe_runtime_state', 'Observer executable changed');
   }
-  const layout = await fs.readFile(state.layoutFile, 'utf8');
-  if ((layout !== fixedLayout(state) && !(allowLegacyLayout && layout === legacyFixedLayout(state))) ||
+  if (await fs.readFile(state.layoutFile, 'utf8') !== fixedLayout(state) ||
       await fs.readFile(state.tmuxConfig, 'utf8') !== (state.startupRecovery === 1 ? tmuxConfigText : 'set-option -g remain-on-exit on\n')) {
     throw failure('unsafe_runtime_state', 'Observer fixed layout changed');
   }
