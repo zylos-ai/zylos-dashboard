@@ -225,7 +225,8 @@ export class ObserverInstaller {
     }
   }
 
-  async verify() {
+  // Read-only history checks installation metadata; it never executes the artifact.
+  async inspectInstallation() {
     if (!this.artifact) return {
       state: 'unsupported',
       platform: this.platformKey,
@@ -258,12 +259,23 @@ export class ObserverInstaller {
       await this.assertArtifactChain(artifactDirectory);
       const stat = await fs.promises.lstat(binaryPath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('unsafe binary');
+      return { state: 'installed', platform: this.platformKey, version: this.artifact.version, binaryPath };
+    } catch {
+      return { state: 'failed', platform: this.platformKey, reason: 'artifact_verification_failed' };
+    }
+  }
+
+  async verify() {
+    const installation = await this.inspectInstallation();
+    if (installation.state !== 'installed') return installation;
+    const { binaryPath } = installation;
+    try {
       if (await sha256File(binaryPath) !== this.artifact.binarySha256) throw new Error('digest mismatch');
       const result = await this.exec(binaryPath, ['--version'], {
         encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: MAX_COMMAND_OUTPUT,
       });
       if (result.stdout.trim() !== `zellij ${this.artifact.version}`) throw new Error('version mismatch');
-      return { state: 'installed', platform: this.platformKey, version: this.artifact.version, binaryPath };
+      return installation;
     } catch {
       return { state: 'failed', platform: this.platformKey, reason: 'artifact_verification_failed' };
     }

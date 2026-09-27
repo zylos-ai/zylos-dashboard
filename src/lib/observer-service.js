@@ -167,7 +167,7 @@ export class ObserverService {
       if (pathname.startsWith('/api/observer/history/')) {
         if (!this.historyService) throw new ObserverHttpError(404, 'not_found');
         // File history must never start/reconcile containment or acquire a lease.
-        const status = await this.coordinator.status();
+        const status = await this.coordinator.historyStatus();
         if (status.state !== 'installed' || !status.desired?.enabled) throw new ObserverHttpError(404, 'observer_disabled');
         return await this.historyService.handle(req, res, url);
       }

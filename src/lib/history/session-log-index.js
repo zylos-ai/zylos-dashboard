@@ -35,6 +35,51 @@ function withoutReasoning(value) {
 export const CHUNK_BYTES = 1024 * 1024;
 export const DEFERRED_LINE_BYTES = 4 * CHUNK_BYTES;
 
+/** Scan complete JSONL records through one descriptor with bounded line buffers.
+ * Oversized records report their location without decoding or retaining content.
+ */
+async function scanLines(file, start, end, visit) {
+  let position = start, lineStart = start, parts = [], length = 0;
+  while (position < end) {
+    const buffer = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, end - position));
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, position);
+    if (!bytesRead) throw new Error('transcript_replaced');
+    let from = 0;
+    while (from < bytesRead) {
+      const newline = buffer.indexOf(10, from);
+      const boundary = newline < 0 || newline >= bytesRead ? bytesRead : newline;
+      length += boundary - from;
+      if (length <= DEFERRED_LINE_BYTES) parts.push(buffer.subarray(from, boundary));
+      else parts = [];
+      if (boundary === bytesRead) break;
+      const deferred = length > DEFERRED_LINE_BYTES;
+      const text = deferred ? null : Buffer.concat(parts, length).toString('utf8');
+      await visit(text, { offset: lineStart, length, deferred });
+      lineStart = position + boundary + 1;
+      parts = []; length = 0; from = boundary + 1;
+    }
+    position += bytesRead;
+  }
+  return lineStart;
+}
+
+/** A lightweight metadata cursor: no retained line index or transcript text. */
+export function scanTranscript(filePath, cursor, visit, reset) {
+  return readTask(filePath, async () => {
+    const file = await openTranscript(filePath);
+    try {
+      const stat = await file.stat();
+      const identity = `${stat.dev}:${stat.ino}`;
+      const replaced = !cursor || cursor.identity !== identity || stat.size < cursor.size ||
+        (stat.size === cursor.size && stat.mtimeMs !== cursor.mtime);
+      const offset = replaced ? 0 : cursor.offset;
+      if (replaced) reset();
+      const next = await scanLines(file, offset, stat.size, visit);
+      return { identity, offset: next, size: stat.size, mtime: stat.mtimeMs };
+    } finally { await file.close(); }
+  });
+}
+
 /** Read-only, bounded-buffer index. Only newline-terminated records become visible. */
 export class SessionLogIndex {
   constructor(filePath) {
@@ -78,6 +123,19 @@ export class SessionLogIndex {
       this.mtime = stat.mtimeMs;
       return this;
     } finally { await file.close(); }
+  }
+  readLines(start, visit) {
+    const lines = this.lines.slice(start);
+    if (!lines.length) return Promise.resolve();
+    const end = lines.at(-1).offset + lines.at(-1).length + 1;
+    return readTask(this.filePath, async () => {
+      const file = await openTranscript(this.filePath);
+      try {
+        const stat = await file.stat();
+        if (`${stat.dev}:${stat.ino}` !== this.identity || stat.size < end) throw new Error('transcript_replaced');
+        await scanLines(file, lines[0].offset, end, visit);
+      } finally { await file.close(); }
+    });
   }
   readLine(line) { return readTask(this.filePath, () => this._readLine(line)); }
   async _readLine(line) {
@@ -125,20 +183,22 @@ export class HistoryParser {
     const index = await this.indexCache.get(filePath);
     if (!index.parsed) index.parsed = { entries: [], next: 0, calls: new Map(), turn: null, nearest: new Map() };
     const state = index.parsed;
-    while (state.next < index.lines.length) {
-      const line = index.lines[state.next++];
+    await index.readLines(state.next, async (text, line) => {
       if (line.deferred) {
         state.entries.push({ id: `o:${line.offset}`, kind: 'marker', deferred: true, bytes: line.length,
           fields: { body: `Oversized record · ${line.length} bytes. Expand to view complete content.` } });
-        continue;
+      } else {
+        let record;
+        try { record = withoutReasoning(JSON.parse(text)); }
+        catch {
+          state.entries.push({ id: `o:${line.offset}`, kind: 'internal', fields: { body: text } });
+          state.next++; return;
+        }
+        const parsed = await this.parseRecord(record, line.offset, state, id);
+        state.entries.push(...(parsed.length ? parsed : [{ id: `o:${line.offset}`, kind: 'internal', fields: { body: record } }]));
       }
-      let record;
-      const text = await index.readLine(line);
-      try { record = withoutReasoning(JSON.parse(text)); }
-      catch { state.entries.push({ id: `o:${line.offset}`, kind: 'internal', fields: { body: text } }); continue; }
-      const parsed = await this.parseRecord(record, line.offset, state, id);
-      state.entries.push(...(parsed.length ? parsed : [{ id: `o:${line.offset}`, kind: 'internal', fields: { body: record } }]));
-    }
+      state.next++;
+    });
     return { index, entries: state.entries, generation: index.generation };
   }
   async expandEntry(id, entryId) {

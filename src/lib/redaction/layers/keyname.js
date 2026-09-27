@@ -1,6 +1,6 @@
 // Structural credentials; values are filtered to avoid treating source code as secrets.
 export const SENSITIVE_KEY =
-  /(?:password|passwd|secret|(?:^|[_-])(?:key|token|auth|pwd|session)(?:$|[_-])|apiKey|accessToken|authToken|credential|authorization|cookie)/i;
+  /(?:password|passwd|secret|(?:^|[_-])(?:token|pwd)(?:$|[_-])|[_-]key(?:$|[_-])|(?:api|access|session|client|private|signing|encryption)Key|(?:access|auth|session|refresh|bearer)Token|credential|authorization|cookie)/i;
 export function isCredentialValue(value) {
   const v = value.trim();
   return (
@@ -21,7 +21,7 @@ export function keynameSpans(text) {
       spans.push({ start, end: start + value.length, ruleId: 'structure', label });
   };
   const pairs =
-    /\b(?:["']?)([A-Za-z_][\w.-]*)(?:["']?)\s*[:=]\s*(?:"((?:\\.|[^"\\\r\n])*)"|'((?:\\.|[^'\\\r\n])*)'|([^\s,;\r\n]+))/g;
+    /(?<![\w.-])(?:["']?)([A-Za-z_][\w.-]*)(?:["']?)\s*[:=]\s*(?:"((?:\\.|[^"\\\r\n])*)"|'((?:\\.|[^'\\\r\n])*)'|([^\s,;\r\n]+))/g;
   for (const m of text.matchAll(pairs)) {
     if (!SENSITIVE_KEY.test(m[1])) continue;
     const value = m[2] ?? m[3] ?? m[4];
@@ -37,7 +37,7 @@ export function keynameSpans(text) {
   )) {
     add(m.index + m[0].length - m[3].length, m[3], m[1]);
   }
-  for (const m of text.matchAll(/\b[a-z][a-z\d+.-]*:\/\/([^\s/@:]+):([^\s/@]+)@/gi)) {
+  for (const m of text.matchAll(/(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/([^\s/@:]+):([^\s/@]+)@/gi)) {
     const start = m.index + m[0].indexOf('://') + 3;
     spans.push({
       start,
@@ -46,7 +46,7 @@ export function keynameSpans(text) {
       label: 'URL credentials',
     });
   }
-  for (const m of text.matchAll(/[?&]([^=&#\s]+)=([^&#\s"']+)/g)) {
+  for (const m of text.matchAll(/[?&]([^=&#?\s]+)=([^&#\s"']+)/g)) {
     let key = m[1];
     try {
       key = decodeURIComponent(key);

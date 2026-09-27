@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { BroadcastChannel } from 'node:worker_threads';
+import { createRedactor, UNAVAILABLE } from '../src/lib/redaction/engine.js';
 import { HistoryService, textChunk } from '../src/lib/history/history-service.js';
 import { ObserverService } from '../src/lib/observer-service.js';
 
@@ -128,7 +130,7 @@ test('Observer auth protects all history routes without touching containment or 
   const { service: historyService } = fixture([]);
   const forbidden = () => { throw new Error('terminal state touched'); };
   const observer = new ObserverService({ historyService,
-    coordinator: { status: async () => ({ state: 'installed', desired: { enabled: true } }), reconcileStartup: forbidden },
+    coordinator: { historyStatus: async () => ({ state: 'installed', desired: { enabled: true } }), reconcileStartup: forbidden },
     containment: { reconcilePersisted: forbidden }, manager: { createLease: forbidden },
     authGate: { enabled: true, resolveAuthContext: (req) => req.headers.authorization === 'Bearer admin' ? { kind: 'api', scope: 'admin' } : req.headers.cookie ? { kind: 'cookie', scope: 'admin' } : req.headers.authorization ? { kind: 'api', scope: 'read' } : null },
   });
@@ -137,7 +139,7 @@ test('Observer auth protects all history routes without touching containment or 
   }
   assert.equal((await request(observer, 'sessions', { method: 'POST', headers: { authorization: 'Bearer admin' } })).status, 405);
   assert.equal((await request(observer, 'unknown', { headers: { authorization: 'Bearer admin' } })).status, 404);
-  observer.coordinator.status = async () => ({ state: 'installed', desired: { enabled: false } });
+  observer.coordinator.historyStatus = async () => ({ state: 'installed', desired: { enabled: false } });
   assert.equal((await request(observer, 'sessions', { headers: { authorization: 'Bearer admin' } })).status, 404);
 });
 
@@ -197,4 +199,60 @@ test('negative control: bypassing service redaction exposes every protected text
       assert.equal((await request(mutant, route)).body.includes(fake), true, 'redaction acceptance must reject bypass on ' + route);
     }
   } finally { await live.close(); await mutant.close(); }
+});
+
+test('HTTP remains available while a small history field stalls its redaction worker', async () => {
+  const channelName = `history-stall-${process.pid}-${Date.now()}`;
+  const channel = new BroadcastChannel(channelName);
+  let signal;
+  const started = new Promise(resolve => { signal = resolve; });
+  channel.onmessage = () => signal();
+  const engineURL = new URL('../src/lib/redaction/engine.js', import.meta.url).href;
+  const workerURL = new URL('data:text/javascript,' + encodeURIComponent(`
+    import { parentPort, BroadcastChannel } from 'node:worker_threads';
+    import { redact } from ${JSON.stringify(engineURL)};
+    parentPort.on('message', ({ id, text, options }) => {
+      if (text === 'hang') {
+        new BroadcastChannel(${JSON.stringify(channelName)}).postMessage('started');
+        while (true) {}
+      }
+      parentPort.postMessage({ id, result: redact(text, options) });
+    });
+  `));
+  const productionRedactor = createRedactor({ workerURL, timeoutMs: 1000 });
+  const { parser } = fixture([{ id: 'o:0', kind: 'text', fields: { body: 'hang' } }]);
+  const service = new HistoryService({ parser, redactor: productionRedactor });
+  const observer = new ObserverService({ historyService: service,
+    containment: {}, manager: {},
+    coordinator: { historyStatus: async () => ({ state: 'installed', desired: { enabled: true } }) },
+    authGate: { enabled: true, resolveAuthContext: () => ({ kind: 'api', scope: 'admin' }) },
+  });
+  const server = http.createServer((req, res) => {
+    if (req.url === '/health') { res.end('healthy'); return; }
+    observer.handle(req, res, new URL(req.url, 'http://localhost'));
+  });
+  let deadline;
+  try {
+    assert.equal((await productionRedactor.redact('warm')).text, 'warm');
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    let historyFinished = false;
+    const history = fetch(base + '/api/observer/history/content?session=session&entry=o:0&field=body')
+      .then(async response => { historyFinished = true; return { status: response.status, body: await response.json() }; });
+    await Promise.race([started, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('worker never entered stall')), 2000); })]);
+    clearTimeout(deadline);
+    const health = await fetch(base + '/health', { signal: AbortSignal.timeout(500) });
+    assert.equal(await health.text(), 'healthy');
+    assert.equal(historyFinished, false, 'unrelated HTTP request completes while history scan is pending');
+    const result = await history;
+    assert.equal(result.status, 200);
+    assert.equal(result.body.text, UNAVAILABLE);
+    assert.equal((await productionRedactor.redact('password=private-fixture-value')).count, 1);
+  } finally {
+    clearTimeout(deadline);
+    channel.close();
+    await service.close();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
 });

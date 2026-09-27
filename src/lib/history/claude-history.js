@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { claudeProjectSlug } from '../claude-project-path.js';
-import { HistoryParser, SessionLogIndex } from './session-log-index.js';
+import { HistoryParser, scanTranscript } from './session-log-index.js';
 import { parseInbound, parseOutbound, recoverInbound, safeFullText, contentBlocks, binaryBlock, textContent } from './inbound-parser.js';
 
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -14,6 +14,8 @@ export class ClaudeHistory extends HistoryParser {
     this.zylosDir = options.zylosDir || path.join(this.homeDir, 'zylos');
     this.stateEngine = options.stateEngine;
     this.metadataCache = new Map();
+    this.metadataLoads = new Map();
+    this.maxMetadataFiles = 256;
   }
   get projectDir() { return path.join(this.homeDir, '.claude', 'projects', claudeProjectSlug(this.zylosDir)); }
   async listSessions() {
@@ -67,24 +69,34 @@ export class ClaudeHistory extends HistoryParser {
     sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { runtime: 'claude', current: paths.has(current) ? current : null, sessions };
   }
-  async _titleMetadata(filePath, stat) {
-    const version = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-    if (this.metadataCache.get(filePath)?.version === version) return this.metadataCache.get(filePath);
-    const index = await new SessionLogIndex(filePath).update();
-    const cached = index.historyMetadata || { title: '', startedAt: null, next: 0 };
-    let { title, startedAt } = cached;
-    for (const line of index.lines.slice(cached.next)) {
-      if (line.deferred) continue;
-      try {
-        const record = JSON.parse(await index.readLine(line));
-        startedAt ||= record.timestamp || null;
-        if (record.type === 'ai-title') title = record.title || record.aiTitle || title;
-        if (!title && record.type === 'user' && !record.isMeta) title = textContent(record.message?.content);
-      } catch { /* Unknown records do not hide the session. */ }
+  _titleMetadata(filePath, stat) {
+    if (!this.metadataLoads.has(filePath)) {
+      this.metadataLoads.set(filePath, this._updateTitleMetadata(filePath, stat)
+        .finally(() => this.metadataLoads.delete(filePath)));
     }
-    index.historyMetadata = { title, startedAt, next: index.lines.length };
-    const result = { title, startedAt, version };
+    return this.metadataLoads.get(filePath);
+  }
+  async _updateTitleMetadata(filePath, stat) {
+    const version = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    const cached = this.metadataCache.get(filePath);
+    if (cached?.version === version) return cached;
+    const result = { title: cached?.title || '', startedAt: cached?.startedAt || null };
+    const cursor = await scanTranscript(filePath, cached?.cursor, (text) => {
+      if (text === null) return;
+      // Once the fallback title and start time are known, ordinary messages
+      // cannot change metadata. Do not parse their potentially large payloads.
+      if (result.title && result.startedAt && !/"type"\s*:\s*"ai-title"/.test(text)) return;
+      try {
+        const record = JSON.parse(text);
+        result.startedAt ||= record.timestamp || null;
+        if (record.type === 'ai-title') result.title = record.title || record.aiTitle || result.title;
+        if (!result.title && record.type === 'user' && !record.isMeta) result.title = textContent(record.message?.content);
+      } catch { /* Unknown records do not hide the session. */ }
+    }, () => { result.title = ''; result.startedAt = null; });
+    Object.assign(result, { cursor, version: `${cursor.identity}:${cursor.size}:${cursor.mtime}` });
+    this.metadataCache.delete(filePath);
     this.metadataCache.set(filePath, result);
+    while (this.metadataCache.size > this.maxMetadataFiles) this.metadataCache.delete(this.metadataCache.keys().next().value);
     return result;
   }
   async parseRecord(record, offset, state, sessionId) {

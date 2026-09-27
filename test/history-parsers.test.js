@@ -224,3 +224,54 @@ test('raw internal and oversized views cannot reveal reasoning blocks', async t 
   const expanded = await parser.expandEntry('reasoning', entries[1].id);
   assert.ok(!JSON.stringify(expanded).includes('PRIVATE_REASONING_SENTINEL'));
 });
+
+test('metadata and parser read appended bytes with constant descriptor counts', async t => {
+  const options = await fixture(t);
+  const file = path.join(options.projectDir, 'session-perf.jsonl');
+  const first = { type: 'user', timestamp: '2026-09-27T01:00:00Z', message: { content: 'First title' } };
+  const ordinary = { type: 'assistant', timestamp: '2026-09-27T01:00:01Z', message: { content: 'x'.repeat(1000) } };
+  await fs.writeFile(file, jsonl([first]) + jsonl([ordinary]).repeat(2000));
+  const metrics = { opens: 0, bytes: 0 };
+  const originalOpen = fs.open.bind(fs);
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]).endsWith('.jsonl')) {
+      metrics.opens++;
+      const read = handle.read.bind(handle);
+      handle.read = async (...readArgs) => { const result = await read(...readArgs); metrics.bytes += result.bytesRead; return result; };
+    }
+    return handle;
+  });
+  const parser = new ClaudeHistory(options);
+  await parser.listSessions();
+  assert.equal(metrics.opens, 1, 'cold metadata opens once, not per line');
+  assert.equal(metrics.bytes, (await fs.stat(file)).size);
+  const initial = await parser.loadSession('session-perf');
+  metrics.opens = 0; metrics.bytes = 0;
+  const added = jsonl([ordinary, { type: 'ai-title', title: 'Updated title' }]);
+  await fs.appendFile(file, added);
+  const sessions = await parser.listSessions();
+  const updated = await parser.loadSession('session-perf');
+  assert.equal(updated.index, initial.index);
+  assert.equal(sessions.sessions[0].title, 'Updated title');
+  assert.equal(metrics.opens, 3, 'one metadata scan, one index scan, one batched parse');
+  assert.equal(metrics.bytes, 3 * Buffer.byteLength(added), 'only appended bytes are read');
+  metrics.opens = 0; metrics.bytes = 0;
+  await parser.listSessions(); await parser.loadSession('session-perf');
+  assert.equal(metrics.bytes, 0);
+  assert.equal(metrics.opens, 1, 'unchanged parser only validates current file identity');
+});
+
+test('metadata cursor preserves incomplete tail and resets title on truncate or replacement', async t => {
+  const options = await fixture(t); const file = path.join(options.projectDir, 'session-meta.jsonl');
+  await fs.writeFile(file, jsonl([{ type: 'user', timestamp: '2026-09-27T00:00:00Z', message: { content: 'Original' } }]) + '{"type":"ai-title","title":"Pending');
+  const parser = new ClaudeHistory(options);
+  assert.equal((await parser.listSessions()).sessions[0].title, 'Original');
+  await fs.appendFile(file, ' title"}\n');
+  assert.equal((await parser.listSessions()).sessions[0].title, 'Pending title');
+  await fs.writeFile(file, jsonl([{ type: 'ai-title', title: 'Short' }]));
+  assert.equal((await parser.listSessions()).sessions[0].title, 'Short');
+  await fs.rename(file, file + '.old');
+  await fs.writeFile(file, jsonl([{ type: 'ai-title', title: 'Replacement' }]));
+  assert.equal((await parser.listSessions()).sessions[0].title, 'Replacement');
+});

@@ -94,7 +94,7 @@ test('large worker results match direct redaction including boundary secrets and
   r.close();
 });
 test('worker timeout fails closed', async () => {
-  const r = createRedactor({ workerThreshold: 0, timeoutMs: 0 });
+  const r = createRedactor({ timeoutMs: 0 });
   assert.deepEqual(await r.redact('password=private'), {
     text: UNAVAILABLE,
     count: 0,
@@ -153,4 +153,104 @@ test('negative control: removing L2 makes the unchanged Fleet guard reject histo
   const input = 'read_api_key read_session_token zylos_st_synthetic_credential';
   assert.equal(SECRET_PATTERN.test(redact(input).text), false);
   assert.equal(SECRET_PATTERN.test(mutant.redact(input).text), true);
+});
+
+test('L4 preserves session identifiers and metadata while masking credential compounds', async () => {
+  const metadata = {
+    session_id: '2a1fe8c0-828f-4d83-b18b-24cbcb02319b',
+    session_name: 'review-dashboard-history',
+    start_new_session: 'continue',
+    key: 'role',
+    auth: 'enabled',
+    Auth: 'basic',
+    'session-architecture': 'overview.md',
+  };
+  const redactor = createRedactor();
+  try {
+    const result = await redactor.redactValue(metadata);
+    assert.equal(JSON.stringify(result.value), JSON.stringify(metadata));
+    assert.equal(result.count, 0);
+    for (const key of [
+      'session_token',
+      'session_secret',
+      'session_key',
+      'sessionToken',
+      'API_KEY',
+    ]) {
+      const result = await redactor.redactValue({ [key]: 'actual-private-credential' });
+      assert.ok(!JSON.stringify(result.value).includes('actual-private-credential'), key);
+      assert.ok(result.count > 0, key);
+    }
+    assert.ok(
+      !redact('Cookie: sessionid=actual-private-credential').text.includes(
+        'actual-private-credential',
+      ),
+    );
+  } finally {
+    redactor.close();
+  }
+});
+
+test('L1 excludes short, boolean, numeric and placeholder values', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'redaction-known-filter-'));
+  await writeFile(
+    path.join(directory, '.env'),
+    [
+      'X_SESSION_ID=true',
+      'FOO_KEY=1',
+      'BOOLEAN_TOKEN=true',
+      'NUMBER_TOKEN=1234567890123',
+      'SHORT_TOKEN=small',
+      'ENV_TOKEN=${EXAMPLE_TOKEN}',
+      'REAL_TOKEN=real-lowentropy-password',
+    ].join('\n'),
+  );
+  const redactor = createRedactor({ zylosDir: directory });
+  try {
+    const text = '{"ok": true} 1 1234567890123 small ${EXAMPLE_TOKEN}';
+    assert.equal((await redactor.redact(text)).text, text);
+    assert.equal((await redactor.redact('real-lowentropy-password')).count, 1);
+  } finally {
+    redactor.close();
+  }
+});
+
+test('all reviewed 160 KiB adversarial shapes remain linear in direct scanning', () => {
+  for (const token of ['a.', 'a-', 'foo.bar-baz.', '?a']) {
+    const text = token.repeat(Math.ceil((160 * 1024) / token.length));
+    const start = performance.now();
+    assert.equal(redact(text).text, text);
+    assert.ok(performance.now() - start < 200, `${token} exceeded 200ms`);
+  }
+});
+
+test('small fields use reusable worker deadlines and recover after a hung worker', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'redaction-worker-deadline-'));
+  const file = path.join(directory, 'worker.mjs');
+  const engineURL = new URL('../src/lib/redaction/engine.js', import.meta.url).href;
+  await writeFile(
+    file,
+    `import {parentPort} from 'node:worker_threads';
+import {redact} from ${JSON.stringify(engineURL)};
+parentPort.on('message', ({id,text,options}) => {
+  if(text==='hang') { while(true) {} }
+  parentPort.postMessage({id,result:redact(text,options)});
+});`,
+  );
+  const redactor = createRedactor({ workerURL: pathToFileURL(file), timeoutMs: 200 });
+  try {
+    assert.equal((await redactor.redact('warm')).text, 'warm');
+    let ticked = false;
+    const heartbeat = setTimeout(() => {
+      ticked = true;
+    }, 10);
+    const hung = await redactor.redact('hang');
+    clearTimeout(heartbeat);
+    assert.equal(ticked, true);
+    assert.equal(hung.failed, true);
+    assert.equal(hung.text, UNAVAILABLE);
+    assert.equal((await redactor.redact('password=actual-private-credential')).count, 1);
+  } finally {
+    redactor.close();
+  }
 });

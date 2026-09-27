@@ -6,7 +6,7 @@ independent review and post-release installation acceptance remain separate.
 
 ## Automated checks
 
-- Full suite: **859/859 passed** with
+- Full suite: **874/874 passed** with
   `env -u CLAUDE_SESSION_ID -u CODEX_SESSION_ID npm test`.
   The two session-ID variables are removed because the pre-existing state-engine
   fallback test otherwise reads the surrounding agent's active session.
@@ -29,8 +29,47 @@ independent review and post-release installation acceptance remain separate.
   predicate; the unchanged implementations pass.
 - Pinned rule generation is byte-reproducible. The dedicated 1,016,000-byte
   adversarial regex fixture took **13.468 ms**, below the 200 ms threshold.
-  Large-worker output equivalence, zero-deadline fail-closed behavior and known
+  Worker output equivalence, zero-deadline fail-closed behavior and known
   value reload/failure are tested.
+
+## R1 review corrections
+
+The initial single adversarial fixture did not establish safety across structural
+scanners. Review found quadratic key/value and query scans; R1 anchors those
+scanners and the independently reproduced URL-scheme case. Four 160 KiB patterns
+(`a.`, `a-`, `foo.bar-baz.`, `?a`) now complete in 3.0–3.7 ms in isolated local
+measurements. Reverting each of the three scanner fixes independently causes its
+negative-control child process to exceed a 1.5-second deadline.
+
+Every uncached field now uses one reusable worker per redactor, including short
+fields. The queue admits at most 128 active/waiting jobs; the five-second production
+deadline covers queue time and execution. Tests cover overload, close, concurrent
+deadlines, worker replacement and recovery. An HTTP regression runs the actual
+ObserverService, HistoryService and redactor with an injected worker stalled on a
+four-character field: health responds while history is pending, the injected
+one-second deadline hides the content, and a later credential scan succeeds.
+
+Known-value detection now requires at least eight characters and excludes trivial
+values. Structural detection preserves session identifiers, session names and
+bare key/auth metadata while retaining credential-specific fields. Positive
+credential controls and source mutants cover both filtering changes.
+
+Claude session metadata uses bounded incremental cursors; appended parser records
+are read in batches through one descriptor. Instrumented file reads verify zero
+transcript bytes on unchanged polls and three reads of only the appended range
+for metadata listing plus index/parser update. In one synthetic local run, 78 files
+(157.96 MiB) took 84.34 ms to list cold; five 981-byte appends to a roughly 20 MiB
+active transcript took 1.07–1.48 ms for listing and 0.20–0.29 ms for parser loading,
+with exactly three opens and 2,943 bytes per cycle. These are parser measurements
+on cached filesystem pages, not full HTTP latency or cross-machine guarantees.
+
+History admission now reads fresh enablement and installation metadata without
+hashing or executing the terminal artifact. Tests verify no artifact read/exec on
+this path, fresh disablement, and retained full verification for launch/install.
+
+The full 874-test run includes all six added queue/source-mutant tests. Syntax and
+diff checks pass. R1 changes no frontend files; the original eight browser cases
+below remain the UI evidence. Independent S3 re-review is still required.
 
 ## Browser checks
 

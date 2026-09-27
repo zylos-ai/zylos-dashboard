@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Worker } from 'node:worker_threads';
+import { createRedactionWorker } from './worker-client.js';
 import { rules, globalAllowlist, RULE_VERSION } from './rules.generated.js';
 import { dashboardSpans } from './layers/dashboard-tokens.js';
 import { SENSITIVE_KEY, keynameSpans } from './layers/keyname.js';
@@ -223,7 +223,6 @@ export function createRedactor({
   zylosDir,
   allowlist = [],
   timeoutMs = 5000,
-  workerThreshold = 1024 * 1024,
   maxCacheBytes = 16 * 1024 * 1024,
   maxCacheEntries = 1024,
   workerURL = new URL('./worker.js', import.meta.url),
@@ -231,7 +230,7 @@ export function createRedactor({
   allowlist = [...allowlist];
   const known = new KnownValues(zylosDir);
   const cache = new Map();
-  const workers = new Set();
+  const worker = createRedactionWorker({ workerURL, timeoutMs, failure: fail });
   let cacheBytes = 0;
   let refreshPromise;
   let closed = false;
@@ -257,26 +256,7 @@ export function createRedactor({
         return hit.result;
       }
       const options = { knownValues: current.knownValues, allowlist };
-      let result;
-      if (Buffer.byteLength(text) > workerThreshold) {
-        result = await new Promise((resolve) => {
-          const worker = new Worker(workerURL, { workerData: { text, options } });
-          workers.add(worker);
-          let done = false;
-          const finish = (value) => {
-            if (done) return;
-            done = true;
-            clearTimeout(timer);
-            workers.delete(worker);
-            void worker.terminate();
-            resolve(value);
-          };
-          const timer = setTimeout(() => finish(fail()), timeoutMs);
-          worker.once('message', finish);
-          worker.once('error', () => finish(fail()));
-          worker.once('exit', () => finish(fail()));
-        });
-      } else result = redact(text, options);
+      const result = await worker.run(text, options);
       if (!result.failed) {
         const size = Buffer.byteLength(result.text) + 256;
         if (size <= maxCacheBytes) {
@@ -353,8 +333,7 @@ export function createRedactor({
       closed = true;
       cache.clear();
       cacheBytes = 0;
-      for (const worker of workers) void worker.terminate();
-      workers.clear();
+      worker.close();
     },
   };
 }

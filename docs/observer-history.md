@@ -35,7 +35,8 @@ there is no reveal-original switch. The detector combines known credentials from
 and selected Betterleaks rules, and structural credential fields/headers/URLs.
 Markers identify a rule/source and length, with only public vendor prefixes
 retained where applicable. Email addresses and phone numbers are not intentionally
-masked. If redaction fails or a large-field worker times out, content is replaced
+masked. Every uncached text field is scanned in a worker, with a deadline covering
+queue time and execution. If redaction fails or times out, content is replaced
 with an unavailable message.
 
 Binary images/PDFs and encoded credentials are outside textual redaction coverage.

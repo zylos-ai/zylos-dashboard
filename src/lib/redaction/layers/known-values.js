@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { SENSITIVE_KEY } from './keyname.js';
+import { SENSITIVE_KEY, isCredentialValue } from './keyname.js';
 export class KnownValues {
   constructor(zylosDir) {
     this.dir = zylosDir;
@@ -30,7 +30,7 @@ export class KnownValues {
     if (signature === this.signature) return this.values;
     const values = [];
     const add = (value, label) => {
-      if (typeof value === 'string' && value.length > 0 && !/^\$\{|^\$\(/.test(value))
+      if (typeof value === 'string' && value.length >= 8 && isCredentialValue(value))
         values.push({
           value,
           label: label.replace(/read_api_key|read_session_token|zylos_(?:st|ak)_/gi, 'credential'),
