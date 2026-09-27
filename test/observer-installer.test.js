@@ -223,3 +223,25 @@ test('uninstall retries after artifact removal interrupted before manifest delet
   assert.equal(fs.readFileSync(path.join(sentinel, 'keep'), 'utf8'), 'sentinel');
   assert.equal((await installer.removeInstalledArtifacts()).state, 'not_installed');
 });
+
+test('history installation inspection never reads binary contents or executes it; full verification still does', async t => {
+  const fixture = makeArtifactFixture(t);
+  const installer = installerFor(t, fixture);
+  const installed = await installer.install();
+  installer.exec = async () => { throw new Error('must not execute for history'); };
+  const readFile = fs.promises.readFile;
+  const createReadStream = fs.createReadStream;
+  fs.promises.readFile = async (file, ...args) => {
+    assert.notEqual(String(file), installed.binaryPath, 'history read binary contents');
+    return readFile(file, ...args);
+  };
+  fs.createReadStream = (file, ...args) => {
+    assert.notEqual(String(file), installed.binaryPath, 'history hashed binary');
+    return createReadStream(file, ...args);
+  };
+  try { assert.equal((await installer.inspectInstallation()).state, 'installed'); }
+  finally { fs.promises.readFile = readFile; fs.createReadStream = createReadStream; }
+  assert.equal((await installer.verify()).state, 'failed');
+  fs.unlinkSync(installer.paths.installedManifest);
+  assert.equal((await installer.inspectInstallation()).state, 'not_installed');
+});

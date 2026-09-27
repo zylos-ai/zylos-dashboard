@@ -41,7 +41,7 @@ test('Observer renderer, upstream resizes and controls agree on all 40-row prese
   const app = fs.readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
   const init = app.slice(app.indexOf('function initObserverControls()'), app.indexOf('function initMemoryControls()'));
   vm.runInNewContext(`${init}\ninitObserverControls();`, {
-    OBSERVER_PRESET_DIMENSIONS, document: { querySelectorAll: () => buttons },
+    OBSERVER_PRESET_DIMENSIONS, $: () => null, document: { querySelectorAll: () => buttons },
   });
   assert.deepEqual(buttons.map((button) => button.textContent), ['80×40', '110×40', '140×40']);
 });

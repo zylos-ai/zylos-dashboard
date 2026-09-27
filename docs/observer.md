@@ -146,3 +146,8 @@ boundary against hostile processes running as the same user. Its evidence covers
 known roles and the unique private namespace, not arbitrary descendant discovery.
 Platform runs establish only their recorded source, binaries and host conditions;
 historical probes do not validate a later implementation.
+
+## Conversation history
+
+Switch to **History** to read saved conversations and full tool output without
+scrolling the live terminal. See [history, redaction and API details](observer-history.md).

@@ -70,6 +70,14 @@ export class ObserverCoordinator {
     return { ...installation, desired };
   }
 
+  async historyStatus() {
+    const [desired, installation] = await Promise.all([
+      this._readDesired(),
+      this.installer.inspectInstallation(),
+    ]);
+    return { ...installation, desired };
+  }
+
   installAndEnable({ signal, onProgress } = {}) {
     if (this._installPromise) return this._installPromise;
     const ticket = this._requestGeneration();

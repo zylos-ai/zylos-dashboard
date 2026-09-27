@@ -7,12 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=48">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=49">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="__ASSET_ROOT__/js/markdown-it.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=69"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=70"></script>
 </head>
 <body>
 <header class="app-header">
@@ -350,6 +350,10 @@
         <h2 data-i18n="observer.title">Terminal Observer</h2>
         <p id="observer-target"></p>
       </div>
+      <div class="observer-view-switch" role="group" aria-label="Observer view">
+        <button class="action-btn" data-observer-view="live" aria-pressed="true" data-i18n="observer.history.live">Live terminal</button>
+        <button class="action-btn" data-observer-view="history" aria-pressed="false" data-i18n="observer.history.title">History</button>
+      </div>
       <div class="observer-presets" id="observer-presets" role="group" aria-label="Terminal size">
         <button class="action-btn action-btn-sm" type="button" data-observer-preset="standard">Standard</button>
         <button class="action-btn action-btn-sm" type="button" data-observer-preset="wide">Wide</button>
@@ -357,6 +361,7 @@
       </div>
     </div>
     <div class="observer-notice" id="observer-notice" data-state="idle" data-i18n="observer.connecting">Connecting to read-only terminal…</div>
+    <div id="observer-history" hidden></div>
     <div class="observer-frame-shell">
       <iframe id="observer-frame" title="Read-only terminal observer" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
     </div>

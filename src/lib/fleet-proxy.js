@@ -11,7 +11,7 @@ import {
   rejectObserverUpgrade,
 } from './observer-websocket.js';
 
-const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
+import { SECRET_PATTERN } from './redaction/dashboard-secret-pattern.js';
 const STREAM_GUARD_TAIL_CHARS = 128;
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 const MAX_MEMORY_WRITE_BODY_BYTES = 2 * 1024 * 1024 + 64 * 1024;
@@ -80,7 +80,8 @@ function isAllowedProxyWrite(method, suffix) {
 
 function isObserverProxyRoute(method, suffix) {
   if (method === 'GET' || method === 'HEAD') {
-    return suffix === '/api/observer/status' || suffix === '/observer/frame';
+    return suffix === '/api/observer/status' || suffix === '/observer/frame' ||
+      method === 'GET' && /^\/api\/observer\/history\/(?:sessions|entries|content|search)$/.test(suffix);
   }
   return isAllowedProxyWrite(method, suffix) && suffix.startsWith('/api/observer/');
 }

@@ -65,8 +65,9 @@ function publicStatus(status) {
 }
 
 export class ObserverService {
-  constructor({ coordinator, containment, manager, authGate, upstreamFactory, ensureCoordinatorOwnership }) {
+  constructor({ coordinator, containment, manager, authGate, upstreamFactory, ensureCoordinatorOwnership, historyService }) {
     this.coordinator = coordinator;
+    this.historyService = historyService;
     this.containment = containment;
     this.manager = manager;
     this.authGate = authGate;
@@ -163,6 +164,13 @@ export class ObserverService {
       }
 
       const context = this._authContext(req, { requireOrigin: req.method !== 'GET' && req.method !== 'HEAD' });
+      if (pathname.startsWith('/api/observer/history/')) {
+        if (!this.historyService) throw new ObserverHttpError(404, 'not_found');
+        // File history must never start/reconcile containment or acquire a lease.
+        const status = await this.coordinator.historyStatus();
+        if (status.state !== 'installed' || !status.desired?.enabled) throw new ObserverHttpError(404, 'observer_disabled');
+        return await this.historyService.handle(req, res, url);
+      }
       if (pathname === '/api/observer/status' && req.method === 'GET') {
         await this._ready({ allowRecovery: true });
         const status = await this.coordinator.status();
@@ -350,6 +358,7 @@ export class ObserverService {
   }
 
   async shutdown(reason = 'dashboard_shutdown') {
+    await this.historyService?.close();
     await this.ensureCoordinatorOwnership();
     this._closeAllStreams(1001, reason);
     return this.manager.shutdown(reason);

@@ -128,3 +128,16 @@ test('artifact publication survives config-enable failure as installed but not e
   assert.equal(artifactPublished, true);
   assert.equal(fs.readFileSync(configPath, 'utf8'), '{ broken\n');
 });
+
+test('history status checks fresh desired state and metadata without full verification', async t => {
+  const { configPath } = fixture(t, { observer: { enabled: true } });
+  let inspected = 0;
+  const coordinator = new ObserverCoordinator({ configPath, installer: {
+    async inspectInstallation() { inspected++; return { state: 'installed' }; },
+    async verify() { throw new Error('history must not hash or execute artifact'); },
+  } });
+  assert.equal((await coordinator.historyStatus()).desired.enabled, true);
+  fs.writeFileSync(configPath, JSON.stringify({ observer: { enabled: false } }));
+  assert.equal((await coordinator.historyStatus()).desired.enabled, false);
+  assert.equal(inspected, 2);
+});

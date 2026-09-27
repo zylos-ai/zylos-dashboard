@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fastModeMultiplierForRuntime, modelPricesForRuntime } from '../config.js';
 import { Sanitizer } from '../sanitizer.js';
+import { claudeProjectSlug } from '../claude-project-path.js';
 
 const PER_MTOK = 1_000_000;
 const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
@@ -69,8 +70,7 @@ export class ConversationCollector {
 
   _resolveProjectSlug() {
     const zylosDir = this.config.zylosDir || path.join(process.env.HOME, 'zylos');
-    const resolved = fs.realpathSync(zylosDir);
-    return '-' + resolved.replace(/\//g, '-').replace(/^-/, '');
+    return claudeProjectSlug(zylosDir);
   }
 
   _resolveProjectDir() {
