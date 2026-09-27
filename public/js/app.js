@@ -1,3 +1,4 @@
+import { OBSERVER_PRESET_DIMENSIONS } from './observer-presets.js';
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
@@ -2476,6 +2477,8 @@ function initTabs() {
 
 function initObserverControls() {
   document.querySelectorAll('[data-observer-preset]').forEach((button) => {
+    const size = OBSERVER_PRESET_DIMENSIONS[button.dataset.observerPreset];
+    button.textContent = `${size.cols}×${size.rows}`;
     button.addEventListener('click', () => {
       setObserverPreset(button.dataset.observerPreset).catch((error) => {
         setObserverNotice(error.message || t('observer.preset_failed'), 'error');
