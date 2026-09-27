@@ -6,7 +6,7 @@ independent review and post-release installation acceptance remain separate.
 
 ## Automated checks
 
-- Full suite: **877/877 passed** with
+- Full suite: **885/885 passed** with
   `env -u CLAUDE_SESSION_ID -u CODEX_SESSION_ID npm test`.
   The two session-ID variables are removed because the pre-existing state-engine
   fallback test otherwise reads the surrounding agent's active session.
@@ -54,7 +54,7 @@ values. Structural detection preserves session identifiers, session names and
 bare key/auth metadata while retaining credential-specific fields. Positive
 credential controls and source mutants cover both filtering changes.
 
-Claude session metadata uses bounded incremental cursors; appended parser records
+Claude session metadata uses lightweight incremental cursors; appended parser records
 are read in batches through one descriptor. Instrumented file reads verify zero
 transcript bytes on unchanged polls and three reads of only the appended range
 for metadata listing plus index/parser update. In one synthetic local run, 78 files
@@ -94,6 +94,29 @@ remain hidden in that negative control. These fixtures validate queue admission,
 not throughput guarantees for arbitrary transcript sizes or sustained overload.
 
 The integrated R2 suite passes **877/877**; syntax and diff checks also pass.
+
+## R3 metadata cache retention
+
+Claude and Codex metadata caches now retain entries for the eligible transcript
+files encountered by each session-list scan, and discard entries absent from that
+scan. Claude's fixed 256-entry eviction is removed: visiting every file in a list
+larger than the cap previously evicted warm entries before they could be reused.
+Codex tracks files before filtering subagent sessions from the visible list, so
+hidden subagent metadata remains reusable. If the transcript root disappears,
+both parsers clear stale metadata and session paths.
+
+This metadata remains in memory and scales with the currently discovered files;
+it has no fixed entry-count limit. The separate eight-file parsed-session index
+cache is unchanged. No transcript or database records are modified by cleanup.
+
+Eight regressions instrument actual transcript opens and bytes read. Claude and
+Codex each use 260 synthetic files, with positive cold-read controls and two
+consecutive warm listings that perform zero transcript opens/reads. Tests also
+verify deleted-file cleanup with stale Codex store rows, root disappearance, and
+retention then deletion of a hidden Codex subagent. Reinstating Claude's fixed
+256-entry eviction in an isolated source mutant makes the same warm-list
+acceptance fail with observed file rereads. The integrated R3 suite passes
+**885/885**; syntax and diff checks also pass.
 
 ## Browser checks
 

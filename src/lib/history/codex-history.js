@@ -24,9 +24,14 @@ export class CodexHistory extends HistoryParser {
       'SELECT * FROM codex_rollout_paths WHERE runtime = ? ORDER BY updated_at DESC'
     ).all('codex') || [];
     const sessions = [], paths = new Map();
+    const scanned = new Set();
     let root;
     try { root = await fs.realpath(path.join(this.homeDir, '.codex', 'sessions')); }
-    catch { return { runtime: 'codex', current: null, sessions }; }
+    catch {
+      this.paths = paths;
+      this.metadataCache.clear();
+      return { runtime: 'codex', current: null, sessions };
+    }
     for (const row of rows) {
       if (typeof row.session_id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(row.session_id)) continue;
       try {
@@ -34,6 +39,8 @@ export class CodexHistory extends HistoryParser {
         if (!filePath.startsWith(root + path.sep) || !/^rollout-[^/]+\.jsonl$/.test(path.basename(filePath))) continue;
         const stat = await fs.stat(filePath);
         if (!stat.isFile()) continue;
+        // Hidden subagent rollouts also need warm metadata on the next list.
+        scanned.add(filePath);
         let metadata = this.metadataCache.get(filePath);
         if (!metadata || metadata.ino !== stat.ino) {
           const index = await new SessionLogIndex(filePath).update();
@@ -56,6 +63,9 @@ export class CodexHistory extends HistoryParser {
       } catch { /* Missing/invalid rollout paths do not break the list. */ }
     }
     this.paths = paths;
+    for (const filePath of this.metadataCache.keys()) {
+      if (!scanned.has(filePath)) this.metadataCache.delete(filePath);
+    }
     const latest = this.store?.latestCodexRolloutPath?.('codex');
     const current = paths.has(latest?.session_id) ? latest.session_id : null;
     return { runtime: 'codex', current, sessions };

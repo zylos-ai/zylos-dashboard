@@ -15,14 +15,18 @@ export class ClaudeHistory extends HistoryParser {
     this.stateEngine = options.stateEngine;
     this.metadataCache = new Map();
     this.metadataLoads = new Map();
-    this.maxMetadataFiles = 256;
   }
   get projectDir() { return path.join(this.homeDir, '.claude', 'projects', claudeProjectSlug(this.zylosDir)); }
   async listSessions() {
     const sessions = [];
     const paths = new Map();
+    const scanned = new Set();
     let root;
-    try { root = await fs.realpath(this.projectDir); } catch { return { runtime: 'claude', current: null, sessions }; }
+    try { root = await fs.realpath(this.projectDir); } catch {
+      this.paths = paths;
+      this.metadataCache.clear();
+      return { runtime: 'claude', current: null, sessions };
+    }
     const files = await fs.readdir(root, { withFileTypes: true });
     for (const file of files) {
       if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
@@ -30,6 +34,7 @@ export class ClaudeHistory extends HistoryParser {
       if (!SESSION_ID.test(id)) continue;
       const filePath = path.join(root, file.name);
       const stat = await fs.stat(filePath);
+      scanned.add(filePath);
       const metadata = await this._titleMetadata(filePath, stat);
       sessions.push({ id, parentId: null, kind: 'main', title: metadata.title || id,
         startedAt: metadata.startedAt || stat.birthtime.toISOString(), updatedAt: stat.mtime.toISOString(), bytes: stat.size });
@@ -66,6 +71,9 @@ export class ClaudeHistory extends HistoryParser {
       catch { /* No active Claude session. */ }
     }
     this.paths = paths;
+    for (const filePath of this.metadataCache.keys()) {
+      if (!scanned.has(filePath)) this.metadataCache.delete(filePath);
+    }
     sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { runtime: 'claude', current: paths.has(current) ? current : null, sessions };
   }
@@ -94,9 +102,7 @@ export class ClaudeHistory extends HistoryParser {
       } catch { /* Unknown records do not hide the session. */ }
     }, () => { result.title = ''; result.startedAt = null; });
     Object.assign(result, { cursor, version: `${cursor.identity}:${cursor.size}:${cursor.mtime}` });
-    this.metadataCache.delete(filePath);
     this.metadataCache.set(filePath, result);
-    while (this.metadataCache.size > this.maxMetadataFiles) this.metadataCache.delete(this.metadataCache.keys().next().value);
     return result;
   }
   async parseRecord(record, offset, state, sessionId) {
