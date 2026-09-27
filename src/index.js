@@ -147,7 +147,6 @@ const observerManager = new ObserverManager({
   maxViewers: config.observer.maxViewers,
   leaseTtlMs: config.observer.leaseTtlMs,
   idleGraceMs: config.observer.idleGraceMs,
-  defaultPreset: config.observer.defaultPreset,
 });
 const observerService = new ObserverService({
   coordinator: observerCoordinator,

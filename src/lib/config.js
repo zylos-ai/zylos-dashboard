@@ -140,8 +140,7 @@ export function loadConfig() {
       enabled: false,
       idleGraceMs: 5000,
       leaseTtlMs: 30000,
-      maxViewers: 4,
-      defaultPreset: 'standard'
+      maxViewers: 4
     },
     runtimeModelPrices: DEFAULT_RUNTIME_MODEL_PRICES,
     runtimeServiceTierModelPrices: DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
@@ -218,9 +217,6 @@ export function loadConfig() {
         idleGraceMs: boundedInteger(value.idleGraceMs, defaults.observer.idleGraceMs, 0, 30_000),
         leaseTtlMs: boundedInteger(value.leaseTtlMs, defaults.observer.leaseTtlMs, 10_000, 120_000),
         maxViewers: boundedInteger(value.maxViewers, defaults.observer.maxViewers, 1, 16),
-        defaultPreset: ['standard', 'wide', 'large'].includes(value.defaultPreset)
-          ? value.defaultPreset
-          : defaults.observer.defaultPreset,
       };
     })(),
     runtimeModelPrices,

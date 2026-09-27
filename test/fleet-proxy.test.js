@@ -267,6 +267,9 @@ test('fleet Observer HTTP allowlist binds remote leases to the local admin princ
     const lease = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases`, { method: 'POST', headers: { Origin: hub.origin } });
     assert.equal(lease.status, 201);
     assert.equal((await lease.json()).id, leaseId);
+    const preset = await fetch(`${hub.origin}/fleet/Remote/api/observer/leases/${leaseId}/preset`, { method: 'POST', headers: { Origin: hub.origin } });
+    assert.equal(preset.status, 403);
+    assert.equal(seen.some(([, url]) => url.endsWith('/preset')), false);
 
     const frame = await fetch(`${hub.origin}/fleet/Remote/observer/frame`, {
       headers: { 'x-observer-lease': leaseId }

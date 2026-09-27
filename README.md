@@ -147,3 +147,9 @@ npm run smoke      # Smoke test (start + verify)
 ## License
 
 [MIT](./LICENSE)
+
+Observer includes a renamed subset of Noto Sans Symbols 2, Noto Sans Symbols and
+Noto Sans Math under the [SIL Open Font License 1.1](assets/observer/OFL.txt).
+See [source pins and build provenance](assets/observer/observer-symbols.json);
+regenerate with `python3 scripts/build-observer-symbols.py` in a development
+environment with `fonttools==4.60.2 brotli==1.2.0`. Python is not needed at runtime.

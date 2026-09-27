@@ -1,8 +1,9 @@
 import { isSameOriginRequest } from './request-origin.js';
 import { observerFrameDocument } from './observer-frame.js';
-import { readJsonBody, sendJson } from './http.js';
+import { sendJson } from './http.js';
 import { ObserverManagerError } from './observer-manager.js';
 import { ObserverUpstream } from './observer-upstream.js';
+import { ObserverSizeMonitor } from './observer-size-monitor.js';
 import {
   acceptObserverWebSocket,
   rejectObserverUpgrade,
@@ -47,7 +48,6 @@ function errorStatus(error) {
     case 'not_installed': return 404;
     case 'capacity_exceeded': return 429;
     case 'lease_in_use': return 409;
-    case 'invalid_preset':
     case 'target_mismatch': return 400;
     case 'unsupported_platform': return 501;
     default: return 503;
@@ -65,7 +65,7 @@ function publicStatus(status) {
 }
 
 export class ObserverService {
-  constructor({ coordinator, containment, manager, authGate, upstreamFactory, ensureCoordinatorOwnership, historyService }) {
+  constructor({ coordinator, containment, manager, authGate, upstreamFactory, ensureCoordinatorOwnership, historyService, sizeMonitor }) {
     this.coordinator = coordinator;
     this.historyService = historyService;
     this.containment = containment;
@@ -74,6 +74,8 @@ export class ObserverService {
     this.upstreamFactory = upstreamFactory || ((options) => new ObserverUpstream(options));
     this.ensureCoordinatorOwnership = ensureCoordinatorOwnership || (async () => {});
     this.streams = new Set();
+    this.sizeMonitor = sizeMonitor || new ObserverSizeMonitor();
+    this.sizeMonitor.onChange = (size, active) => this._resizeStreams(size, active);
     this._startup = null;
     this._initialized = false;
     this.startupError = null;
@@ -115,6 +117,15 @@ export class ObserverService {
     if (this.startupError && !allowRecovery) throw this.startupError;
   }
 
+  _resizeStreams(size, active) {
+    if (active !== this.containment.active) return;
+    for (const stream of this.streams) {
+      if (stream.closed || stream.active !== active || !stream.connected) continue;
+      stream.upstream.resize(size);
+      stream.downstream?.sendText(JSON.stringify({ type: 'size', ...size }));
+    }
+  }
+
   _closeLeaseStreams(leaseId, code = 1000, reason = 'lease_closed') {
     for (const stream of [...this.streams]) {
       if (stream.leaseId === leaseId) this._closeStream(stream, code, reason);
@@ -135,6 +146,7 @@ export class ObserverService {
     if (stream.downstream) stream.downstream.close(code, reason);
     else stream.socket?.destroy();
     this.streams.delete(stream);
+    if (!this.streams.size) this.sizeMonitor.stop();
     try { this.manager.releaseLease(stream.leaseId, stream.context); } catch {}
   }
 
@@ -148,7 +160,7 @@ export class ObserverService {
         const context = this._authContext(req);
         const leaseId = firstHeader(req.headers['x-observer-lease']);
         if (!LEASE_ID_PATTERN.test(leaseId)) throw new ObserverHttpError(404, 'lease_not_found');
-        const lease = this.manager.validateLease(leaseId, context);
+        this.manager.validateLease(leaseId, context);
         const body = req.method === 'HEAD' ? '' : observerFrameDocument();
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -157,7 +169,6 @@ export class ObserverService {
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy': "default-src 'none'; frame-ancestors 'self'",
           'X-Frame-Options': 'SAMEORIGIN',
-          'X-Observer-Preset': lease.preset,
         });
         res.end(body);
         return true;
@@ -213,7 +224,7 @@ export class ObserverService {
         sendJson(res, 201, await this.manager.createLease(context));
         return true;
       }
-      const leaseRoute = pathname.match(/^\/api\/observer\/leases\/([A-Za-z0-9_-]{32})\/(renew|release|preset)$/);
+      const leaseRoute = pathname.match(/^\/api\/observer\/leases\/([A-Za-z0-9_-]{32})\/(renew|release)$/);
       if (leaseRoute && req.method === 'POST') {
         await this._ready();
         const [, leaseId, action] = leaseRoute;
@@ -229,14 +240,6 @@ export class ObserverService {
           sendJson(res, 200, { released: true });
           return true;
         }
-        const body = await readJsonBody(req, 4 * 1024);
-        const lease = this.manager.setPreset(leaseId, context, body?.preset);
-        for (const stream of this.streams) {
-          stream.upstream.resize(lease.preset);
-          stream.downstream?.sendText(JSON.stringify({ type: 'preset', preset: lease.preset }));
-        }
-        sendJson(res, 200, lease);
-        return true;
       }
       throw new ObserverHttpError(404, 'not_found');
     } catch (error) {
@@ -279,9 +282,10 @@ export class ObserverService {
       if ([...this.streams].some((current) => current.leaseId === leaseId && !current.closed)) {
         throw Object.assign(new Error('Observer lease already has a stream'), { code: 'lease_in_use' });
       }
-      upstream = this.upstreamFactory({ active: this.containment.active });
+      const active = this.containment.active;
+      upstream = this.upstreamFactory({ active });
       stream = {
-        leaseId, context, lease, upstream, socket,
+        leaseId, context, lease, upstream, socket, active, connected: false,
         downstream: null, timer: null, closed: false, awaitingPong: false,
         startupDisplay: [], startupDisplayBytes: 0,
       };
@@ -302,8 +306,11 @@ export class ObserverService {
         }
       }, REVALIDATE_MS);
       stream.timer.unref?.();
+      await this.sizeMonitor.start(active);
+      if (stream.closed || active !== this.containment.active) throw new Error('Observer generation changed');
+      const initialSize = this.sizeMonitor.size;
       await upstream.connect({
-        preset: lease.preset,
+        size: initialSize,
         onDisplay: (payload) => {
           if (stream.closed) return;
           if (stream.downstream) {
@@ -324,6 +331,10 @@ export class ObserverService {
         this._closeStream(stream, 1001, 'client_aborted');
         throw new Error('Observer downstream closed during handshake');
       }
+      if (active !== this.containment.active) throw new Error('Observer generation changed');
+      stream.connected = true;
+      const size = this.sizeMonitor.size;
+      if (size.cols !== initialSize.cols || size.rows !== initialSize.rows) upstream.resize(size);
       const refreshed = this.authGate.revalidateAuthContext(stream.context);
       if (!refreshed) throw new ObserverHttpError(401, 'unauthorized');
       stream.context = refreshed;
@@ -334,7 +345,7 @@ export class ObserverService {
       stream.downstream.on('error', () => this._closeStream(stream, 1011, 'stream_error'));
       stream.downstream.on('close', () => this._closeStream(stream, 1000, 'client_closed'));
       stream.downstream.on('pong', () => { stream.awaitingPong = false; });
-      stream.downstream.sendText(JSON.stringify({ type: 'preset', preset: stream.lease.preset }));
+      stream.downstream.sendText(JSON.stringify({ type: 'size', ...size }));
       for (const payload of stream.startupDisplay) {
         stream.downstream.sendBinary(payload);
         if (stream.downstream.closed || stream.downstream.closing) break;
@@ -353,6 +364,7 @@ export class ObserverService {
         const result = publicError(error);
         if (!socket.destroyed && !socket.writableEnded) rejectObserverUpgrade(socket, result.status, result.code);
       }
+      if (!this.streams.size) this.sizeMonitor.stop();
       return true;
     }
   }
