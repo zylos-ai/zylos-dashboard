@@ -7,7 +7,7 @@ import { DEFAULT_OBSERVER_SIZE, validObserverSize } from '../public/js/observer-
 import { observerFrameDocument, OBSERVER_FRAME_ASSETS } from '../src/lib/observer-frame.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function frame() {
+function frame(documentHtml = observerFrameDocument()) {
   let resolveFont, rejectFont;
   const font = new Promise((resolve, reject) => { resolveFont = resolve; rejectFont = reject; });
   const calls = { open: 0, dispose: 0, sizes: [], writes: [], fonts: [], loads: [] };
@@ -26,7 +26,18 @@ function frame() {
         this.options = {};
         Object.defineProperty(this.options, 'fontFamily', { set(value) { calls.fonts.push(value); } });
       }
-      open() { calls.open++; }
+      open() {
+        calls.open++;
+        const listeners = new Map();
+        this.textarea = {
+          readOnly: false, attributes: {},
+          setAttribute(name, value) { this.attributes[name] = value; },
+          addEventListener(name, callback) { listeners.set(name, callback); },
+          focus() { context.document.activeElement = this; listeners.get('focus')?.(); },
+          blur() { if (context.document.activeElement === this) context.document.activeElement = null; },
+        };
+        calls.textarea = this.textarea;
+      }
       dispose() { calls.dispose++; }
       resize(cols, rows) { calls.sizes.push({ cols, rows }); this.onResizeCallback?.(); }
       onResize(callback) { this.onResizeCallback = callback; }
@@ -38,16 +49,38 @@ function frame() {
     requestAnimationFrame(fn) { frames.set(++nextId, fn); return nextId; },
     cancelAnimationFrame(id) { frames.delete(id); },
   };
-  const script = observerFrameDocument().split('<script nonce="observer-frame">').at(-1).split('</script>')[0];
+  const script = documentHtml.split('<script nonce="observer-frame">').at(-1).split('</script>')[0];
   vm.runInNewContext(script, context);
   const channel = { messages: [], starts: 0, closes: 0,
     start() { this.starts++; }, close() { this.closes++; }, postMessage(message) { this.messages.push(JSON.parse(JSON.stringify(message))); } };
   const initialize = (source = context.parent, ports = [channel]) => context.initialize({ source, data: { type: 'observer-init' }, ports });
   const send = data => channel.onmessage?.({ data });
-  return { calls, channel, initialize, send, resolveFont, rejectFont,
+  return { calls, channel, initialize, send, resolveFont, rejectFont, document: context.document,
     timeout() { for (const fn of timers.values()) fn(); timers.clear(); },
     paint() { const pending = [...frames.values()]; frames.clear(); for (const fn of pending) fn(); } };
 }
+
+test('read-only frame helper suppresses keyboard requests and immediately releases focus', async () => {
+  const f = frame(); f.resolveFont([]); await flush();
+  const textarea = f.calls.textarea;
+  assert.equal(textarea.readOnly, true);
+  assert.equal(textarea.attributes.inputmode, 'none');
+  assert.equal(textarea.attributes.tabindex, '-1');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    textarea.focus();
+    assert.notEqual(f.document.activeElement, textarea);
+  }
+});
+
+test('focus oracle detects the frame with keyboard protection removed', async () => {
+  const html = observerFrameDocument();
+  const mutant = html.replace(/  \/\/ Read-only viewing must not summon[\s\S]*?textarea.addEventListener\('focus',\(\)=>textarea.blur\(\)\);\n/, '');
+  assert.notEqual(mutant, html);
+  const f = frame(mutant); f.resolveFont([]); await flush();
+  f.calls.textarea.focus();
+  assert.throws(() => assert.notEqual(f.document.activeElement, f.calls.textarea), assert.AssertionError);
+  assert.equal(f.calls.textarea.readOnly, false);
+});
 
 test('size contract enforces inclusive integer bounds', () => {
   assert.deepEqual(DEFAULT_OBSERVER_SIZE, { cols: 80, rows: 24 });

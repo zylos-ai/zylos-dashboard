@@ -84,6 +84,12 @@ async function openTerminal(){
   clearTimeout(fontTimer);
   if(stopped)return;
   terminal.open(document.getElementById('terminal'));
+  // Read-only viewing must not summon a mobile keyboard via xterm's helper.
+  const textarea=terminal.textarea;
+  textarea.readOnly=true;
+  textarea.setAttribute('inputmode','none');
+  textarea.setAttribute('tabindex','-1');
+  textarea.addEventListener('focus',()=>textarea.blur());
   opened=true;
   terminal.onResize(reportMetrics);
   if(pendingSize)terminal.resize(pendingSize.cols,pendingSize.rows);
