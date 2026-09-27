@@ -1,5 +1,5 @@
-import { ObserverHistory } from './observer-history.js?v=1';
-import { OBSERVER_PRESET_DIMENSIONS } from './observer-presets.js';
+import { ObserverHistory } from './observer-history.js?v=2';
+import { validObserverSize } from './observer-size.js';
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
@@ -1961,13 +1961,15 @@ function observerSessionCurrent(generation, targetKey) {
   return state.observer.generation === generation && observerTargetKey() === targetKey;
 }
 
-function syncObserverPreset(preset) {
-  document.querySelectorAll('[data-observer-preset]').forEach((button) => {
-    button.classList.toggle('active', button.dataset.observerPreset === preset);
-  });
-  state.observer.channel?.postMessage({ type: 'preset', preset });
-  const shell = $('#observer-frame')?.parentElement;
-  if (shell) shell.dataset.preset = preset;
+function syncObserverSize(size) {
+  if (!validObserverSize(size)) return;
+  state.observer.channel?.postMessage({ type: 'size', cols: size.cols, rows: size.rows });
+}
+
+function syncObserverMetrics(iframe, metrics) {
+  if (![metrics.width, metrics.height].every(value => Number.isFinite(value) && value > 0 && value <= 20000)) return;
+  iframe.style.width = `max(100%, ${Math.ceil(metrics.width)}px)`;
+  iframe.style.height = `max(100%, ${Math.ceil(metrics.height)}px)`;
 }
 
 function releaseObserverLease(endpoints, lease) {
@@ -2029,11 +2031,12 @@ async function closeObserver({ release = true, preserveNotice = false, preserveI
   try { observer.channel?.postMessage({ type: 'shutdown' }); } catch {}
   try { observer.channel?.close(); } catch {}
   observer.channel = null;
-  if (observer.iframe) observer.iframe.srcdoc = '';
+  if (observer.iframe) {
+    observer.iframe.srcdoc = '';
+    observer.iframe.style.width = '';
+    observer.iframe.style.height = '';
+  }
   observer.iframe = null;
-  const shell = $('#observer-frame')?.parentElement;
-  if (shell) delete shell.dataset.preset;
-  document.querySelectorAll('[data-observer-preset]').forEach((button) => button.classList.remove('active'));
   if (release) releaseObserverLease(endpoints, lease);
   if (!preserveNotice) setObserverNotice(t('observer.closed'), 'idle');
 }
@@ -2106,10 +2109,15 @@ async function openObserver() {
     observer.iframe = iframe;
     const messageChannel = new MessageChannel();
     observer.channel = messageChannel.port1;
+    let frameReadyResolve;
+    const frameReady = new Promise(resolve => { frameReadyResolve = resolve; });
+    const frameReadyTimer = setTimeout(() => frameReadyResolve(false), 5000);
+    const cancelFrameWait = () => frameReadyResolve(false);
+    abort?.signal.addEventListener('abort', cancelFrameWait, { once: true });
     messageChannel.port1.onmessage = ({ data }) => {
-      if (observerSessionCurrent(generation, targetKey) && observer.lease?.id === lease.id && data?.type === 'ready') {
-        setObserverNotice(t('observer.live_read_only'), 'live');
-      }
+      if (!observerSessionCurrent(generation, targetKey) || observer.lease?.id !== lease.id || observer.iframe !== iframe) return;
+      if (data?.type === 'ready') { frameReadyResolve(true); setObserverNotice(t('observer.live_read_only'), 'live'); }
+      else if (data?.type === 'metrics') syncObserverMetrics(iframe, data);
     };
     messageChannel.port1.start();
     iframe.onload = () => {
@@ -2117,6 +2125,11 @@ async function openObserver() {
       iframe.contentWindow.postMessage({ type: 'observer-init' }, '*', [messageChannel.port2]);
     };
     iframe.srcdoc = frameDocument;
+    const ready = await frameReady;
+    clearTimeout(frameReadyTimer);
+    abort?.signal.removeEventListener('abort', cancelFrameWait);
+    if (!observerSessionCurrent(generation, targetKey) || observer.lease?.id !== lease.id || observer.iframe !== iframe) return;
+    if (!ready) throw new Error(t('observer.connect_failed'));
 
     const streamUrl = new URL(endpoints.stream, window.location.href);
     streamUrl.protocol = streamUrl.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2128,7 +2141,7 @@ async function openObserver() {
       if (typeof event.data === 'string') {
         try {
           const message = JSON.parse(event.data);
-          if (message.type === 'preset') syncObserverPreset(message.preset);
+          if (message.type === 'size') syncObserverSize(message);
         } catch {}
         return;
       }
@@ -2150,7 +2163,6 @@ async function openObserver() {
         recoverObserver(error).catch(() => {});
       });
     }, 10_000);
-    syncObserverPreset(lease.preset || 'standard');
     const target = $('#observer-target');
     if (target) target.textContent = t('observer.target', { name: viewedAgentName() || t('value.unknown') });
   } catch (error) {
@@ -2161,20 +2173,6 @@ async function openObserver() {
   }
 }
 
-async function setObserverPreset(preset) {
-  const { lease, endpointPrefix } = state.observer;
-  const generation = state.observer.generation;
-  const targetKey = observerTargetKey();
-  if (!lease?.id || !endpointPrefix?.api) return;
-  const resp = await fetch(`${endpointPrefix.api}/leases/${encodeURIComponent(lease.id)}/preset`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preset })
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!observerSessionCurrent(generation, targetKey) || state.observer.lease?.id !== lease.id) return;
-  if (!resp.ok) throw new Error(data.error || t('observer.preset_failed'));
-  state.observer.lease = data;
-  syncObserverPreset(data.preset);
-}
 
 function activeTabName() {
   return document.querySelector('.tab.active')?.dataset.tab || 'overview';
@@ -2491,7 +2489,6 @@ function initObserverControls() {
         state.observer.historyMode = historyMode;
         historyRoot.hidden = !historyMode;
         $('#observer-frame').parentElement.hidden = historyMode;
-        $('#observer-presets').hidden = historyMode;
         $('#observer-notice').hidden = historyMode;
         document.querySelectorAll('[data-observer-view]').forEach(control => {
           control.setAttribute('aria-pressed', String(control === button));
@@ -2500,15 +2497,7 @@ function initObserverControls() {
       });
     });
   }
-  document.querySelectorAll('[data-observer-preset]').forEach((button) => {
-    const size = OBSERVER_PRESET_DIMENSIONS[button.dataset.observerPreset];
-    button.textContent = `${size.cols}×${size.rows}`;
-    button.addEventListener('click', () => {
-      setObserverPreset(button.dataset.observerPreset).catch((error) => {
-        setObserverNotice(error.message || t('observer.preset_failed'), 'error');
-      });
-    });
-  });
+
 }
 
 function initMemoryControls() {

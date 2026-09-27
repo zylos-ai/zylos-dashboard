@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { buildAgentFleetView, liveStateMood, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
+import { validObserverSize } from '../public/js/observer-size.js';
 import { agentColor } from '../src/lib/agent-color.js';
 
 function deferred() {
@@ -25,16 +26,14 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     slice('function resetAgentData(', 'function initFleetMode('),
     slice('function observerStatusLabel(', 'function addPriceRow(')
   ].join('\n');
+  let autoFrameReady = true;
   const elements = {
     '#observer-notice': { dataset: {} },
-    '#observer-frame': { contentWindow: { postMessage() {} }, parentElement: { dataset: {} } },
+    '#observer-frame': { style: {}, contentWindow: { postMessage(_message, _origin, ports) { if (autoFrameReady) queueMicrotask(() => ports[0].peer.onmessage?.({ data: { type: 'ready' } })); } }, parentElement: { dataset: {} } },
     '#observer-target': {},
     '#observer-tab': { hidden: false }
   };
-  const presets = ['standard', 'wide', 'large'].map((name) => ({
-    dataset: { observerPreset: name },
-    classList: { active: false, toggle(_name, active) { this.active = active; }, remove() { this.active = false; } }
-  }));
+  Object.defineProperty(elements['#observer-frame'], 'srcdoc', { set(value) { this.document = value; queueMicrotask(() => this.onload?.()); }, get() { return this.document; } });
   const settings = Object.fromEntries(['status', 'state', 'platform', 'recovery', 'install', 'enable', 'disable', 'uninstall'].map((name) => [
     name === 'status' || name === 'state' || name === 'platform' || name === 'recovery' ? `#observer-settings-${name}` : `#observer-${name}`, { hidden: true, textContent: '', disabled: false }
   ]));
@@ -66,7 +65,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     settingsModal: { querySelector: (selector) => settings[selector], querySelectorAll: () => buttons },
     $: (selector) => elements[selector],
     document: {
-      querySelectorAll: (selector) => selector === '.tab' ? tabs : selector === '.tab-panel' ? panels : selector === '[data-observer-preset]' ? presets : [],
+      querySelectorAll: (selector) => selector === '.tab' ? tabs : selector === '.tab-panel' ? panels : [],
       querySelector: (selector) => selector === '.tab.active' ? tabs.find((tab) => tab.classList.active) || null : null,
       addEventListener() {},
       visibilityState: 'visible'
@@ -77,6 +76,8 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     setInterval: (handler) => { intervals.push(handler); return intervals.length; },
     setTimeout: (handler, delay) => { handler.delay = delay; timeouts.push(handler); return timeouts.length; },
     URL,
+    AbortController,
+    validObserverSize,
     ArrayBuffer,
     window: {
       location: { href: 'http://fixture.local/dashboard/', pathname: '/' },
@@ -87,8 +88,8 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     REMOTE_AGENT: null,
     MessageChannel: class {
       constructor() {
-        this.port1 = { postMessage() {}, start() {}, close() {} };
-        this.port2 = {};
+        this.port1 = { messages: [], postMessage(message) { this.messages.push(message); }, start() {}, close() {} };
+        this.port2 = { peer: this.port1 };
       }
     },
     WebSocket: class {
@@ -132,7 +133,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     timeouts,
     listeners,
     sockets,
-    presets,
+    setAutoFrameReady(value) { autoFrameReady = value; },
     settings,
     buttons,
     tabs,
@@ -917,7 +918,6 @@ test('Observer UI is optional, read-only, agent-routed, and releases leases on e
 
 test('Observer close fences late lease acquisition and releases it against the original target', async () => {
   const harness = observerUiHarness();
-  harness.elements['#observer-frame'].parentElement.dataset.preset = 'large';
   const lease = deferred();
   harness.setFetch((url) => {
     const path = String(url);
@@ -931,14 +931,13 @@ test('Observer close fences late lease acquisition and releases it against the o
   const opening = harness.context.openObserver();
   await new Promise((resolve) => setImmediate(resolve));
   await harness.context.closeObserver();
-  lease.resolve(observerResponse({ id: 'old-lease', preset: 'standard' }));
+  lease.resolve(observerResponse({ id: 'old-lease' }));
   await opening;
 
   assert.equal(harness.context.state.observer.lease, null);
   assert.equal(harness.context.state.observer.endpointPrefix, null);
   assert.equal(harness.context.state.observer.opening, false);
   assert.equal(harness.sockets.length, 0);
-  assert.equal('preset' in harness.elements['#observer-frame'].parentElement.dataset, false);
   assert.ok(harness.calls.some(({ url }) => url === '/api/observer/leases/old-lease/release'));
 });
 
@@ -952,7 +951,7 @@ test('Observer open follows a superseded same-target status response into a leas
       if (statusRequests === 1) return openingStatus.promise;
       return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
     }
-    if (String(url).endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'live-lease', preset: 'standard' }));
+    if (String(url).endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'live-lease' }));
     return Promise.resolve(observerResponse({}));
   });
 
@@ -970,7 +969,7 @@ test('Observer open follows a superseded same-target status response into a leas
   assert.notEqual(harness.elements['#observer-notice'].dataset.state, 'error');
 });
 
-test('Observer stale renew and preset responses cannot mutate or report errors into a newer session', async () => {
+test('Observer stale renew responses cannot mutate a newer session', async () => {
   const harness = observerUiHarness();
   const oldLease = { id: 'old-lease' };
   const oldEndpoints = { api: '/old/api/observer' };
@@ -992,17 +991,7 @@ test('Observer stale renew and preset responses cannot mutate or report errors i
   await pendingRenew;
   assert.equal(harness.context.state.observer.lease.id, 'new-lease');
 
-  harness.context.state.observer.generation = 3;
-  harness.context.state.observer.lease = oldLease;
-  harness.context.state.observer.endpointPrefix = oldEndpoints;
-  const preset = deferred();
-  harness.setFetch(() => preset.promise);
-  const pendingPreset = harness.context.setObserverPreset('wide');
-  await harness.context.closeObserver({ release: false });
-  harness.context.state.observer.lease = { id: 'new-lease' };
-  preset.resolve(observerResponse({ error: 'old failure' }, { ok: false }));
-  await assert.doesNotReject(pendingPreset);
-  assert.equal(harness.context.state.observer.lease.id, 'new-lease');
+
 });
 
 test('Observer stale open, frame, and renew errors cannot damage a closed or newer session', async (t) => {
@@ -1019,7 +1008,7 @@ test('Observer stale open, frame, and renew errors cannot damage a closed or new
         leaseRequests += 1;
         return leaseRequests === 1
           ? firstLease.promise
-          : Promise.resolve(observerResponse({ id: 'new-lease', preset: 'standard' }));
+          : Promise.resolve(observerResponse({ id: 'new-lease' }));
       }
       return Promise.resolve(observerResponse({}));
     });
@@ -1043,7 +1032,7 @@ test('Observer stale open, frame, and renew errors cannot damage a closed or new
       if (path.endsWith('/status')) {
         return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
       }
-      if (path.endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'old-lease', preset: 'standard' }));
+      if (path.endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'old-lease' }));
       if (path.endsWith('/observer/frame')) return frame.promise;
       return Promise.resolve(observerResponse({}));
     });
@@ -1071,7 +1060,7 @@ test('Observer stale open, frame, and renew errors cannot damage a closed or new
       if (path.endsWith('/leases')) {
         leaseRequests += 1;
         return Promise.resolve(observerResponse({
-          id: leaseRequests === 1 ? 'old-lease' : 'new-lease', preset: 'standard'
+          id: leaseRequests === 1 ? 'old-lease' : 'new-lease'
         }));
       }
       if (path.includes('/leases/old-lease/renew')) return oldRenew.promise;
@@ -1169,7 +1158,7 @@ test('Observer popstate navigation generation prevents a delayed remote route fr
     if (path.endsWith('/status')) {
       return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
     }
-    if (path.endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'stray', preset: 'standard' }));
+    if (path.endsWith('/leases')) return Promise.resolve(observerResponse({ id: 'stray' }));
     return Promise.resolve(observerResponse({}));
   });
   harness.context.initTabs();
@@ -1325,13 +1314,16 @@ test('Observer lifecycle post-refresh fence prevents old-target fallback and fee
   assert.equal(h.settings['#observer-settings-status'].textContent, '');
 });
 
-test('Observer close clears both preset geometry and active preset choice', async () => {
+test('Observer close clears measured frame geometry', async () => {
   const h = observerUiHarness();
-  h.context.syncObserverPreset('large');
-  assert.equal(h.presets[2].classList.active, true);
+  const iframe = h.elements['#observer-frame'];
+  h.context.state.observer.iframe = iframe;
+  h.context.syncObserverMetrics(iframe, { width: 1200.1, height: 800.1 });
+  assert.equal(iframe.style.width, 'max(100%, 1201px)');
+  assert.equal(iframe.style.height, 'max(100%, 801px)');
   await h.context.closeObserver();
-  assert.equal(h.presets.every((button) => !button.classList.active), true);
-  assert.equal('preset' in h.elements['#observer-frame'].parentElement.dataset, false);
+  assert.equal(iframe.style.width, '');
+  assert.equal(iframe.style.height, '');
 });
 
 test('Observer lifecycle status refresh cannot replace a newer same-target status', async () => {
@@ -1534,8 +1526,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=70/);
-  assert.match(index, /style\.css\?v=49/);
+  assert.match(index, /app\.js\?v=71/);
+  assert.match(index, /style\.css\?v=50/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -1602,7 +1594,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=70/);
+  assert.match(index, /app\.js\?v=71/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -1963,3 +1955,54 @@ for (const [code, status] of [['auth_required', 401], ['insufficient_scope', 403
     assert.equal(h.elements['#observer-notice'].dataset.state, 'error');
   });
 }
+
+test('Observer waits for renderer readiness before opening stream and forwards validated sizes', async () => {
+  const h = observerUiHarness(); h.setAutoFrameReady(false);
+  h.setFetch(url => Promise.resolve(observerResponse(String(url).endsWith('/status')
+    ? { state: 'installed', desired: { enabled: true } }
+    : String(url).endsWith('/leases') ? { id: 'font-wait' } : {})));
+  const opening = h.context.openObserver();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.sockets.length, 0);
+  const channel = h.context.state.observer.channel;
+  channel.onmessage({ data: { type: 'ready' } }); await opening;
+  assert.equal(h.sockets.length, 1);
+  h.sockets[0].onmessage({ data: JSON.stringify({ type: 'size', cols: 120, rows: 35 }) });
+  h.sockets[0].onmessage({ data: JSON.stringify({ type: 'size', cols: 501, rows: 35 }) });
+  h.sockets[0].onmessage({ data: JSON.stringify({ type: 'preset', preset: 'large' }) });
+  assert.deepEqual(JSON.parse(JSON.stringify(channel.messages)), [{ type: 'size', cols: 120, rows: 35 }]);
+  channel.onmessage({ data: { type: 'metrics', width: 1200.1, height: 600.5 } });
+  assert.equal(h.elements['#observer-frame'].style.width, 'max(100%, 1201px)');
+  channel.onmessage({ data: { type: 'metrics', width: Infinity, height: 100 } });
+  assert.equal(h.elements['#observer-frame'].style.width, 'max(100%, 1201px)');
+  await h.context.closeObserver({ release: false });
+  channel.onmessage({ data: { type: 'metrics', width: 500, height: 100 } });
+  assert.equal(h.elements['#observer-frame'].style.width, '');
+});
+
+test('Observer abort while font is loading releases lease without opening stream', async () => {
+  const h = observerUiHarness(); h.setAutoFrameReady(false);
+  h.setFetch(url => Promise.resolve(observerResponse(String(url).endsWith('/status')
+    ? { state: 'installed', desired: { enabled: true } }
+    : String(url).endsWith('/leases') ? { id: 'font-abort' } : {})));
+  const opening = h.context.openObserver(); await new Promise(resolve => setImmediate(resolve));
+  const channel = h.context.state.observer.channel;
+  await h.context.closeObserver(); await opening;
+  channel.onmessage({ data: { type: 'ready' } });
+  assert.equal(h.sockets.length, 0);
+  assert.equal(h.context.state.observer.lease, null);
+  assert.ok(h.calls.some(call => call.url.endsWith('/font-abort/release')));
+});
+
+test('Observer renderer readiness timeout releases lease and schedules recovery', async () => {
+  const h = observerUiHarness(); h.setAutoFrameReady(false);
+  h.setFetch(url => Promise.resolve(observerResponse(String(url).endsWith('/status')
+    ? { state: 'installed', desired: { enabled: true } }
+    : String(url).endsWith('/leases') ? { id: 'font-timeout' } : {})));
+  const opening = h.context.openObserver(); await new Promise(resolve => setImmediate(resolve));
+  h.timeouts.find(timer => timer.delay === 5000 && !timer.cancelled)(); await opening;
+  assert.equal(h.sockets.length, 0); assert.equal(h.context.state.observer.lease, null);
+  assert.ok(h.calls.some(call => call.url.endsWith('/font-timeout/release')));
+  assert.equal(h.elements['#observer-notice'].dataset.state, 'connecting');
+  assert.ok(h.timeouts.some(timer => timer.delay !== 5000 && !timer.cancelled));
+});

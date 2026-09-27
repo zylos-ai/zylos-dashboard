@@ -4,7 +4,6 @@ const DEFAULT_MAX_VIEWERS = 4;
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_IDLE_GRACE_MS = 5_000;
 const DEFAULT_REVALIDATE_MS = 10_000;
-const PRESETS = new Set(['standard', 'wide', 'large']);
 
 export class ObserverManagerError extends Error {
   constructor(code, message) {
@@ -30,7 +29,6 @@ export class ObserverManager {
     leaseTtlMs = DEFAULT_LEASE_TTL_MS,
     idleGraceMs = DEFAULT_IDLE_GRACE_MS,
     revalidateMs = DEFAULT_REVALIDATE_MS,
-    defaultPreset = 'standard',
     now = () => Date.now(),
   }) {
     this.coordinator = coordinator;
@@ -45,7 +43,6 @@ export class ObserverManager {
     this.now = now;
     this.leases = new Map();
     this.generation = null;
-    this.currentPreset = PRESETS.has(defaultPreset) ? defaultPreset : 'standard';
     this._starting = null;
     this._pendingLeases = 0;
     this._epoch = 0;
@@ -156,7 +153,6 @@ export class ObserverManager {
         generation: active.generation,
         createdAt,
         expiresAt: createdAt + this.leaseTtlMs,
-        preset: this.currentPreset,
       };
       this.leases.set(id, lease);
       return this.publicLease(lease);
@@ -171,8 +167,6 @@ export class ObserverManager {
       id: lease.id,
       expiresAt: lease.expiresAt,
       generation: lease.generation,
-      preset: lease.preset,
-      presets: [...PRESETS],
       resource: 'frame',
     };
   }
@@ -204,16 +198,6 @@ export class ObserverManager {
     this.leases.delete(id);
     this._scheduleIdleStop();
     return { released: true, id: lease.id };
-  }
-
-  setPreset(id, context, preset, options) {
-    if (!PRESETS.has(preset)) throw new ObserverManagerError('invalid_preset', 'Observer preset is not allowlisted');
-    const lease = this.validateLease(id, context, options);
-    this.currentPreset = preset;
-    for (const current of this.leases.values()) {
-      if (current.generation === lease.generation) current.preset = preset;
-    }
-    return this.publicLease(lease);
   }
 
   async revalidate() {
@@ -361,5 +345,3 @@ export class ObserverManager {
     return retirement;
   }
 }
-
-export const OBSERVER_PRESETS = Object.freeze([...PRESETS]);

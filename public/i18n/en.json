@@ -14,7 +14,6 @@
   "observer.closed": "Observer closed.",
   "observer.not_available": "Observer is not installed and enabled on this Agent.",
   "observer.connect_failed": "Unable to connect Observer.",
-  "observer.preset_failed": "Unable to change terminal size.",
   "observer.settings_title": "Terminal Observer (optional)",
   "observer.settings_help": "Zellij is downloaded only after an explicit install. A binary being available does not mean this platform has passed Observer lifecycle validation.",
   "observer.install_enable": "Install and enable",

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { OBSERVER_PRESET_DIMENSIONS as PRESET_DIMENSIONS } from '../../public/js/observer-presets.js';
+import { DEFAULT_OBSERVER_SIZE, validObserverSize } from '../../public/js/observer-size.js';
 import { connectObserverWebSocket } from './observer-websocket.js';
 
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -43,10 +43,9 @@ export class ObserverUpstream {
     if (this.closed) throw new Error('Observer upstream closed');
   }
 
-  async connect({ preset = 'standard', onDisplay, onClose }) {
+  async connect({ size = DEFAULT_OBSERVER_SIZE, onDisplay, onClose }) {
     this._assertOpen();
-    const size = PRESET_DIMENSIONS[preset];
-    if (!size) throw new Error('invalid Observer preset');
+    if (!validObserverSize(size)) throw new Error('invalid Observer size');
     const authToken = await readPrivateToken(this.active.tokenFile);
     const origin = `http://127.0.0.1:${this.active.port}`;
     const login = await this.fetch(`${origin}/command/login`, {
@@ -110,9 +109,8 @@ export class ObserverUpstream {
     return this;
   }
 
-  resize(preset) {
-    const size = PRESET_DIMENSIONS[preset];
-    if (!size || this.closed || !this.control || !this.webClientId) return false;
+  resize(size) {
+    if (!validObserverSize(size) || this.closed || !this.control || !this.webClientId) return false;
     return this.control.sendText(JSON.stringify({
       web_client_id: this.webClientId,
       payload: { type: 'TerminalResize', rows: size.rows, cols: size.cols },
@@ -127,5 +125,3 @@ export class ObserverUpstream {
     this.terminal?.close();
   }
 }
-
-export const OBSERVER_PRESET_DIMENSIONS = PRESET_DIMENSIONS;

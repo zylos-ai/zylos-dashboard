@@ -1,3 +1,4 @@
+import { validObserverSize } from '../../public/js/observer-size.js';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -56,6 +57,7 @@ export class TmuxObserverContainment extends EventEmitter {
     this._stopping = null;
     this._healthTimer = null;
     this._checking = false;
+    this._resizePending = Promise.resolve();
   }
 
   async verifyHelpers() {
@@ -232,6 +234,21 @@ export class TmuxObserverContainment extends EventEmitter {
     finally { this._checking = false; }
   }
 
+  resize(active, size) {
+    if (!validObserverSize(size)) return Promise.reject(failure('invalid_size', 'Invalid Observer terminal size'));
+    const dimensions = { ...size };
+    const pending = this._resizePending.then(async () => {
+      if (!active || active !== this.active || active.failed || active.resizeClosed || this._stopping) return false;
+      // This generation's private socket is the only mutation target. -N cannot
+      // recreate a server after recovery, and cleanup drains an issued command.
+      await this.exec(active.tmuxPath, outerArgs(active, 'resize-window', '-t', 'observer:client',
+        '-x', String(dimensions.cols), '-y', String(dimensions.rows)), { env: privateEnvironment(active) });
+      return this.active === active && !active.failed && !active.resizeClosed && !this._stopping;
+    });
+    this._resizePending = pending.catch(() => {});
+    return pending;
+  }
+
   async _sameProcess(record, snapshot) {
     if (!record) return false;
     const current = await this.observe(record.pid, snapshot);
@@ -353,6 +370,10 @@ export class TmuxObserverContainment extends EventEmitter {
   }
 
   async _cleanup(state) {
+    if (this.active?.root === state.root) {
+      this.active.resizeClosed = true;
+      await this._resizePending;
+    }
     await this._assertOwnerGone(state);
     try {
       await fs.promises.rename(path.join(state.root, 'pending'), path.join(state.root, 'cancelled'));

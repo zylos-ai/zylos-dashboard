@@ -62,13 +62,14 @@ test('leases coalesce first start and bind principal, target, and generation', a
   assert.throws(() => f.manager.validateLease(first.id, admin, { target: 'remote' }), (error) => error?.code === 'lease_mismatch');
 });
 
-test('lease capacity, preset allowlist, renewal, and expiry fail closed', async () => {
+test('lease capacity, renewal, and expiry fail closed', async () => {
   const f = fixture({ maxViewers: 1, leaseTtlMs: 30 });
   const admin = context('admin');
   const lease = await f.manager.createLease(admin);
   await assert.rejects(f.manager.createLease(admin), (error) => error?.code === 'capacity_exceeded');
-  assert.throws(() => f.manager.setPreset(lease.id, admin, '200x100'), (error) => error?.code === 'invalid_preset');
-  assert.equal(f.manager.setPreset(lease.id, admin, 'wide').preset, 'wide');
+  assert.equal('preset' in lease, false);
+  assert.equal('presets' in lease, false);
+  assert.equal(f.manager.setPreset, undefined);
   f.advance(20);
   assert.equal(f.manager.renewLease(lease.id, admin).expiresAt, 1_050);
   f.advance(31);

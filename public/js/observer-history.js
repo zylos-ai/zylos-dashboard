@@ -25,7 +25,7 @@ export class ObserverHistory {
     this.fields = new Map();
     this.controllers = new Set();
     this.markdown = createHistoryMarkdown(globalThis.window?.markdownit);
-    this.root.innerHTML = `<div class="history-controls"><select data-history="sessions"></select><form data-history="search-form"><input data-history="query" type="search" minlength="2" maxlength="200"><button class="action-btn" data-label="search"></button></form><label><input data-history="internal" type="checkbox"><span data-label="internal"></span></label></div><div data-history="status" role="status"></div><div data-history="results" class="history-results" hidden></div><div data-history="timeline" class="history-timeline" tabindex="0"><button class="action-btn" data-history="older" data-label="older" hidden></button><div data-history="entries"></div></div><button class="action-btn history-latest" data-history="latest" data-label="latest" hidden></button>`;
+    this.root.innerHTML = `<div class="history-controls"><label class="history-session-field"><span data-label="sessions"></span><select data-history="sessions"></select></label><form data-history="search-form"><input data-history="query" type="search" minlength="2" maxlength="200"><button class="action-btn" data-label="search"></button></form><label><input data-history="internal" type="checkbox"><span data-label="internal"></span></label></div><div data-history="status" role="status"></div><div data-history="results" class="history-results" hidden></div><div data-history="timeline" class="history-timeline" tabindex="0"><button class="action-btn" data-history="older" data-label="older" hidden></button><div data-history="entries"></div></div><button class="action-btn history-latest" data-history="latest" data-label="latest" hidden></button>`;
     this.el = name => root.querySelector(`[data-history="${name}"]`);
     this.el('sessions').onchange = () => this.select(this.el('sessions').value);
     this.el('internal').onchange = () => this.select(this.session);
@@ -64,7 +64,6 @@ export class ObserverHistory {
       const node = this.renderEntry(item.entry, item.node);
       item.node.replaceWith(node); item.node = node;
     }
-    this.el('sessions').setAttribute('aria-label', this.label('sessions'));
     for (const option of this.el('sessions').options) {
       const session = this.sessions?.find(s => s.id === option.value);
       if (session) option.textContent = this.sessionLabel(session);
@@ -99,7 +98,16 @@ export class ObserverHistory {
   }
   error(error) { if (error.name !== 'AbortError') this.el('status').textContent = this.label('error') + ': ' + error.message; }
   sessionLabel(session) {
-    return `${session.kind === 'subagent' ? '\u21b3 ' : ''}${session.id === this.current ? this.label('current') + ' \u00b7 ' : ''}${session.title || session.startedAt || session.id}`;
+    const date = session.startedAt ? new Date(session.startedAt) : null;
+    let time = '';
+    if (date && Number.isFinite(date.getTime())) {
+      const pad = value => String(value).padStart(2, '0');
+      const year = date.getFullYear() === new Date().getFullYear() ? '' : `${date.getFullYear()}-`;
+      time = `${year}${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+    const title = session.title || session.startedAt || session.id;
+    const body = session.title && time ? `${time} · ${title}` : title;
+    return `${session.kind === 'subagent' ? '↳ ' : ''}${session.id === this.current ? this.label('current') + ' · ' : ''}${body}`;
   }
   async start() {
     this.el('status').textContent = this.label('loading');

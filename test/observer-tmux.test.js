@@ -138,6 +138,7 @@ async function workerFixture(t, { log = initializationLog, held = false, webExit
       commands.push(args);
       if (args.includes('new-session') && launchFailure) throw new Error('lost acknowledgement');
       if (args.includes('display-message')) return { stdout: tmuxCFormat(args.at(-1), {
+        window_width: 140, window_height: 40, status: 'on',
         pid: 110, pane_pid: args.includes('observer:web') ? 114 : 111,
         pane_dead: args.includes('observer:web') && webExited ? 1 : 0, pane_dead_status: '' }) };
       if (args.includes('list-panes')) return { stdout: JSON.stringify([...(backgroundPlugin ? [{ is_plugin: true, is_suppressed: true, plugin_url: 'zellij:link' }] : []), { is_plugin: false, exited: held,
@@ -399,7 +400,7 @@ test('cancelled worker held before outer launch cannot issue a late native comma
   f.opts.phase = async (name) => {
     if (name === 'before-outer') await writeAtomic(path.join(f.state.root, 'recovery.json'), { nonce: f.state.nonce, cancelled: true });
   };
-  assert.deepEqual(await runStartupWorker(f.state.root, f.opts), { claimed: true, settled: false });
+  await assert.rejects(runStartupWorker(f.state.root, f.opts), { code: 'startup_cancelled' });
   assert.equal(launches, 0);
   assert.equal(f.commands.length, 0);
   assert.equal(await exists(path.join(f.state.root, 'receipt.json')), false);
@@ -561,4 +562,161 @@ test('failed starts preserve target-present, inconclusive and explicit safety er
     assert.deepEqual(await fs.readdir(f.adapter.runtimeRoot), []);
     assert.equal(probes, ['present', 'probe-failed'].includes(mode) ? 2 : 1);
   }
+});
+
+test('worker measures the Agent before attachment and sizes the private client including status rows', async (t) => {
+  const f = await workerFixture(t);
+  assert.equal((await runStartupWorker(f.state.root, f.opts)).outcome, 'ready');
+  const query = f.commands.findIndex((args) => args.includes('#{window_width} #{window_height} #{status}'));
+  const launch = f.commands.findIndex((args) => args.includes('new-session'));
+  assert.ok(query >= 0 && query < launch);
+  assert.deepEqual(f.commands[query], ['-N', '-S', f.state.tmuxSocket, 'display-message', '-p', '-t', '=codex-main:', '#{window_width} #{window_height} #{status}']);
+  const args = f.commands[launch];
+  assert.equal(args[args.indexOf('-x') + 1], '140');
+  assert.equal(args[args.indexOf('-y') + 1], '41');
+});
+
+test('invalid initial Agent dimensions fail closed before any private process is launched', async (t) => {
+  for (const output of ['', '501 40 on', '140 200 on', '140 40 unknown']) await t.test(JSON.stringify(output), async (t) => {
+    const f = await workerFixture(t);
+    let launched = false;
+    f.opts.launchServer = async () => { launched = true; throw new Error('must not launch'); };
+    f.opts.exec = async (_file, args) => {
+      assert.ok(args.includes('display-message'));
+      return { stdout: output };
+    };
+    assert.equal((await runStartupWorker(f.state.root, f.opts)).outcome, 'failed');
+    assert.equal(launched, false);
+    const receipt = await readReceipt(f.state);
+    assert.equal(receipt.error.code, 'target_size_unavailable');
+    assert.equal(receipt.sessionIssued, false);
+  });
+});
+
+test('containment resize mutates only its private window and fences stale generations', async (t) => {
+  const f = await fixture(t);
+  const active = await f.publish();
+  f.adapter.active = active;
+  f.calls.length = 0;
+  assert.equal(await f.adapter.resize(active, { cols: 140, rows: 41 }), true);
+  assert.deepEqual(f.calls, [['-N', '-S', active.outerSocket, 'resize-window', '-t', 'observer:client', '-x', '140', '-y', '41']]);
+  assert.equal(await f.adapter.resize({ ...active }, { cols: 100, rows: 30 }), false);
+  await assert.rejects(f.adapter.resize(active, { cols: 501, rows: 30 }), { code: 'invalid_size' });
+  active.resizeClosed = true;
+  assert.equal(await f.adapter.resize(active, { cols: 100, rows: 30 }), false);
+  assert.equal(f.calls.length, 1);
+});
+
+test('containment serializes private resizes and cleanup drains issued commands before stopping', async (t) => {
+  const f = await fixture(t);
+  const active = await f.publish();
+  f.adapter.active = active;
+  const events = [];
+  let finish;
+  f.adapter.exec = async (_file, args) => {
+    events.push(args);
+    await new Promise((resolve) => { finish = resolve; });
+  };
+  const first = f.adapter.resize(active, { cols: 140, rows: 41 });
+  const second = f.adapter.resize(active, { cols: 120, rows: 36 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.length, 1);
+  // Stop cleanup just after its drain, before any filesystem retirement.
+  f.adapter._assertOwnerGone = async () => { events.push('cleanup'); throw new Error('fixture end'); };
+  const cleanup = assert.rejects(f.adapter._cleanup(active), /fixture end/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.length, 1);
+  finish();
+  assert.equal(await first, false);
+  assert.equal(await second, false);
+  await cleanup;
+  assert.equal(events.length, 2);
+  assert.equal(events[1], 'cleanup');
+});
+
+for (const [status, rows] of [['off', 40], ['on', 41], ['2', 42], ['5', 45]]) {
+  test(`startup preserves raw Agent window dimensions with status ${status}`, async (t) => {
+    const f = await workerFixture(t);
+    const exec = f.opts.exec;
+    let queries = 0;
+    f.opts.exec = async (file, args) => {
+      const result = await exec(file, args);
+      if (args.includes('#{window_width} #{window_height} #{status}')) {
+        queries += 1;
+        return { stdout: `140 40 ${status}` };
+      }
+      return result;
+    };
+    f.opts.probe = () => ({ connect: async ({ size }) => assert.deepEqual(size, { cols: 140, rows }), close() {} });
+    assert.equal((await runStartupWorker(f.state.root, f.opts)).outcome, 'ready');
+    const launch = f.commands.find((args) => args.includes('new-session'));
+    assert.equal(launch[launch.indexOf('-y') + 1], String(rows));
+    assert.equal(queries, 3, 'baseline, post-attach, and final readiness verification');
+  });
+}
+
+for (const [name, output, expected] of [
+  ['width changed', '139 40 on', 'target_size_changed'],
+  ['height changed but total rows equal', '140 39 2', 'target_size_changed'],
+  ['unknown dimensions', '', 'target_size_unavailable'],
+]) {
+  test(`post-attach guard rejects ${name} without starting web or resizing Agent`, async (t) => {
+    const f = await workerFixture(t);
+    const exec = f.opts.exec;
+    let queries = 0;
+    f.opts.exec = async (file, args) => {
+      const result = await exec(file, args);
+      if (args.includes('#{window_width} #{window_height} #{status}') && ++queries > 1) return { stdout: output };
+      return result;
+    };
+    assert.equal((await runStartupWorker(f.state.root, f.opts)).outcome, 'failed');
+    const receipt = await readReceipt(f.state);
+    assert.equal(receipt.error.code, expected);
+    assert.equal(receipt.roles.inner.pid, 113, 'identified inner client is available for cleanup');
+    assert.equal(receipt.webLaunch, 'not-issued');
+    assert.equal(f.commands.some((args) => args.includes('--create-read-only-token')), false);
+    assert.equal(f.commands.some((args) => args.includes('resize-window') || args.includes('resize-pane')), false);
+  });
+}
+
+test('final readiness guard also rejects Agent changes during web handshake', async (t) => {
+  const f = await workerFixture(t);
+  const exec = f.opts.exec;
+  let queries = 0;
+  f.opts.exec = async (file, args) => {
+    const result = await exec(file, args);
+    if (args.includes('#{window_width} #{window_height} #{status}') && ++queries === 3) return { stdout: '120 35 on' };
+    return result;
+  };
+  assert.equal((await runStartupWorker(f.state.root, f.opts)).outcome, 'failed');
+  assert.equal((await readReceipt(f.state)).error.code, 'target_size_changed');
+});
+
+test('startGeneration waits for failed-guard cleanup before propagating the error', async (t) => {
+  const f = await workerFixture(t);
+  const exec = f.opts.exec;
+  let queries = 0;
+  f.opts.exec = async (file, args) => {
+    const result = await exec(file, args);
+    if (args.includes('#{window_width} #{window_height} #{status}') && ++queries > 1) return { stdout: '100 29 on' };
+    return result;
+  };
+  f.adapter.reconcilePersisted = async () => [];
+  f.adapter._publish = async () => f.state;
+  f.adapter._launchWorker = () => runStartupWorker(f.state.root, f.opts);
+  let finishCleanup;
+  f.adapter._cleanup = async (state) => {
+    assert.equal(state, f.state);
+    assert.equal((await readReceipt(state)).error.code, 'target_size_changed');
+    await new Promise((resolve) => { finishCleanup = resolve; });
+  };
+  let completed = false;
+  const rejected = assert.rejects(f.adapter.startGeneration({ generation: 1 }), { code: 'target_size_changed' })
+    .then(() => { completed = true; });
+  for (let index = 0; index < 200 && !finishCleanup; index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(typeof finishCleanup, 'function');
+  assert.equal(completed, false);
+  assert.equal(f.adapter.active, null);
+  finishCleanup(); await rejected;
+  assert.equal(completed, true);
 });

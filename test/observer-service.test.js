@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
+import { EventEmitter } from 'node:events';
+import { ObserverSizeMonitor } from '../src/lib/observer-size-monitor.js';
 import test from 'node:test';
 import { ObserverService, OBSERVER_WEBSOCKET_PROTOCOL } from '../src/lib/observer-service.js';
 import { ObserverCoordinator } from '../src/lib/observer-coordinator.js';
@@ -13,14 +15,16 @@ import { shutdownDashboardTransports } from '../src/lib/dashboard-shutdown.js';
 
 const LEASE_ID = 'a'.repeat(32);
 
-function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null } = {}) {
+function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null, sizeMonitor } = {}) {
   const context = { kind: 'cookie', principalId: 'browser', scope: 'admin' };
   const apiContext = { kind: 'api', principalId: 'api-admin', scope: 'admin' };
   const readContext = { kind: 'api', principalId: 'api-read', scope: 'read' };
-  const containment = {
+  const containment = Object.assign(new EventEmitter(), {
     active: { generation: 7, port: 1234, sessionName: 'observer-test', tokenFile: '/private/token' },
+    resizes: [],
+    async resize(active, size) { assert.equal(active, this.active); this.resizes.push(size); return true; },
     async reconcilePersisted() { return []; },
-  };
+  });
   const coordinator = {
     async reconcileStartup() { return { state: 'installed', desired: { enabled: true } }; },
     async status() { return { state: 'installed', binaryPath: '/private/zellij', desired: { enabled: true } }; },
@@ -30,12 +34,13 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     validateLease(id, supplied) {
       if (id !== LEASE_ID) throw Object.assign(new Error('missing'), { code: 'lease_not_found' });
       assert.equal(supplied.scope, 'admin');
-      return { id, preset: 'standard', generation: 7 };
+      return { id, generation: 7 };
     },
-    async createLease() { return { id: LEASE_ID, preset: 'standard', generation: 7 }; },
-    renewLease() { return { id: LEASE_ID, preset: 'standard', generation: 7 }; },
+    async createLease() { return { id: LEASE_ID, generation: 7 }; },
+    renewLease() { return { id: LEASE_ID, generation: 7 }; },
     releaseLease() { return { released: true }; },
-    setPreset(_id, _context, preset) { return { id: LEASE_ID, preset, generation: 7 }; },
+    async invalidateAndDisable() { return { state: 'disabled' }; },
+    async handleContainmentFailure() {},
     async shutdown() { return { stopped: true }; },
   };
   const authGate = {
@@ -62,13 +67,14 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
         if (connectGate) await connectGate;
         return this;
       },
-      resize(preset) { this.preset = preset; return true; },
+      resizes: [],
+      resize(size) { this.resizes.push(size); return true; },
       close() { this.closed = true; },
     };
     upstreams.push(upstream);
     return upstream;
   };
-  const service = new ObserverService({ coordinator, containment, manager, authGate, upstreamFactory });
+  const service = new ObserverService({ coordinator, containment, manager, authGate, upstreamFactory, sizeMonitor });
   return { service, upstreams, resolveConnect };
 }
 
@@ -681,4 +687,208 @@ test('local Observer cookie WebSocket admission ignores forwarded protocol with 
     await service.shutdown();
     await app.close();
   }
+});
+
+function sizeFixture(options = {}) {
+  let output = '100 29 on';
+  let queries = 0;
+  const monitor = new ObserverSizeMonitor({ intervalMs: 20, exec: async () => {
+    queries += 1;
+    return { stdout: output };
+  } });
+  const fixtureValue = fixture({ ...options, sizeMonitor: monitor });
+  Object.assign(fixtureValue.service.containment.active, { target: 'claude-main', tmuxPath: '/fixture/tmux' });
+  return { ...fixtureValue, monitor, setOutput(value) { output = value; }, queries: () => queries };
+}
+
+async function sizeClient(app, leaseId = LEASE_ID) {
+  const socket = await connectObserverWebSocket({
+    port: app.server.address().port, path: '/observer/stream', closeTimeoutMs: 50,
+    headers: { Cookie: 'admin=1', Origin: app.origin,
+      'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${leaseId}` },
+  });
+  const messages = [];
+  socket.on('message', (value) => messages.push(Buffer.isBuffer(value) ? value : JSON.parse(value)));
+  socket.activate();
+  return { socket, messages };
+}
+
+test('size follow shares one monitor, precedes display, broadcasts changes and stops at final close', async () => {
+  const f = sizeFixture({ initialDisplay: 'snapshot' });
+  const app = await startHttp(f.service);
+  const clients = [];
+  try {
+    clients.push(await sizeClient(app));
+    await waitUntil(() => clients[0].messages.length === 2);
+    assert.deepEqual(clients[0].messages[0], { type: 'size', cols: 100, rows: 30 });
+    assert.equal(clients[0].messages[1].toString(), 'snapshot');
+    const timer = f.monitor.timer;
+    const secondId = 'b'.repeat(32);
+    const validate = f.service.manager.validateLease;
+    f.service.manager.validateLease = (id, context) => id === secondId ? { id, generation: 7 } : validate(id, context);
+    clients.push(await sizeClient(app, secondId));
+    await waitUntil(() => clients[1].messages.length === 2);
+    assert.equal(f.monitor.timer, timer);
+    assert.deepEqual(f.upstreams.map((upstream) => upstream.callbacks.size), [{ cols: 100, rows: 30 }, { cols: 100, rows: 30 }]);
+    f.setOutput('140 40 3');
+    await waitUntil(() => clients.every((client) => client.messages.length === 3));
+    for (let index = 0; index < clients.length; index += 1) {
+      assert.deepEqual(clients[index].messages[2], { type: 'size', cols: 140, rows: 43 });
+      assert.deepEqual(f.upstreams[index].resizes, [{ cols: 140, rows: 43 }]);
+    }
+    await f.monitor.poll();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(clients.map((client) => client.messages.length), [3, 3]);
+    clients[0].socket.close();
+    await waitUntil(() => f.service.streams.size === 1);
+    assert.equal(f.monitor.timer, timer);
+    let finish;
+    f.monitor.exec = () => new Promise((resolve) => { finish = resolve; });
+    const late = f.monitor.poll();
+    clients[1].socket.close();
+    await waitUntil(() => f.service.streams.size === 0);
+    assert.equal(f.monitor.timer, null);
+    finish({ stdout: '200 50 off' });
+    await late;
+    assert.deepEqual(f.monitor.size, { cols: 140, rows: 43 });
+    assert.deepEqual(f.upstreams.map((upstream) => upstream.resizes.length), [1, 1]);
+  } finally {
+    await f.service.shutdown();
+    clients.forEach((client) => client.socket.destroy());
+    await app.close();
+  }
+});
+
+test('upstream handshake race uses latest size before admitting downstream', async () => {
+  const f = sizeFixture({ deferUpstream: true });
+  const app = await startHttp(f.service);
+  let client;
+  try {
+    const connecting = sizeClient(app);
+    await waitUntil(() => f.upstreams[0]?.callbacks);
+    f.setOutput('140 39 on');
+    await f.monitor.poll();
+    assert.equal(f.upstreams[0].resizes.length, 0);
+    f.resolveConnect();
+    client = await connecting;
+    await waitUntil(() => client.messages.length === 1);
+    assert.deepEqual(client.messages[0], { type: 'size', cols: 140, rows: 40 });
+    assert.deepEqual(f.upstreams[0].resizes, [{ cols: 140, rows: 40 }]);
+  } finally { f.resolveConnect(); await f.service.shutdown(); client?.socket.destroy(); await app.close(); }
+});
+
+test('size monitor is stopped and late query fenced after disable, failure or shutdown', async (t) => {
+  for (const action of ['disable', 'failure', 'shutdown']) await t.test(action, async () => {
+    const f = sizeFixture();
+    const app = await startHttp(f.service);
+    let client;
+    try {
+      client = await sizeClient(app);
+      await waitUntil(() => client.messages.length === 1);
+      let finish;
+      f.monitor.exec = () => new Promise((resolve) => { finish = resolve; });
+      const pending = f.monitor.poll();
+      if (action === 'disable') {
+        const response = await fetch(`${app.origin}/api/observer/disable`, { method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin } });
+        assert.equal(response.status, 200);
+      } else if (action === 'failure') f.service.containment.emit('failure', new Error('fixture'), f.service.containment.active);
+      else await f.service.shutdown();
+      assert.equal(f.monitor.timer, null);
+      assert.equal(f.service.streams.size, 0);
+      finish({ stdout: '160 50 off' });
+      await pending;
+      assert.deepEqual(f.monitor.size, { cols: 100, rows: 30 });
+      assert.equal(f.upstreams[0].resizes.length, 0);
+    } finally { await f.service.shutdown(); client?.socket.destroy(); await app.close(); }
+  });
+});
+
+test('removed preset endpoint returns 404', async () => {
+  const { service } = fixture();
+  const app = await startHttp(service);
+  try {
+    const response = await fetch(`${app.origin}/api/observer/leases/${LEASE_ID}/preset`, {
+      method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin, 'Content-Type': 'application/json' }, body: '{"preset":"wide"}',
+    });
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'not_found' });
+  } finally { await app.close(); }
+});
+
+test('failed upstream handshake and generation replacement stop the monitor without admission', async (t) => {
+  for (const action of ['connect-error', 'generation-change']) await t.test(action, async () => {
+    const f = sizeFixture({ deferUpstream: true });
+    const app = await startHttp(f.service);
+    if (action === 'connect-error') f.service.upstreamFactory = () => ({
+      async connect() { throw new Error('fixture connect failed'); }, close() {},
+    });
+    try {
+      const rejected = assert.rejects(sizeClient(app));
+      if (action === 'generation-change') {
+        await waitUntil(() => f.upstreams[0]?.callbacks);
+        f.service.containment.active = { ...f.service.containment.active, generation: 8 };
+        f.resolveConnect();
+      }
+      await rejected;
+      assert.equal(f.service.streams.size, 0);
+      assert.equal(f.monitor.timer, null);
+      assert.equal(f.monitor.active, null);
+    } finally { f.resolveConnect(); await f.service.shutdown(); await app.close(); }
+  });
+});
+
+test('private resize must settle before upstream and browser broadcast; failure retries same measurement', async () => {
+  const f = sizeFixture();
+  // Drive the real monitor/service callback deterministically without sockets.
+  f.monitor.intervalMs = 60_000;
+  const active = f.service.containment.active;
+  const events = [];
+  f.service.streams.add({ active, connected: true, closed: false,
+    upstream: { resize(size) { events.push(['upstream', size]); } },
+    downstream: { sendText(text) { events.push(['browser', JSON.parse(text)]); } },
+  });
+  let finish;
+  let fail = false;
+  f.service.containment.resize = async (_active, size) => {
+    events.push(['private-start', size]);
+    await new Promise((resolve) => { finish = resolve; });
+    if (fail) throw new Error('private resize failed');
+    events.push(['private-done', size]);
+    return true;
+  };
+  try {
+    const initial = f.monitor.start(active);
+    await waitUntil(() => finish);
+    assert.deepEqual(events.map(([name]) => name), ['private-start']);
+    finish(); await initial;
+    assert.deepEqual(events.map(([name]) => name), ['private-start', 'private-done', 'upstream', 'browser']);
+    events.length = 0; finish = null; fail = true;
+    f.setOutput('140 40 off');
+    const failed = f.monitor.poll();
+    await waitUntil(() => finish); finish(); await failed;
+    assert.deepEqual(events.map(([name]) => name), ['private-start']);
+    assert.deepEqual(f.monitor.size, { cols: 100, rows: 30 });
+    events.length = 0; finish = null; fail = false;
+    const retry = f.monitor.poll();
+    await waitUntil(() => finish); finish(); await retry;
+    assert.deepEqual(events.map(([name]) => name), ['private-start', 'private-done', 'upstream', 'browser']);
+    assert.deepEqual(f.monitor.size, { cols: 140, rows: 40 });
+  } finally { f.monitor.stop(); f.service.streams.clear(); }
+});
+
+test('generation replacement during private resize fences upstream and browser delivery', async () => {
+  const f = sizeFixture();
+  const active = f.service.containment.active;
+  const events = [];
+  f.service.streams.add({ active, connected: true, closed: false,
+    upstream: { resize() { events.push('upstream'); } },
+    downstream: { sendText() { events.push('browser'); } },
+  });
+  let finish;
+  f.service.containment.resize = () => new Promise((resolve) => { finish = resolve; });
+  const pending = f.service._resizeStreams({ cols: 140, rows: 40 }, active);
+  f.service.containment.active = { ...active, generation: 8 };
+  finish(true); await pending;
+  assert.deepEqual(events, []);
+  f.service.streams.clear();
 });

@@ -98,3 +98,25 @@ test('session search follows the internal-record visibility setting', async () =
   assert.deepEqual(requests.map(request => request.params.internal), [1, 0]);
   assert.ok(requests.every(request => request.route === 'search' && request.params.session === 'current'));
 });
+
+test('session labels distinguish duplicate titles using browser local start time', () => {
+  const { history } = controller();
+  const year = new Date().getFullYear();
+  const first = new Date(year, 0, 2, 3, 4).toISOString();
+  const second = new Date(year, 0, 2, 4, 5).toISOString();
+  assert.equal(history.sessionLabel({ id: 'a', title: 'Same title', startedAt: first }), '01-02 03:04 · Same title');
+  assert.equal(history.sessionLabel({ id: 'b', title: 'Same title', startedAt: second }), '01-02 04:05 · Same title');
+  assert.equal(history.sessionLabel({ id: 'current', kind: 'subagent', title: 'Same title', startedAt: first }), '↳ observer.history.current · 01-02 03:04 · Same title');
+  assert.equal(history.sessionLabel({ id: 'a', title: 'Old', startedAt: new Date(year - 1, 11, 31, 23, 59).toISOString() }), `${year - 1}-12-31 23:59 · Old`);
+});
+
+test('session labels omit absent or invalid time without empty separators or duplicated fallback', () => {
+  const { history } = controller();
+  for (const startedAt of [undefined, null, '', 'invalid']) {
+    assert.equal(history.sessionLabel({ id: 'a', title: 'Title', startedAt }), 'Title');
+  }
+  assert.equal(history.sessionLabel({ id: 'a' }), 'a');
+  assert.equal(history.sessionLabel({ id: 'a', startedAt: 'invalid' }), 'invalid');
+  const startedAt = new Date(new Date().getFullYear(), 0, 2, 3, 4).toISOString();
+  assert.equal(history.sessionLabel({ id: 'a', startedAt }), startedAt);
+});
