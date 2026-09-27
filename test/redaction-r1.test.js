@@ -33,32 +33,19 @@ parentPort.on('message', ({id,text,options}) => {
   });
 }
 
-test("worker queue bounds include active work and overload does not poison admitted jobs", async () => {
-  const worker = await workerFixture({ maxPending: 3 });
+test("worker admits bursts beyond the former cap and processes them on one worker", async () => {
+  const worker = await workerFixture();
   const gate = new SharedArrayBuffer(4);
   try {
     const warm = await worker.run("warm", {});
-    const admitted = [
-      worker.run("hang", { gate }),
-      worker.run("second", {}),
-      worker.run("third", {}),
-    ];
-    assert.deepEqual(await worker.run("overflow", {}), failure());
+    const names = ["hang", ...Array.from({ length: 199 }, (_, i) => `queued-${i}`)];
+    const pending = names.map((text) => worker.run(text, { gate }));
     Atomics.store(new Int32Array(gate), 0, 1);
     Atomics.notify(new Int32Array(gate), 0);
-    const results = await Promise.all(admitted);
-    assert.deepEqual(
-      results.map((r) => r.text),
-      ["hang", "second", "third"],
-    );
-    assert.ok(
-      results.every((r) => r.threadId === warm.threadId),
-      "one worker handles the queue",
-    );
-    assert.equal(
-      (await worker.run("capacity-restored", {})).text,
-      "capacity-restored",
-    );
+    const results = await Promise.all(pending);
+    assert.deepEqual(results.map((r) => r.text), names);
+    assert.ok(results.every((r) => r.threadId === warm.threadId));
+    assert.equal((await worker.run("after-burst", {})).text, "after-burst");
   } finally {
     worker.close();
   }

@@ -6,7 +6,7 @@ independent review and post-release installation acceptance remain separate.
 
 ## Automated checks
 
-- Full suite: **874/874 passed** with
+- Full suite: **877/877 passed** with
   `env -u CLAUDE_SESSION_ID -u CODEX_SESSION_ID npm test`.
   The two session-ID variables are removed because the pre-existing state-engine
   fallback test otherwise reads the surrounding agent's active session.
@@ -42,9 +42,9 @@ measurements. Reverting each of the three scanner fixes independently causes its
 negative-control child process to exceed a 1.5-second deadline.
 
 Every uncached field now uses one reusable worker per redactor, including short
-fields. The queue admits at most 128 active/waiting jobs; the five-second production
-deadline covers queue time and execution. Tests cover overload, close, concurrent
-deadlines, worker replacement and recovery. An HTTP regression runs the actual
+fields. R1 initially capped the queue at 128 active/waiting jobs (revised in R2 below);
+the five-second production deadline covers queue time and execution. Tests cover
+bursts, close, concurrent deadlines, worker replacement and recovery. An HTTP regression runs the actual
 ObserverService, HistoryService and redactor with an injected worker stalled on a
 four-character field: health responds while history is pending, the injected
 one-second deadline hides the content, and a later credential scan succeeds.
@@ -67,9 +67,33 @@ History admission now reads fresh enablement and installation metadata without
 hashing or executing the terminal artifact. Tests verify no artifact read/exec on
 this path, fresh disablement, and retained full verification for launch/install.
 
-The full 874-test run includes all six added queue/source-mutant tests. Syntax and
+The R1 874-test run included all six added queue/source-mutant tests. Syntax and
 diff checks pass. R1 changes no frontend files; the original eight browser cases
-below remain the UI evidence. Independent S3 re-review is still required.
+below remain the UI evidence. S3 approved R1; the R2 follow-up requires re-review.
+
+## R2 queue admission correction
+
+Owner-requested follow-up removes the fixed 128-job admission rejection. Bursts
+wait on the existing single worker instead of immediately becoming unavailable.
+Each job retains the five-second deadline measured from enqueue through execution;
+real deadline expiry and scanner failure still hide content, and shutdown resolves
+pending work. This keeps one worker per redactor without spawning workers per
+request. Sustained load that exceeds the deadline can still time out safely.
+
+The worker regression submits 200 jobs behind a blocked job, releases it, and
+verifies every result comes from the same worker. Existing close, concurrent
+queue-deadline, replacement and HTTP-stall tests continue to cover failure paths.
+
+HTTP tests use the production ObserverService, HistoryService and redactor with
+synthetic records. One cold `internal=1&limit=200` page and four concurrent cold
+200-entry pages (distinct sessions/values) return all fields, with exact previews,
+totals, entry ordering and credential masking checked. Reinstating the 128-job
+rejection in an isolated copy of the production worker client makes the same
+availability predicate fail for both single and concurrent requests; credentials
+remain hidden in that negative control. These fixtures validate queue admission,
+not throughput guarantees for arbitrary transcript sizes or sustained overload.
+
+The integrated R2 suite passes **877/877**; syntax and diff checks also pass.
 
 ## Browser checks
 

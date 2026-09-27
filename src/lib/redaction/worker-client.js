@@ -2,8 +2,9 @@ import { Worker } from 'node:worker_threads';
 
 // One reusable worker keeps regex execution off the HTTP event loop at every
 // field size. A deadline covers both waiting and execution; a stuck worker is
-// replaced before queued work resumes. No unbounded worker fan-out is possible.
-export function createRedactionWorker({ workerURL, timeoutMs, failure, maxPending = 128 }) {
+// replaced before queued work resumes. Bursts wait instead of failing admission;
+// each queued job retains its deadline. Only one worker executes at a time.
+export function createRedactionWorker({ workerURL, timeoutMs, failure }) {
   let worker;
   let active;
   let sequence = 0;
@@ -66,7 +67,7 @@ export function createRedactionWorker({ workerURL, timeoutMs, failure, maxPendin
 
   return {
     run(text, options) {
-      if (closed || queue.length + Number(Boolean(active)) >= maxPending)
+      if (closed)
         return Promise.resolve(failure());
       return new Promise((resolve) => {
         const job = { id: ++sequence, text, options, resolve, done: false };
