@@ -1,13 +1,9 @@
 import fs from 'node:fs';
+import { OBSERVER_PRESET_DIMENSIONS as PRESET_DIMENSIONS } from '../../public/js/observer-presets.js';
 import { connectObserverWebSocket } from './observer-websocket.js';
 
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_TOKEN_FILE_BYTES = 4 * 1024;
-const PRESET_DIMENSIONS = Object.freeze({
-  standard: Object.freeze({ cols: 80, rows: 21 }),
-  wide: Object.freeze({ cols: 110, rows: 30 }),
-  large: Object.freeze({ cols: 140, rows: 40 }),
-});
 
 async function readPrivateToken(filePath) {
   const stat = await fs.promises.lstat(filePath);

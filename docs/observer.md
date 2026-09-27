@@ -47,7 +47,10 @@ that target's administrator credentials and Observer support.
 Once enabled, open the Observer tab. The first viewer starts a private Observer
 generation attached read-only to the active runtime's tmux session. Keyboard,
 paste and terminal input are not forwarded. The Standard, Wide and Large presets
-change the shared display size; viewers of the same generation share that size.
+use 80×40, 110×40 and 140×40 respectively. All three keep 40 rows so the
+input area and status lines have more room. Viewers of the same generation share
+that size. On smaller screens, scroll inside the terminal to reach its bottom rows.
+The upstream client, renderer and button labels use one preset definition.
 Observer still displays terminal contents, so viewers must be trusted to see
 anything shown by the agent.
 
