@@ -54,6 +54,9 @@ Startup measures the agent window before attaching and checks it again after
 attachment. If its dimensions changed, Observer disconnects and reports an
 error; it does not try to restore the agent window. This check also catches a
 concurrent resize by another client, so retry viewing after the window settles.
+The guard applies only during startup: if an ordinary client enlarges the Agent
+window and disconnects before the next two-second poll, tmux may return the
+window to Observer's previous size.
 On smaller screens, scroll horizontally or vertically inside the terminal to
 see the full display. Common terminal symbols use an embedded symbol font.
 In History, session choices include their start time in your browser’s local

@@ -76,7 +76,7 @@ export async function command(file, args, options = {}) {
   return runCommand(file, args, { encoding: 'utf8', maxBuffer: 128 * 1024, timeout: 3000, ...options, env: { ...(options.env || process.env), LC_ALL: 'C' } });
 }
 export async function processSnapshot(exec = command) {
-  const { stdout } = await exec('/bin/ps', ['-axo', 'pid=,ppid=,lstart=,stat=,command=']);
+  const { stdout } = await exec('/bin/ps', ['-axo', 'pid=,ppid=,lstart=,stat=,command='], { maxBuffer: 16 * 1024 * 1024 });
   const result = [];
   for (const line of stdout.split('\n').filter(Boolean)) {
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(\S+)\s+(.*)$/);
