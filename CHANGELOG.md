@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- The login cookie is now scoped to the Dashboard's proxy prefix (for example `Path=/dashboard`, taken from the validated `X-Forwarded-Prefix`) and renamed to `__Secure-zylos_dashboard_session`, so browsers no longer send it to other components on the same host. Without a safe prefix it falls back to `Path=/`. The old `__Host-` cookie is revoked and cleared when a browser presents it; users sign in again once after upgrading.
+
 ### Added
 - Optional authenticated, read-only terminal Observer for local and Fleet agents, with explicit private Zellij installation, viewing leases, and disable/uninstall controls (#299).
 - Private tmux lifecycle for Observer: normal shutdown and uninstall clean its resources; after an unexpected Dashboard crash, restart cleans the previous generation before starting a new viewer on demand. Cleanup failures retain recovery records and leave other Dashboard features available (#299).
