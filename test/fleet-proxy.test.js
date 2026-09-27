@@ -1450,3 +1450,29 @@ test('fleet Observer cookie HTTP and WebSocket admission ignore forwarded protoc
     await remote.close();
   }
 });
+
+test('history GET routes pass Fleet admin gate and retain secret response guard', async () => {
+  let responseBody = { entries: [{ fields: { body: { preview: '[redacted]' } } }] };
+  const remote = await listen((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(responseBody)); });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'History', base_url: remote.origin, read_api_key: 'zylos_ak_fixture' }] } },
+    rootDir: publicDir(), poller: { getSessionToken: async () => 'zylos_st_fixture' },
+  });
+  const hub = await listen((req, res) => {
+    req._authContext = { kind: 'cookie', principalId: 'owner', scope: req.headers['x-test-scope'] || 'admin' };
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  try {
+    for (const route of ['sessions', 'entries', 'content', 'search']) {
+      const response = await fetch(`${hub.origin}/fleet/History/api/observer/history/${route}?session=fixture`);
+      assert.equal(response.status, 200, route); assert.equal(response.headers.get('cache-control'), 'no-store');
+    }
+    const denied = await fetch(`${hub.origin}/fleet/History/api/observer/history/sessions`, { headers: { 'x-test-scope': 'read' } });
+    assert.equal(denied.status, 403);
+    const unknown = await fetch(`${hub.origin}/fleet/History/api/observer/history/write`);
+    assert.equal(unknown.status, 403);
+    responseBody = { text: 'zylos_st_must_be_blocked' };
+    const leaked = await fetch(`${hub.origin}/fleet/History/api/observer/history/content`);
+    assert.equal(leaked.status, 502); assert.equal((await leaked.json()).error, 'secret_leak_blocked');
+  } finally { await hub.close(); await remote.close(); }
+});

@@ -1,0 +1,2 @@
+# Preserve the exact upstream rule blob, including its terminal blank line.
+src/lib/redaction/vendor/gitleaks.toml whitespace=-blank-at-eof

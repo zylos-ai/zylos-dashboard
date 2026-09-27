@@ -6,6 +6,7 @@ import os from 'node:os';
 import { DEFAULT_CLAUDE_MODEL_PRICES } from '../src/lib/config.js';
 import { Store } from '../src/lib/store.js';
 import { ConversationCollector } from '../src/lib/collectors/conversation-collector.js';
+import { claudeProjectSlug } from '../src/lib/claude-project-path.js';
 
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'conv-collector-test-'));
@@ -134,7 +135,7 @@ function makeCollector(store, tmpDir, sessionId = 'test-session-123', getSession
   const collector = new ConversationCollector(store, config, { stateEngine });
 
   const zylosResolved = fs.realpathSync(tmpDir);
-  const projectSlug = '-' + zylosResolved.replace(/\//g, '-').replace(/^-/, '');
+  const projectSlug = claudeProjectSlug(zylosResolved);
   const projectDir = path.join(tmpDir, '.claude', 'projects', projectSlug);
   fs.mkdirSync(projectDir, { recursive: true });
 
@@ -679,7 +680,7 @@ test('session file switch resets offset', () => {
   const collector = new ConversationCollector(store, config, { stateEngine });
 
   const zylosResolved = fs.realpathSync(tmpDir);
-  const projectSlug = '-' + zylosResolved.replace(/\//g, '-').replace(/^-/, '');
+  const projectSlug = claudeProjectSlug(zylosResolved);
   const projectDir = path.join(tmpDir, '.claude', 'projects', projectSlug);
   fs.mkdirSync(projectDir, { recursive: true });
 

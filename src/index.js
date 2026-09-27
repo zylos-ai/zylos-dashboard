@@ -45,6 +45,7 @@ import { ObserverControlServer } from './lib/observer-control.js';
 import { ObserverInstaller } from './lib/observer-installer.js';
 import { ObserverManager } from './lib/observer-manager.js';
 import { ObserverService } from './lib/observer-service.js';
+import { HistoryService } from './lib/history/history-service.js';
 import { rejectObserverUpgrade } from './lib/observer-websocket.js';
 import { shutdownDashboardTransports } from './lib/dashboard-shutdown.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
@@ -347,6 +348,8 @@ const stateEngine = new StateEngine(store, collectors, config, {
     scheduleFleetStateBroadcast();
   }
 });
+
+observerService.historyService = new HistoryService({ config, store, stateEngine });
 
 // Wire collector updates to state engine
 pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);

@@ -10,7 +10,8 @@
     "test": "node --test",
     "test:acceptance": "ACCEPTANCE=1 node --test test/acceptance-phase2a.test.js",
     "smoke": "node src/index.js --smoke",
-    "smoke:api": "node scripts/smoke-api.js"
+    "smoke:api": "node scripts/smoke-api.js",
+    "build:redaction": "node scripts/build-redaction-rules.js"
   },
   "keywords": [
     "zylos",
@@ -35,5 +36,9 @@
     "chart.js": "4.4.9",
     "chartjs-adapter-date-fns": "^3.0.0",
     "date-fns": "^4.1.0"
+  },
+  "devDependencies": {
+    "regexpu-core": "6.4.0",
+    "smol-toml": "1.9.0"
   }
 }

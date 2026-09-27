@@ -1,3 +1,4 @@
+import { ObserverHistory } from './observer-history.js?v=1';
 import { OBSERVER_PRESET_DIMENSIONS } from './observer-presets.js';
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
@@ -1166,6 +1167,7 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  state.observer.history?.refreshLabels();
   initFleetManageButton();
   if (fleetManageModal) {
     const wasOpen = !fleetManageModal.hidden;
@@ -2007,6 +2009,7 @@ async function recoverObserver(error) {
 
 async function closeObserver({ release = true, preserveNotice = false, preserveIntent = false } = {}) {
   const observer = state.observer;
+  if (!preserveIntent) observer.history?.setActive(false);
   clearTimeout(observer.retryTimer);
   observer.retryTimer = null;
   if (!preserveIntent) observer.intent = null;
@@ -2429,7 +2432,10 @@ function initTabs() {
     syncMemoryPinned();
     if (name === 'trends') refreshCharts();
     if (name === 'memory') loadMemoryTree().catch(() => {});
-    if (name === 'observer') openObserver().catch(() => {});
+    if (name === 'observer') {
+      openObserver().catch(() => {});
+      if (state.observer.historyMode) state.observer.history?.setActive(true);
+    }
     if (push) {
       const prefix = remotePrefix();
       const path = name === 'overview' ? `${prefix}/` : `${prefix}/${name}`;
@@ -2476,6 +2482,24 @@ function initTabs() {
 }
 
 function initObserverControls() {
+  const historyRoot = $('#observer-history');
+  if (historyRoot) {
+    state.observer.history = new ObserverHistory({ root: historyRoot, endpoint: observerEndpoint, t });
+    document.querySelectorAll('[data-observer-view]').forEach(button => {
+      button.addEventListener('click', () => {
+        const historyMode = button.dataset.observerView === 'history';
+        state.observer.historyMode = historyMode;
+        historyRoot.hidden = !historyMode;
+        $('#observer-frame').parentElement.hidden = historyMode;
+        $('#observer-presets').hidden = historyMode;
+        $('#observer-notice').hidden = historyMode;
+        document.querySelectorAll('[data-observer-view]').forEach(control => {
+          control.setAttribute('aria-pressed', String(control === button));
+        });
+        state.observer.history.setActive(historyMode);
+      });
+    });
+  }
   document.querySelectorAll('[data-observer-preset]').forEach((button) => {
     const size = OBSERVER_PRESET_DIMENSIONS[button.dataset.observerPreset];
     button.textContent = `${size.cols}×${size.rows}`;
@@ -2571,6 +2595,14 @@ function applyFleetMode(fleet) {
 // mix while switching the detail view between self and a remote agent.
 function resetAgentData() {
   closeObserver({ release: true }).catch(() => {});
+  if (state.observer.history) {
+    state.observer.history.session = null;
+    state.observer.history.entries.clear();
+    state.observer.history.fields.clear();
+    state.observer.history.el('entries').replaceChildren();
+    state.observer.history.el('results').replaceChildren();
+    state.observer.history.el('sessions').replaceChildren();
+  }
   state.observer.statusGeneration += 1;
   state.observer.lifecycleGeneration = (state.observer.lifecycleGeneration || 0) + 1;
   state.observer.lifecyclePending = null;
