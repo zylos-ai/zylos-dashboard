@@ -4,7 +4,10 @@ import { mutateConfig } from './config-mutation.js';
 import { sendHtml, sendJson, sendText } from './http.js';
 
 const SCRYPT_KEYLEN = 64;
-const COOKIE_NAME = '__Host-zylos_dashboard_session';
+const COOKIE_NAME = '__Secure-zylos_dashboard_session';
+// Pre-0.6 name. __Host- forces Path=/, which sent the session to every
+// component on the same host, so it is revoked and cleared on sight.
+const LEGACY_COOKIE_NAME = '__Host-zylos_dashboard_session';
 const SESSION_ABSOLUTE_MS = 86_400_000;
 const SESSION_IDLE_MS = 3_600_000;
 const REMEMBER_ABSOLUTE_MS = 30 * 86_400_000;
@@ -122,13 +125,35 @@ function getSessionCookie(req) {
   return parseCookies(req.headers.cookie)[COOKIE_NAME] || null;
 }
 
-function setSessionCookie(res, token, remember = false) {
-  const maxAge = remember ? 30 * 86400 : 86400;
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${maxAge}`);
+// Scope the session cookie to the proxy prefix (e.g. /dashboard) so the
+// browser does not send it to other components on the same host. The base is
+// already validated by browserBaseFromRequest; ';' and ',' are rejected here as
+// well because they would break out of the Path attribute.
+export function sessionCookiePath(base) {
+  if (!base || /[;,]/.test(base)) return '/';
+  return base;
 }
 
-function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`);
+function appendSetCookie(res, cookie) {
+  const existing = res.getHeader('Set-Cookie');
+  const values = existing === undefined ? [] : [].concat(existing);
+  res.setHeader('Set-Cookie', [...values, cookie]);
+}
+
+function setSessionCookie(res, token, base, remember = false) {
+  const maxAge = remember ? 30 * 86400 : 86400;
+  appendSetCookie(res, `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=${sessionCookiePath(base)}; Max-Age=${maxAge}`);
+}
+
+function clearSessionCookie(res, base) {
+  appendSetCookie(res, `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=${sessionCookiePath(base)}; Max-Age=0`);
+}
+
+function retireLegacySessionCookie(req, res) {
+  const legacy = parseCookies(req.headers.cookie)[LEGACY_COOKIE_NAME];
+  if (legacy === undefined) return;
+  destroySession(legacy);
+  appendSetCookie(res, `${LEGACY_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`);
 }
 
 function getClientIp(req) {
@@ -406,6 +431,7 @@ export class AuthGate {
   async handle(req, res, url) {
     const base = browserBaseFromRequest(req);
     const pathname = url.pathname;
+    retireLegacySessionCookie(req, res);
 
     if (pathname === '/api/health' || (req.method === 'GET' && pathname.startsWith('/_assets/'))) {
       return false;
@@ -495,7 +521,7 @@ export class AuthGate {
 
     clearFailures(ip);
     const remember = body.remember === 'on';
-    setSessionCookie(res, createSession(remember), remember);
+    setSessionCookie(res, createSession(remember), base, remember);
     const redirectTo = body.next && isPathWithinBase(body.next, base) ? body.next : browserRoot(base);
     redirect(res, redirectTo);
     return true;
@@ -515,7 +541,7 @@ export class AuthGate {
       return true;
     }
     destroySession(getSessionCookie(req));
-    clearSessionCookie(res);
+    clearSessionCookie(res, base);
     redirect(res, browserPath(base, 'login'));
     return true;
   }

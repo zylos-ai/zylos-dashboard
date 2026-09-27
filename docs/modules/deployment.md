@@ -195,8 +195,10 @@ Dashboard auth 采用与 zylos-pages 一致的 cookie-based session 方案。
 #### Session 管理
 
 - 登录成功后生成 64 字节随机 token，存储 `Map<sha256(token), {createdAt, lastActivityAt}>`
-- Cookie 名：`__Host-zylos_dashboard_session`
-- Cookie 标志：`HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`
+- Cookie 名：`__Secure-zylos_dashboard_session`
+- Cookie 标志：`HttpOnly; Secure; SameSite=Strict; Path=<前缀>; Max-Age=86400`（记住我为 30 天）
+- `Path` 取自经校验的 `X-Forwarded-Prefix`（如 `/dashboard`），浏览器只把 Cookie 发给 Dashboard 自己的路径，不发给同一域名下的其他组件；没有前缀、前缀不安全或含 `;`、`,` 时退回 `Path=/`
+- 旧名 `__Host-zylos_dashboard_session` 强制 `Path=/`，已停用：请求带着旧 Cookie 时，服务端注销对应 session 并下发一条 `Max-Age=0` 清掉它，用户重新登录一次即可
 - 过期策略：24h 绝对过期 + 60min 空闲过期
 
 #### 路由

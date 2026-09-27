@@ -29,7 +29,7 @@ test('canonical auth context uses server session hash and stable API key id', ()
   };
   const gate = new AuthGate({ auth: { enabled: true, password: 'scrypt:configured' } }, store);
 
-  const cookieReq = { headers: { cookie: `__Host-zylos_dashboard_session=${cookieToken}` } };
+  const cookieReq = { headers: { cookie: `__Secure-zylos_dashboard_session=${cookieToken}` } };
   assert.deepEqual(gate.resolveAuthContext(cookieReq), {
     kind: 'cookie',
     principalId: sha256(cookieToken),

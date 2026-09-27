@@ -120,11 +120,12 @@ test('login sets secure cookie and authenticated requests can reach API and SSE'
     assert.equal(login.headers.get('location'), '/dashboard/');
 
     const cookie = login.headers.get('set-cookie');
-    assert.match(cookie, /__Host-zylos_dashboard_session=/);
+    assert.match(cookie, /^__Secure-zylos_dashboard_session=/);
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /Secure/);
     assert.match(cookie, /SameSite=Strict/);
-    assert.match(cookie, /Path=\//);
+    assert.match(cookie, /Path=\/dashboard;/);
+    assert.match(cookie, /Max-Age=86400$/);
 
     const health = await fetch(`${origin}/api/health`, {
       headers: { Cookie: cookie }
@@ -166,9 +167,97 @@ test('logout requires same-origin POST and respects forwarded prefix', async () 
     });
     assert.equal(logout.status, 302);
     assert.equal(logout.headers.get('location'), '/dashboard/login');
-    assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
+    assert.equal(logout.headers.get('set-cookie'),
+      '__Secure-zylos_dashboard_session=; HttpOnly; Secure; SameSite=Strict; Path=/dashboard; Max-Age=0');
   } finally {
     await closeServer(server);
+  }
+});
+
+test('session cookie path follows the forwarded prefix and falls back to root', async () => {
+  const { origin, server } = await makeServer();
+  const loginWith = (headers, body = { password: 'secret' }) => fetch(`${origin}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+    body: form(body),
+    redirect: 'manual'
+  });
+  try {
+    const direct = await loginWith({});
+    assert.match(direct.headers.get('set-cookie'), /^__Secure-zylos_dashboard_session=[^;]+; HttpOnly; Secure; SameSite=Strict; Path=\/; Max-Age=86400$/);
+
+    const trailing = await loginWith({ 'X-Forwarded-Prefix': '/dashboard/' });
+    assert.match(trailing.headers.get('set-cookie'), /; Path=\/dashboard; /);
+
+    const remembered = await loginWith({ 'X-Forwarded-Prefix': '/dashboard' }, { password: 'secret', remember: 'on' });
+    assert.match(remembered.headers.get('set-cookie'), /; Path=\/dashboard; Max-Age=2592000$/);
+
+    for (const prefix of ['/dash;Domain=evil.test', '/dashboard?x=1', '/../dashboard', '//evil.test']) {
+      const resp = await loginWith({ 'X-Forwarded-Prefix': prefix });
+      assert.equal(resp.status, 302, prefix);
+      const cookie = resp.headers.get('set-cookie');
+      assert.match(cookie, /; Path=\/; Max-Age=86400$/, prefix);
+      assert.doesNotMatch(cookie, /Domain|evil/, prefix);
+    }
+
+    const multi = await loginWith({ 'X-Forwarded-Prefix': '/dashboard, /other' });
+    assert.match(multi.headers.get('set-cookie'), /; Path=\/dashboard; /);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('legacy __Host- session cookie is revoked and cleared on any request', async () => {
+  const { origin, server, zylosDir } = await makeServer();
+  const legacyClear = '__Host-zylos_dashboard_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0';
+  try {
+    const login = await fetch(`${origin}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-Prefix': '/dashboard' },
+      body: form({ password: 'secret' }),
+      redirect: 'manual'
+    });
+    const token = login.headers.get('set-cookie').split(';')[0].split('=').slice(1).join('=');
+    // Only the new cookie is set when the browser has no legacy cookie.
+    assert.equal(login.headers.getSetCookie().length, 1);
+
+    // A session presented under the legacy name is not accepted, and is revoked.
+    const legacy = await fetch(`${origin}/api/state`, {
+      headers: { Cookie: `__Host-zylos_dashboard_session=${token}` }
+    });
+    assert.equal(legacy.status, 401);
+    assert.deepEqual(legacy.headers.getSetCookie(), [legacyClear]);
+
+    const revoked = await fetch(`${origin}/api/state`, {
+      headers: { Cookie: `__Secure-zylos_dashboard_session=${token}` }
+    });
+    assert.equal(revoked.status, 401);
+
+    // Logging in with a legacy cookie still present sets the new one and clears the old one.
+    const relogin = await fetch(`${origin}/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Forwarded-Prefix': '/dashboard',
+        Cookie: '__Host-zylos_dashboard_session=stale'
+      },
+      body: form({ password: 'secret' }),
+      redirect: 'manual'
+    });
+    assert.equal(relogin.status, 302);
+    const cookies = relogin.headers.getSetCookie();
+    assert.equal(cookies.length, 2);
+    assert.equal(cookies[0], legacyClear);
+    assert.match(cookies[1], /^__Secure-zylos_dashboard_session=[^;]+; HttpOnly; Secure; SameSite=Strict; Path=\/dashboard; Max-Age=86400$/);
+
+    const fresh = await fetch(`${origin}/api/state`, {
+      headers: { Cookie: `__Host-zylos_dashboard_session=stale; ${cookies[1].split(';')[0]}` }
+    });
+    assert.equal(fresh.status, 200);
+    assert.deepEqual(fresh.headers.getSetCookie(), [legacyClear]);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
   }
 });
 
