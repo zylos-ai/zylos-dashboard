@@ -117,7 +117,9 @@ export class ObserverService {
     if (this.startupError && !allowRecovery) throw this.startupError;
   }
 
-  _resizeStreams(size, active) {
+  async _resizeStreams(size, active) {
+    if (active !== this.containment.active) return;
+    if (!await this.containment.resize(active, size)) throw new Error('Observer generation changed during resize');
     if (active !== this.containment.active) return;
     for (const stream of this.streams) {
       if (stream.closed || stream.active !== active || !stream.connected) continue;

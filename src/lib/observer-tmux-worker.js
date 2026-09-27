@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readObserverGeometry } from './observer-size-monitor.js';
 import { ObserverUpstream } from './observer-upstream.js';
 import { command, delay, digest, failure, identity, privateEnvironment, processSnapshot, targetArgs, innerAttachArgs,
   outerArgs, zellijArgs, validateState, writeAtomic, privatePath, exists, validRole } from './observer-tmux-state.js';
@@ -116,6 +117,20 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     }
     await phase('before-outer', state);
+    // Detached Agent sessions may count even ignore-size clients. Never attach
+    // with guessed geometry: measure before any private native process exists.
+    const initialGeometry = await readObserverGeometry(state, run);
+    if (!initialGeometry) throw failure('target_size_unavailable', 'Agent terminal size could not be measured safely');
+    const initialSize = { cols: initialGeometry.cols, rows: initialGeometry.rows };
+    const verifyTargetGeometry = async () => {
+      const current = await readObserverGeometry(state, run);
+      if (!current) throw failure('target_size_unavailable', 'Agent window size could not be verified after attachment');
+      if (current.cols !== initialGeometry.cols || current.windowRows !== initialGeometry.windowRows) {
+        // This detects a change, including concurrent operator resizes. Failed
+        // receipt cleanup disconnects Observer; never resize the Agent back.
+        throw failure('target_size_changed', 'Agent window size changed during Observer attachment');
+      }
+    };
     creationSettled = false;
     // Foreground server creation has one identifiable producer. Every later
     // mutation uses -N and therefore cannot recreate it after recovery kills it.
@@ -134,7 +149,7 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
       });
     }
     await run(state.tmuxPath, [...(state.startupRecovery === 1 ? outerArgs(state) : ['-S', state.outerSocket, '-f', state.tmuxConfig]),
-      'new-session', '-d', '-s', 'observer', '-n', 'client', '-x', '100', '-y', '30',
+      'new-session', '-d', '-s', 'observer', '-n', 'client', '-x', String(initialSize.cols), '-y', String(initialSize.rows),
       '/usr/bin/env', '-u', 'TMUX', '-u', 'ZELLIJ', state.binaryPath, ...zellijArgs(state, '--new-session-with-layout', state.layoutFile, '--session', state.sessionName)], { timeout: 0 });
     receipt.sessionIssued = true;
     await phase('outer-acknowledged', state);
@@ -175,6 +190,7 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
     await phase('session-settled', state);
     if (pane.exited === true) throw new Error('Observer target attachment exited');
     receipt.roles.inner = await wait(() => innerClient(receipt.roles.daemon), 5000);
+    await verifyTargetGeometry();
     const token = await zellij('web', '--create-read-only-token');
     if (!/^token_\d+:\s*[0-9a-f-]{36}(?:\s|$)/m.test(token.stdout) || token.stdout.length > 4096) throw new Error('Invalid read-only token');
     await fs.writeFile(state.tokenFile, token.stdout, { flag: 'wx', mode: 0o600 });
@@ -195,7 +211,7 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
     await phase('web-settled', state);
     await wait(async () => {
       const viewer = probe(state);
-      try { await viewer.connect({ onDisplay() {}, onClose() {} }); return true; }
+      try { await viewer.connect({ size: initialSize, onDisplay() {}, onClose() {} }); return true; }
       finally { viewer.close(); }
     }, 10000);
     receipt.roles.inner = await innerClient(receipt.roles.daemon);
@@ -204,6 +220,7 @@ export async function runStartupWorker(root, { exec = command, probe = (active) 
       const current = role && await observe(role.pid);
       if (!current || current.start !== role.start || current.status.startsWith('Z')) throw new Error('Observer role exited before readiness');
     }
+    await verifyTargetGeometry();
     receipt.outcome = 'ready';
   } catch (error) {
     if (!creationSettled) {

@@ -103,3 +103,21 @@ test('obsolete defaultPreset config is tolerated without mutation or a default',
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('failed asynchronous size application retries and cannot publish after stop', async () => {
+  let attempts = 0;
+  let finish;
+  const monitor = new ObserverSizeMonitor({
+    exec: async () => ({ stdout: '140 40 on' }),
+    onChange: async () => { if (++attempts === 1) throw new Error('private resize failed'); await new Promise((resolve) => { finish = resolve; }); },
+  });
+  await monitor.start(active);
+  assert.deepEqual(monitor.size, { cols: 80, rows: 24 });
+  const retry = monitor.poll();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 2);
+  monitor.stop();
+  finish();
+  await retry;
+  assert.deepEqual(monitor.size, { cols: 80, rows: 24 });
+});

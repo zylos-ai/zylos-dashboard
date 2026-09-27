@@ -1,12 +1,30 @@
 import { DEFAULT_OBSERVER_SIZE, validObserverSize } from '../../public/js/observer-size.js';
 import { command, targetArgs } from './observer-tmux-state.js';
 
-export function parseObserverSize(stdout) {
+function parseObserverGeometry(stdout) {
   const match = /^(\d+) (\d+) (off|on|[2-5])$/.exec(String(stdout).trim());
   if (!match) return null;
   const statusLines = match[3] === 'off' ? 0 : match[3] === 'on' ? 1 : Number(match[3]);
   const size = { cols: Number(match[1]), rows: Number(match[2]) + statusLines };
-  return validObserverSize(size) ? size : null;
+  return validObserverSize(size) && Number(match[2]) > 0
+    ? { ...size, windowRows: Number(match[2]), statusLines } : null;
+}
+
+export function parseObserverSize(stdout) {
+  const geometry = parseObserverGeometry(stdout);
+  return geometry ? { cols: geometry.cols, rows: geometry.rows } : null;
+}
+
+export async function readObserverGeometry(active, exec = command) {
+  if (!['claude-main', 'codex-main'].includes(active.target) || !active.tmuxPath) return null;
+  const result = await exec(active.tmuxPath, targetArgs(active,
+    'display-message', '-p', '-t', `=${active.target}:`, '#{window_width} #{window_height} #{status}'));
+  return parseObserverGeometry(result.stdout);
+}
+
+export async function readObserverSize(active, exec = command) {
+  const geometry = await readObserverGeometry(active, exec);
+  return geometry ? { cols: geometry.cols, rows: geometry.rows } : null;
 }
 
 // One monitor is owned by each service, independent of the number of viewers.
@@ -40,14 +58,11 @@ export class ObserverSizeMonitor {
     const epoch = this.epoch;
     const pending = (async () => {
       try {
-        if (!['claude-main', 'codex-main'].includes(active.target) || !active.tmuxPath) return this.size;
-        const result = await this.exec(active.tmuxPath, targetArgs(active,
-          'display-message', '-p', '-t', `=${active.target}:`, '#{window_width} #{window_height} #{status}'));
-        const size = parseObserverSize(result.stdout);
+        const size = await readObserverSize(active, this.exec);
         if (this.epoch === epoch && this.active === active && size &&
             (size.cols !== this.size.cols || size.rows !== this.size.rows)) {
-          this.size = Object.freeze(size);
-          this.onChange(this.size, active);
+          await this.onChange(Object.freeze(size), active);
+          if (this.epoch === epoch && this.active === active) this.size = size;
         }
       } catch { /* Keep the last valid size and retry while viewers remain. */ }
       return this.size;

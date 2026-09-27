@@ -21,6 +21,8 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
   const readContext = { kind: 'api', principalId: 'api-read', scope: 'read' };
   const containment = Object.assign(new EventEmitter(), {
     active: { generation: 7, port: 1234, sessionName: 'observer-test', tokenFile: '/private/token' },
+    resizes: [],
+    async resize(active, size) { assert.equal(active, this.active); this.resizes.push(size); return true; },
     async reconcilePersisted() { return []; },
   });
   const coordinator = {
@@ -833,4 +835,60 @@ test('failed upstream handshake and generation replacement stop the monitor with
       assert.equal(f.monitor.active, null);
     } finally { f.resolveConnect(); await f.service.shutdown(); await app.close(); }
   });
+});
+
+test('private resize must settle before upstream and browser broadcast; failure retries same measurement', async () => {
+  const f = sizeFixture();
+  // Drive the real monitor/service callback deterministically without sockets.
+  f.monitor.intervalMs = 60_000;
+  const active = f.service.containment.active;
+  const events = [];
+  f.service.streams.add({ active, connected: true, closed: false,
+    upstream: { resize(size) { events.push(['upstream', size]); } },
+    downstream: { sendText(text) { events.push(['browser', JSON.parse(text)]); } },
+  });
+  let finish;
+  let fail = false;
+  f.service.containment.resize = async (_active, size) => {
+    events.push(['private-start', size]);
+    await new Promise((resolve) => { finish = resolve; });
+    if (fail) throw new Error('private resize failed');
+    events.push(['private-done', size]);
+    return true;
+  };
+  try {
+    const initial = f.monitor.start(active);
+    await waitUntil(() => finish);
+    assert.deepEqual(events.map(([name]) => name), ['private-start']);
+    finish(); await initial;
+    assert.deepEqual(events.map(([name]) => name), ['private-start', 'private-done', 'upstream', 'browser']);
+    events.length = 0; finish = null; fail = true;
+    f.setOutput('140 40 off');
+    const failed = f.monitor.poll();
+    await waitUntil(() => finish); finish(); await failed;
+    assert.deepEqual(events.map(([name]) => name), ['private-start']);
+    assert.deepEqual(f.monitor.size, { cols: 100, rows: 30 });
+    events.length = 0; finish = null; fail = false;
+    const retry = f.monitor.poll();
+    await waitUntil(() => finish); finish(); await retry;
+    assert.deepEqual(events.map(([name]) => name), ['private-start', 'private-done', 'upstream', 'browser']);
+    assert.deepEqual(f.monitor.size, { cols: 140, rows: 40 });
+  } finally { f.monitor.stop(); f.service.streams.clear(); }
+});
+
+test('generation replacement during private resize fences upstream and browser delivery', async () => {
+  const f = sizeFixture();
+  const active = f.service.containment.active;
+  const events = [];
+  f.service.streams.add({ active, connected: true, closed: false,
+    upstream: { resize() { events.push('upstream'); } },
+    downstream: { sendText() { events.push('browser'); } },
+  });
+  let finish;
+  f.service.containment.resize = () => new Promise((resolve) => { finish = resolve; });
+  const pending = f.service._resizeStreams({ cols: 140, rows: 40 }, active);
+  f.service.containment.active = { ...active, generation: 8 };
+  finish(true); await pending;
+  assert.deepEqual(events, []);
+  f.service.streams.clear();
 });

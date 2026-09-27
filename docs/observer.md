@@ -48,7 +48,12 @@ Once enabled, open the Observer tab. The first viewer starts a private Observer
 generation attached read-only to the active runtime's tmux session. Keyboard,
 paste and terminal input are not forwarded. Observer follows the agent terminal
 width and height, including its tmux status lines, with a shared two-second
-read-only poll while viewers are connected. It never resizes the agent terminal.
+read-only poll while viewers are connected. Size changes are applied only to
+Observer's private terminal, without sending resize commands to the agent.
+Startup measures the agent window before attaching and checks it again after
+attachment. If its dimensions changed, Observer disconnects and reports an
+error; it does not try to restore the agent window. This check also catches a
+concurrent resize by another client, so retry viewing after the window settles.
 On smaller screens, scroll horizontally or vertically inside the terminal to
 see the full display. Common terminal symbols use an embedded symbol font.
 In History, session choices include their start time in your browser’s local
