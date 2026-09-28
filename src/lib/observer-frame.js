@@ -90,6 +90,9 @@ async function openTerminal(){
   textarea.setAttribute('inputmode','none');
   textarea.setAttribute('tabindex','-1');
   textarea.addEventListener('focus',()=>textarea.blur());
+  // Full-screen apps (Claude Code) use the alternate screen, where xterm turns the wheel into
+  // arrow keys and cancels it. Input is disabled, so let the wheel scroll the page instead.
+  terminal.attachCustomWheelEventHandler(()=>false);
   opened=true;
   terminal.onResize(reportMetrics);
   if(pendingSize)terminal.resize(pendingSize.cols,pendingSize.rows);

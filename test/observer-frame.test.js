@@ -42,6 +42,7 @@ function frame(documentHtml = observerFrameDocument()) {
       resize(cols, rows) { calls.sizes.push({ cols, rows }); this.onResizeCallback?.(); }
       onResize(callback) { this.onResizeCallback = callback; }
       write(bytes) { calls.writes.push(bytes); }
+      attachCustomWheelEventHandler(handler) { calls.wheelHandler = handler; }
     },
     addEventListener() {}, removeEventListener() {},
     setTimeout(fn, delay) { assert.equal(delay, 1000); timers.set(++nextId, fn); return nextId; },
@@ -80,6 +81,12 @@ test('focus oracle detects the frame with keyboard protection removed', async ()
   f.calls.textarea.focus();
   assert.throws(() => assert.notEqual(f.document.activeElement, f.calls.textarea), assert.AssertionError);
   assert.equal(f.calls.textarea.readOnly, false);
+});
+
+test('wheel events pass through xterm so the alternate screen does not swallow page scrolling', async () => {
+  const f = frame(); f.resolveFont([]); await flush();
+  assert.equal(typeof f.calls.wheelHandler, 'function');
+  for (const deltaY of [-120, 120]) assert.equal(f.calls.wheelHandler({ type: 'wheel', deltaY }), false);
 });
 
 test('size contract enforces inclusive integer bounds', () => {
