@@ -7,19 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-28
+
 ### Security
-- The login cookie is now scoped to the Dashboard's proxy prefix (for example `Path=/dashboard`, taken from the validated `X-Forwarded-Prefix`) and renamed to `__Secure-zylos_dashboard_session`, so browsers no longer send it to other components on the same host. Without a safe prefix it falls back to `Path=/`. The old `__Host-` cookie is revoked and cleared when a browser presents it; users sign in again once after upgrading.
+- The login cookie is now scoped to the Dashboard's proxy prefix (for example `Path=/dashboard`, taken from the validated `X-Forwarded-Prefix`) and renamed to `__Secure-zylos_dashboard_session`, so browsers no longer send it to other components on the same host. Without a safe prefix it falls back to `Path=/`. The old `__Host-` cookie is revoked and cleared when a browser presents it; users sign in again once after upgrading (#304).
 
 ### Added
 - Optional authenticated, read-only terminal Observer for local and Fleet agents, with explicit private Zellij installation, viewing leases, and disable/uninstall controls (#299).
 - Private tmux lifecycle for Observer: normal shutdown and uninstall clean its resources; after an unexpected Dashboard crash, restart cleans the previous generation before starting a new viewer on demand. Cleanup failures retain recovery records and leave other Dashboard features available (#299).
+- Observer conversation history: a read-only view of Claude Code and Codex transcripts with session selection, paging, search, full tool/message output and incremental updates. All transcript text is redacted on the server before it is previewed, counted or searched, and switching views keeps the terminal connection (#306).
 
 ### Fixed
-- Price Claude Opus 5.5 at its own rates (including Fast) instead of inheriting Opus 5 prices through prefix matching, add GPT-6 Sol and GPT-6 Luna standard and Priority prices, and apply GPT-5.5/GPT-5.4 long-context rates to standard requests above 272K input tokens. Stored usage is not repriced.
-- Add Fable 5.1, Opus 5.5, Opus 5 and Sonnet 5 to the Claude model list in the Actions modal, with `xhigh` effort available for them. Earlier versions stay listed.
-- Observer presets now all use 40 rows (80×40, 110×40, 140×40), with one shared definition for the upstream client, renderer and controls.
-- Observer cookie origin checks now work behind multiple proxies without trusting a forwarded protocol, using browser Fetch Metadata with an Origin/Host fallback that preserves nondefault ports.
-- Observer now renders Chinese and other non-ASCII text instead of `_`: its read-only tmux client inherited `LC_ALL=C` and was treated as non-UTF-8; it now attaches with `tmux -u`.
+- Price Claude Opus 5.5 at its own rates (including Fast) instead of inheriting Opus 5 prices through prefix matching, add GPT-6 Sol and GPT-6 Luna standard and Priority prices, and apply GPT-5.5/GPT-5.4 long-context rates to standard requests above 272K input tokens. Stored usage is not repriced (#309).
+- Add Fable 5.1, Opus 5.5, Opus 5 and Sonnet 5 to the Claude model list in the Actions modal, with `xhigh` effort available for them. Earlier versions stay listed (#309).
+- Observer now follows the Agent terminal's actual columns and rows instead of a fixed size, so it no longer blocks pane resizing or shrinks a detached Agent window. Startup aborts rather than resizing the Agent if the sizes disagree. Size presets are removed and narrow screens scroll the full terminal; existing configuration with `defaultPreset` still loads (#303, #307).
+- Observer embeds a pinned symbol font so terminal symbols render consistently (#307).
+- Tapping the read-only Observer terminal no longer opens the phone keyboard (#308).
+- Observer cookie origin checks now work behind multiple proxies without trusting a forwarded protocol, using browser Fetch Metadata with an Origin/Host fallback that preserves nondefault ports (#302).
+- Observer now renders Chinese and other non-ASCII text instead of `_`: its read-only tmux client inherited `LC_ALL=C` and was treated as non-UTF-8; it now attaches with `tmux -u` (#301).
+
+### Upgrade notes
+- Everyone signs in again once after upgrading, because the login cookie is renamed and rescoped.
+- Observer stays off until an operator installs and enables it in Settings → Observer.
+- Existing usage history is not repriced by this release.
 
 ## [0.5.5] - 2026-09-15
 
