@@ -295,7 +295,9 @@ export class ObserverService {
       throw new ObserverHttpError(404, 'not_found');
     } catch (error) {
       const result = publicError(error);
-      sendJson(res, result.status, { error: result.code });
+      // Set size reports the live height limit when status lines reduce it.
+      const detail = result.code === 'invalid_size' && Number.isInteger(error?.maxRows) ? { maxRows: error.maxRows } : {};
+      sendJson(res, result.status, { error: result.code, ...detail });
       return true;
     }
   }

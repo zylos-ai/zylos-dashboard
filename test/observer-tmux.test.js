@@ -756,8 +756,11 @@ test('resizeAgent resizes only the runtime session on its own socket and verifie
 test('resizeAgent rejects heights that overflow with the status line and unverified results', async (t) => {
   const tall = agentTmux({ status: '3' });
   const f = await fixture(t, { exec: tall.exec });
-  await assert.rejects(f.adapter.resizeAgent({ runtime: 'claude', cols: 120, rows: 198 }), { code: 'invalid_size' });
+  await assert.rejects(f.adapter.resizeAgent({ runtime: 'claude', cols: 120, rows: 198 }), { code: 'invalid_size', maxRows: 197 });
   assert.equal(tall.calls.some(([, args]) => args.includes('resize-window')), false);
+  const off = agentTmux({ status: 'off' });
+  f.adapter.exec = off.exec;
+  assert.deepEqual(await f.adapter.resizeAgent({ runtime: 'claude', cols: 120, rows: 200 }), { cols: 120, rows: 200, statusLines: 0 });
 
   const clamped = agentTmux({ applied: { cols: 120, rows: 45 } });
   f.adapter.exec = clamped.exec;

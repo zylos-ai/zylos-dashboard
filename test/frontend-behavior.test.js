@@ -2069,8 +2069,12 @@ test('Observer Set size posts to the viewed agent and reports the outcome', asyn
     assert.equal(status.dataset.state, 'error');
   }
 
+  h.setFetch(async () => observerResponse({ error: 'invalid_size', maxRows: 197 }, { ok: false, status: 400 }));
+  await h.context.applyObserverSize({ preventDefault() {} });
+  assert.equal(status.textContent, 'observer.size.error.rows_limit');
+
   const before = h.calls.length;
-  h.elements['#observer-size-rows'].value = '200';
+  h.elements['#observer-size-rows'].value = '201';
   await h.context.applyObserverSize({ preventDefault() {} });
   assert.equal(h.calls.length, before);
   assert.equal(status.textContent, 'observer.size.error.invalid_size');

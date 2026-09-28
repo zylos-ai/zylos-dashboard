@@ -152,7 +152,7 @@ test('remembered agent size defaults, validates, and persists beside lifecycle s
   assert.deepEqual(saved.observer, { enabled: true, generation: 3, agentSize: { cols: 132, rows: 60 } });
   assert.equal(saved.untouched, true);
 
-  for (const agentSize of [{ cols: 10, rows: 50 }, { cols: 120, rows: 200 }, { cols: '120', rows: 50 }, 'large']) {
+  for (const agentSize of [{ cols: 10, rows: 50 }, { cols: 120, rows: 201 }, { cols: '120', rows: 50 }, 'large']) {
     fs.writeFileSync(configPath, JSON.stringify({ observer: { agentSize } }));
     assert.deepEqual(await coordinator.agentSize(), { cols: 120, rows: 50 });
   }

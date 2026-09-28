@@ -948,7 +948,7 @@ test('Set size is an admin write guarded by origin and strict size validation', 
       [{ cols: 19, rows: 50 }, admin, 400, 'invalid_size'],
       [{ cols: 501, rows: 50 }, admin, 400, 'invalid_size'],
       [{ cols: 120, rows: 4 }, admin, 400, 'invalid_size'],
-      [{ cols: 120, rows: 200 }, admin, 400, 'invalid_size'],
+      [{ cols: 120, rows: 201 }, admin, 400, 'invalid_size'],
       [{ cols: 120.5, rows: 50 }, admin, 400, 'invalid_size'],
       [{ cols: '120', rows: 50 }, admin, 400, 'invalid_size'],
       [{ cols: 120 }, admin, 400, 'invalid_size'],
@@ -971,9 +971,9 @@ test('Set size failures leave the remembered size unchanged', async () => {
     [Object.assign(new Error('gone'), { code: 'target_unavailable' }), 409, 'agent_session_unavailable'],
     [Object.assign(new Error('mismatch'), { code: 'agent_resize_failed' }), 500, 'agent_resize_failed'],
     [Object.assign(new Error('tmux exited 1'), { code: 1 }), 500, 'agent_resize_failed'],
-    [Object.assign(new Error('status too tall'), { code: 'invalid_size' }), 400, 'invalid_size'],
+    [Object.assign(new Error('status too tall'), { code: 'invalid_size', maxRows: 197 }), 400, 'invalid_size', { maxRows: 197 }],
   ];
-  for (const [error, status, code] of failures) {
+  for (const [error, status, code, detail = {}] of failures) {
     const { service, coordinator } = fixture({ resizeAgent: async () => { throw error; } });
     const app = await startHttp(service);
     try {
@@ -981,7 +981,7 @@ test('Set size failures leave the remembered size unchanged', async () => {
         method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin }, body: JSON.stringify({ cols: 120, rows: 50 }),
       });
       assert.equal(response.status, status);
-      assert.deepEqual(await response.json(), { error: code });
+      assert.deepEqual(await response.json(), { error: code, ...detail });
       assert.deepEqual(coordinator.savedAgentSizes, []);
     } finally { await app.close(); }
   }

@@ -1971,7 +1971,8 @@ function setObserverSizeStatus(message, status = 'idle') {
 
 const OBSERVER_SIZE_ERRORS = new Set(['invalid_size', 'agent_session_unavailable', 'observer_starting', 'agent_resize_failed']);
 
-function observerSizeError(code) {
+function observerSizeError(code, maxRows) {
+  if (code === 'invalid_size' && Number.isInteger(maxRows)) return t('observer.size.error.rows_limit', { maxRows });
   return OBSERVER_SIZE_ERRORS.has(code) ? t(`observer.size.error.${code}`) : t('observer.size.failed', { code });
 }
 
@@ -2013,7 +2014,7 @@ async function applyObserverSize(event) {
     const data = await resp.json().catch(() => ({}));
     if (observerTargetKey() !== targetKey) return;
     if (!resp.ok || !validAgentSize(data.agentSize)) {
-      setObserverSizeStatus(observerSizeError(data.error || `http_${resp.status}`), 'error');
+      setObserverSizeStatus(observerSizeError(data.error || `http_${resp.status}`, data.maxRows), 'error');
       return;
     }
     if (state.observer.status) state.observer.status.agentSize = data.agentSize;

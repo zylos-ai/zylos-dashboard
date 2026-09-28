@@ -120,7 +120,10 @@ export class TmuxObserverContainment extends EventEmitter {
     const match = /^(off|on|[2-5])$/.exec(status.stdout.trim());
     if (!match) throw failure('agent_resize_failed', 'Agent status line could not be read');
     const statusLines = match[1] === 'off' ? 0 : match[1] === 'on' ? 1 : Number(match[1]);
-    if (rows + statusLines > OBSERVER_SIZE_LIMITS.maxRows) throw failure('invalid_size', 'Agent size exceeds Observer limits');
+    if (rows + statusLines > OBSERVER_SIZE_LIMITS.maxRows) {
+      throw Object.assign(failure('invalid_size', 'Agent size exceeds Observer limits'),
+        { maxRows: OBSERVER_SIZE_LIMITS.maxRows - statusLines });
+    }
     await this.exec(this.tmuxPath, targetArgs(agent, 'resize-window', '-t', `=${target}:`, '-x', String(cols), '-y', String(rows)));
     const geometry = await readObserverGeometry(agent, this.exec);
     if (!geometry || geometry.cols !== cols || geometry.windowRows !== rows) {

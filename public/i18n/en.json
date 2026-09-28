@@ -480,9 +480,10 @@
   "observer.size.hint": "Resize the Agent terminal (tmux window, excluding the status line). The value is remembered; after a runtime restart, press Set size again.",
   "observer.size.applying": "Setting…",
   "observer.size.applied": "Set to {cols}×{rows}",
-  "observer.size.error.invalid_size": "Width must be 20–500 and height 5–199",
+  "observer.size.error.invalid_size": "Width must be 20–500 and height 5–200",
   "observer.size.error.agent_session_unavailable": "Agent terminal is not running; try again after it restarts",
   "observer.size.error.observer_starting": "Observer is connecting; try again in a moment",
   "observer.size.error.agent_resize_failed": "Resize failed; the saved size is unchanged",
-  "observer.size.failed": "Could not set size ({code})"
+  "observer.size.failed": "Could not set size ({code})",
+  "observer.size.error.rows_limit": "Height can be at most {maxRows} here: the tmux status line counts toward the 200-row limit"
 }
