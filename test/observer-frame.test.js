@@ -10,7 +10,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function frame(documentHtml = observerFrameDocument()) {
   let resolveFont, rejectFont;
   const font = new Promise((resolve, reject) => { resolveFont = resolve; rejectFont = reject; });
-  const calls = { open: 0, dispose: 0, sizes: [], writes: [], fonts: [], loads: [] };
+  const calls = { open: 0, dispose: 0, sizes: [], writes: [], fonts: [], loads: [], wheelListeners: [] };
   const timers = new Map(), frames = new Map();
   let nextId = 0;
   const context = {
@@ -43,7 +43,8 @@ function frame(documentHtml = observerFrameDocument()) {
       onResize(callback) { this.onResizeCallback = callback; }
       write(bytes) { calls.writes.push(bytes); }
     },
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(name, callback, options) { if (name === 'wheel') calls.wheelListeners.push({ callback, options }); },
+    removeEventListener() {},
     setTimeout(fn, delay) { assert.equal(delay, 1000); timers.set(++nextId, fn); return nextId; },
     clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(fn) { frames.set(++nextId, fn); return nextId; },
@@ -80,6 +81,16 @@ test('focus oracle detects the frame with keyboard protection removed', async ()
   f.calls.textarea.focus();
   assert.throws(() => assert.notEqual(f.document.activeElement, f.calls.textarea), assert.AssertionError);
   assert.equal(f.calls.textarea.readOnly, false);
+});
+
+test('wheel events are stopped before xterm so it cannot cancel page scrolling', async () => {
+  const f = frame(); f.resolveFont([]); await flush();
+  assert.equal(f.calls.wheelListeners.length, 1);
+  const [{ callback, options }] = f.calls.wheelListeners;
+  assert.deepEqual({ ...options }, { capture: true, passive: true });
+  let stopped = 0, prevented = 0;
+  callback({ type: 'wheel', deltaY: 120, stopPropagation() { stopped++; }, preventDefault() { prevented++; } });
+  assert.deepEqual({ stopped, prevented }, { stopped: 1, prevented: 0 });
 });
 
 test('size contract enforces inclusive integer bounds', () => {

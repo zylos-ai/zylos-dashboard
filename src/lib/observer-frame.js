@@ -90,6 +90,10 @@ async function openTerminal(){
   textarea.setAttribute('inputmode','none');
   textarea.setAttribute('tabindex','-1');
   textarea.addEventListener('focus',()=>textarea.blur());
+  // xterm cancels wheel events on the alternate screen (Claude Code) and whenever mouse
+  // reporting is on (Zellij), even when a custom wheel handler declines them. Input is
+  // disabled, so stop the wheel before it reaches xterm and let the page scroll instead.
+  addEventListener('wheel',event=>event.stopPropagation(),{capture:true,passive:true});
   opened=true;
   terminal.onResize(reportMetrics);
   if(pendingSize)terminal.resize(pendingSize.cols,pendingSize.rows);
