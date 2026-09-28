@@ -7,11 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-28
+
 ### Added
-- Observer: **Set size** in the Live view resizes the Agent's tmux window (width and height, excluding the status line). The Dashboard reads the size back before remembering it in `observer.agentSize` (default 120×50). Set size works for local and Fleet agents, requires an administrator, and is never reapplied automatically, so press it again after a runtime restart.
+- Observer: **Set size** in the Live view resizes the Agent's tmux window (width and height, excluding the status line). The Dashboard reads the size back before remembering it in `observer.agentSize` (default 120×50). Set size works for local and Fleet agents, requires an administrator, and is never reapplied automatically, so press it again after a runtime restart (#314).
 
 ### Changed
-- Observer now retries viewing automatically when an Agent resize interrupts attachment (`target_size_changed`).
+- Observer now retries viewing automatically when an Agent resize interrupts attachment (`target_size_changed`) (#314).
+
+### Fixed
+- Observer: the mouse wheel now scrolls a terminal that is taller than the panel, including when the Agent's full-screen app or Zellij has mouse reporting on; wheel events never reach the Agent (#313).
 
 ## [0.6.1] - 2026-09-28
 
