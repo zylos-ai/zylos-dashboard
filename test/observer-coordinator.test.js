@@ -141,3 +141,21 @@ test('history status checks fresh desired state and metadata without full verifi
   assert.equal((await coordinator.historyStatus()).desired.enabled, false);
   assert.equal(inspected, 2);
 });
+
+test('remembered agent size defaults, validates, and persists beside lifecycle state', async (t) => {
+  const { configPath } = fixture(t, { untouched: true, observer: { enabled: true, generation: 3 } });
+  const coordinator = new ObserverCoordinator({ configPath, installer: {} });
+  assert.deepEqual(await coordinator.agentSize(), { cols: 120, rows: 50 });
+  assert.deepEqual(await coordinator.saveAgentSize({ cols: 132, rows: 60 }), { cols: 132, rows: 60 });
+  assert.deepEqual(await coordinator.agentSize(), { cols: 132, rows: 60 });
+  const saved = readConfig(configPath);
+  assert.deepEqual(saved.observer, { enabled: true, generation: 3, agentSize: { cols: 132, rows: 60 } });
+  assert.equal(saved.untouched, true);
+
+  for (const agentSize of [{ cols: 10, rows: 50 }, { cols: 120, rows: 200 }, { cols: '120', rows: 50 }, 'large']) {
+    fs.writeFileSync(configPath, JSON.stringify({ observer: { agentSize } }));
+    assert.deepEqual(await coordinator.agentSize(), { cols: 120, rows: 50 });
+  }
+  fs.rmSync(configPath);
+  assert.deepEqual(await coordinator.agentSize(), { cols: 120, rows: 50 });
+});

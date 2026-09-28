@@ -48,12 +48,13 @@ Once enabled, open the Observer tab. The first viewer starts a private Observer
 generation attached read-only to the active runtime's tmux session. Keyboard,
 paste and terminal input are not forwarded. Observer follows the agent terminal
 width and height, including its tmux status lines, with a shared two-second
-read-only poll while viewers are connected. Size changes are applied only to
-Observer's private terminal, without sending resize commands to the agent.
+read-only poll while viewers are connected. Following a size change resizes only
+Observer's private terminal; the agent window changes only through Set size
+(below).
 Startup measures the agent window before attaching and checks it again after
-attachment. If its dimensions changed, Observer disconnects and reports an
-error; it does not try to restore the agent window. This check also catches a
-concurrent resize by another client, so retry viewing after the window settles.
+attachment. If its dimensions changed, Observer disconnects without restoring
+the agent window and retries viewing automatically. This check also catches a
+concurrent resize by another client.
 The guard applies only during startup: if an ordinary client enlarges the Agent
 window and disconnects before the next two-second poll, tmux may return the
 window to Observer's previous size.
@@ -63,6 +64,25 @@ In History, session choices include their start time in your browser’s local
 time zone, making sessions with identical titles easier to distinguish.
 Observer still displays terminal contents, so viewers must be trusted to see
 anything shown by the agent.
+
+### Setting the agent terminal size
+
+A detached agent tmux session usually stays at 80×24. In the Live view, enter a
+width and height and select **Set size** to resize the agent's tmux window.
+Height excludes the tmux status line; Observer shows the window plus that line.
+Limits are 20–500 columns and 5 rows up to a total of 200 rows including status
+lines. The Dashboard resizes the window, reads the size back, and only then
+remembers the value in its `config.json` (`observer.agentSize`, default
+120×50), so each Dashboard remembers the size for its own agent. Connected
+viewers follow within the two-second poll.
+
+Set size is an administrator write: cookie sessions must pass the same-origin
+check, and Fleet targets require administrator credentials for that Dashboard.
+It is refused while an Observer viewer is attaching; retry after it connects.
+tmux fixes a resized window at that size (`window-size manual`), so it no longer
+follows ordinary clients that attach later. A runtime restart creates a new
+session at the tmux default size; Observer does not reapply the remembered size,
+so select Set size again. Observer never resizes the agent on its own.
 
 Viewing uses short-lived leases tied to the authenticated session and target.
 Closing the last viewer stops the private generation after the idle grace period

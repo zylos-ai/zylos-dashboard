@@ -1,9 +1,10 @@
 import { isSameOriginRequest } from './request-origin.js';
 import { observerFrameDocument } from './observer-frame.js';
-import { sendJson } from './http.js';
+import { readJsonBody, sendJson } from './http.js';
 import { ObserverManagerError } from './observer-manager.js';
 import { ObserverUpstream } from './observer-upstream.js';
 import { ObserverSizeMonitor } from './observer-size-monitor.js';
+import { validAgentSize } from '../../public/js/observer-size.js';
 import {
   acceptObserverWebSocket,
   rejectObserverUpgrade,
@@ -33,6 +34,13 @@ function parseProtocol(value) {
   return LEASE_ID_PATTERN.test(leaseId) ? leaseId : null;
 }
 
+function parseAgentSize(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const keys = Object.keys(body);
+  if (keys.length !== 2 || !keys.includes('cols') || !keys.includes('rows')) return null;
+  return validAgentSize(body) ? { cols: body.cols, rows: body.rows } : null;
+}
+
 function errorStatus(error) {
   if (error instanceof ObserverHttpError) return error.status;
   switch (error?.code) {
@@ -47,7 +55,11 @@ function errorStatus(error) {
     case 'artifact_unavailable':
     case 'not_installed': return 404;
     case 'capacity_exceeded': return 429;
-    case 'lease_in_use': return 409;
+    case 'lease_in_use':
+    case 'agent_session_unavailable':
+    case 'observer_starting': return 409;
+    case 'invalid_size': return 400;
+    case 'agent_resize_failed': return 500;
     case 'target_mismatch': return 400;
     case 'unsupported_platform': return 501;
     default: return 503;
@@ -77,6 +89,7 @@ export class ObserverService {
     this.sizeMonitor = sizeMonitor || new ObserverSizeMonitor();
     this.sizeMonitor.onChange = (size, active) => this._resizeStreams(size, active);
     this._startup = null;
+    this._agentResize = Promise.resolve();
     this._initialized = false;
     this.startupError = null;
     this.containment.on?.('failure', (error, active) => {
@@ -115,6 +128,28 @@ export class ObserverService {
   async _ready({ allowRecovery = false } = {}) {
     await this.startup();
     if (this.startupError && !allowRecovery) throw this.startupError;
+  }
+
+  // Serialized so the remembered size always matches the last applied resize.
+  _setAgentSize(size) {
+    const operation = async () => {
+      if (this.manager.isStarting()) throw new ObserverHttpError(409, 'observer_starting');
+      let applied;
+      try {
+        applied = await this.containment.resizeAgent({ runtime: this.manager.runtime, ...size });
+      } catch (error) {
+        if (error?.code === 'target_unavailable') throw new ObserverHttpError(409, 'agent_session_unavailable');
+        if (['invalid_size', 'unsupported_platform', 'unsupported_runtime'].includes(error?.code)) throw error;
+        throw new ObserverHttpError(500, 'agent_resize_failed');
+      }
+      const agentSize = await this.coordinator.saveAgentSize(size);
+      // Viewers follow on the next poll; polling now only shortens the wait.
+      if (this.sizeMonitor.active) this.sizeMonitor.poll();
+      return { agentSize, applied };
+    };
+    const result = this._agentResize.then(operation, operation);
+    this._agentResize = result.catch(() => {});
+    return result;
   }
 
   async _resizeStreams(size, active) {
@@ -187,7 +222,21 @@ export class ObserverService {
       if (pathname === '/api/observer/status' && req.method === 'GET') {
         await this._ready({ allowRecovery: true });
         const status = await this.coordinator.status();
-        sendJson(res, 200, { ...publicStatus(status), startupError: this.startupError?.code || null, runtime: this.manager.runtimeStatus() });
+        sendJson(res, 200, {
+          ...publicStatus(status),
+          startupError: this.startupError?.code || null,
+          runtime: this.manager.runtimeStatus(),
+          agentSize: await this.coordinator.agentSize(),
+        });
+        return true;
+      }
+      if (pathname === '/api/observer/agent-size' && req.method === 'POST') {
+        await this._ready();
+        let body;
+        try { body = await readJsonBody(req, 1024); } catch { throw new ObserverHttpError(400, 'invalid_size'); }
+        const size = parseAgentSize(body);
+        if (!size) throw new ObserverHttpError(400, 'invalid_size');
+        sendJson(res, 200, await this._setAgentSize(size));
         return true;
       }
       if (pathname === '/api/observer/install' && req.method === 'POST') {

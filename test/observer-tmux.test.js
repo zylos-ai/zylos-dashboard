@@ -720,3 +720,59 @@ test('startGeneration waits for failed-guard cleanup before propagating the erro
   finishCleanup(); await rejected;
   assert.equal(completed, true);
 });
+
+function agentTmux({ status = 'on', applied = null } = {}) {
+  const calls = [];
+  let size = { cols: 80, rows: 24 };
+  const exec = async (file, args) => {
+    calls.push([file, args]);
+    const format = args.at(-1);
+    if (args.includes('has-session')) return { stdout: '' };
+    if (format === '#{socket_path}') return { stdout: '/tmp/agent.sock\n' };
+    if (format === '#{status}') return { stdout: `${status}\n` };
+    if (args.includes('resize-window')) {
+      size = applied || { cols: Number(args[args.indexOf('-x') + 1]), rows: Number(args[args.indexOf('-y') + 1]) };
+      return { stdout: '' };
+    }
+    if (format === '#{window_width} #{window_height} #{status}') return { stdout: `${size.cols} ${size.rows} ${status}\n` };
+    throw new Error(`unexpected tmux call ${args.join(' ')}`);
+  };
+  return { calls, exec };
+}
+
+test('resizeAgent resizes only the runtime session on its own socket and verifies the result', async (t) => {
+  const tmux = agentTmux();
+  const f = await fixture(t, { exec: tmux.exec, tmuxPath: '/usr/bin/tmux' });
+  assert.deepEqual(await f.adapter.resizeAgent({ runtime: 'claude', cols: 132, rows: 60 }), { cols: 132, rows: 60, statusLines: 1 });
+  assert.ok(tmux.calls.every(([file]) => file === '/usr/bin/tmux'));
+  const resize = tmux.calls.find(([, args]) => args.includes('resize-window'))[1];
+  assert.deepEqual(resize, ['-N', '-S', '/tmp/agent.sock', 'resize-window', '-t', '=claude-main:', '-x', '132', '-y', '60']);
+  const codex = agentTmux();
+  f.adapter.exec = codex.exec;
+  await f.adapter.resizeAgent({ runtime: 'codex', cols: 100, rows: 40 });
+  assert.ok(codex.calls.find(([, args]) => args.includes('resize-window'))[1].includes('=codex-main:'));
+});
+
+test('resizeAgent rejects heights that overflow with the status line and unverified results', async (t) => {
+  const tall = agentTmux({ status: '3' });
+  const f = await fixture(t, { exec: tall.exec });
+  await assert.rejects(f.adapter.resizeAgent({ runtime: 'claude', cols: 120, rows: 198 }), { code: 'invalid_size' });
+  assert.equal(tall.calls.some(([, args]) => args.includes('resize-window')), false);
+
+  const clamped = agentTmux({ applied: { cols: 120, rows: 45 } });
+  f.adapter.exec = clamped.exec;
+  await assert.rejects(f.adapter.resizeAgent({ runtime: 'claude', cols: 120, rows: 50 }), { code: 'agent_resize_failed' });
+  await assert.rejects(f.adapter.resizeAgent({ runtime: 'other', cols: 120, rows: 50 }), { code: 'unsupported_runtime' });
+});
+
+test('resizeAgent reports a missing Agent session without resizing', async (t) => {
+  const calls = [];
+  const f = await fixture(t, { exec: async (file, args) => {
+    calls.push(args);
+    if (args.includes('has-session')) throw Object.assign(new Error("can't find session"), { code: 1 });
+    if (args.includes('list-sessions')) return { stdout: 'other\n' };
+    throw new Error('unexpected');
+  } });
+  await assert.rejects(f.adapter.resizeAgent({ runtime: 'claude', cols: 120, rows: 50 }), { code: 'target_unavailable' });
+  assert.equal(calls.some((args) => args.includes('resize-window')), false);
+});

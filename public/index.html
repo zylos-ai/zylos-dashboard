@@ -7,12 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=51">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=52">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="__ASSET_ROOT__/js/markdown-it.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=72"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=73"></script>
 </head>
 <body>
 <header class="app-header">
@@ -350,9 +350,20 @@
         <h2 data-i18n="observer.title">Terminal Observer</h2>
         <p id="observer-target"></p>
       </div>
-      <div class="observer-view-switch" role="group" aria-label="Observer view">
-        <button class="action-btn" data-observer-view="live" aria-pressed="true" data-i18n="observer.history.live">Live terminal</button>
-        <button class="action-btn" data-observer-view="history" aria-pressed="false" data-i18n="observer.history.title">History</button>
+      <div class="observer-toolbar-actions">
+        <form class="observer-size-form" id="observer-size-form" novalidate>
+          <label><span data-i18n="observer.size.cols">Width</span>
+            <input type="number" id="observer-size-cols" min="20" max="500" step="1" value="120" required></label>
+          <span aria-hidden="true">×</span>
+          <label><span data-i18n="observer.size.rows">Height</span>
+            <input type="number" id="observer-size-rows" min="5" max="199" step="1" value="50" required></label>
+          <button class="action-btn" type="submit" id="observer-size-apply" data-i18n="observer.size.apply" data-i18n-title="observer.size.hint">Set size</button>
+          <span class="observer-size-status" id="observer-size-status" role="status" aria-live="polite"></span>
+        </form>
+        <div class="observer-view-switch" role="group" aria-label="Observer view">
+          <button class="action-btn" data-observer-view="live" aria-pressed="true" data-i18n="observer.history.live">Live terminal</button>
+          <button class="action-btn" data-observer-view="history" aria-pressed="false" data-i18n="observer.history.title">History</button>
+        </div>
       </div>
     </div>
     <div class="observer-notice" id="observer-notice" data-state="idle" data-i18n="observer.connecting">Connecting to read-only terminal…</div>

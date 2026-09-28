@@ -72,7 +72,7 @@ function isAllowedProxyWrite(method, suffix) {
   return method === 'POST' && /^\/api\/actions\/[^/]+$/.test(suffix) ||
     method === 'PUT' && (suffix === '/api/settings' || suffix === '/api/memory/file') ||
     method === 'POST' && (
-      /^\/api\/observer\/(?:install|enable|disable|leases)$/.test(suffix) ||
+      /^\/api\/observer\/(?:install|enable|disable|leases|agent-size)$/.test(suffix) ||
       /^\/api\/observer\/leases\/[A-Za-z0-9_-]{32}\/(?:renew|release)$/.test(suffix)
     ) ||
     method === 'DELETE' && suffix === '/api/observer/install';

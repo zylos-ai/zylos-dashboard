@@ -19,6 +19,8 @@ class UnsupportedObserverContainment extends EventEmitter {
 
   async startGeneration() { return this.verifyHelpers(); }
 
+  async resizeAgent() { return this.verifyHelpers(); }
+
   async stopGeneration({ reason = 'stop' } = {}) { return { stopped: true, reason, count: 0 }; }
 
   async reconcilePersisted() {

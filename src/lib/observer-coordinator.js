@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { mutateConfig } from './config-mutation.js';
+import { DEFAULT_AGENT_SIZE, validAgentSize } from '../../public/js/observer-size.js';
 
 export class ObserverLifecycleError extends Error {
   constructor(code, message, cause) {
@@ -60,6 +61,26 @@ export class ObserverCoordinator {
       current.observer = { ...(current.observer || {}), ...patch };
     });
     return observerDesired(config);
+  }
+
+  // Remembered Set size value, independent of lifecycle desired state.
+  async agentSize() {
+    let config;
+    try {
+      config = JSON.parse(await fs.promises.readFile(this.configPath, 'utf8'));
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { ...DEFAULT_AGENT_SIZE };
+      throw new ObserverLifecycleError('invalid_config', `Unable to read Observer agent size: ${error.message}`, error);
+    }
+    const value = config?.observer?.agentSize;
+    return validAgentSize(value) ? { cols: value.cols, rows: value.rows } : { ...DEFAULT_AGENT_SIZE };
+  }
+
+  async saveAgentSize({ cols, rows }) {
+    await mutateConfig(this.configPath, (current) => {
+      current.observer = { ...(current.observer || {}), agentSize: { cols, rows } };
+    });
+    return { cols, rows };
   }
 
   async status() {

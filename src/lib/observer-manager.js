@@ -312,6 +312,11 @@ export class ObserverManager {
     throw originalError;
   }
 
+  // True while a generation is attaching; its worker aborts on Agent resizes.
+  isStarting() {
+    return this._starting !== null;
+  }
+
   runtimeStatus() {
     return {
       state: this._retiring ? 'retiring' : this._runtimeError ? 'blocked' :

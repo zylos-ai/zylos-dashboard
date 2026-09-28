@@ -1,5 +1,5 @@
 import { ObserverHistory } from './observer-history.js?v=2';
-import { validObserverSize } from './observer-size.js';
+import { validAgentSize, validObserverSize } from './observer-size.js';
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
@@ -66,7 +66,8 @@ const state = {
     statusGeneration: 0,
     lifecycleGeneration: 0,
     lifecyclePending: null,
-    statusRequest: null
+    statusRequest: null,
+    sizePending: null
   },
   memory: {
     tree: null,
@@ -1961,6 +1962,70 @@ function observerSessionCurrent(generation, targetKey) {
   return state.observer.generation === generation && observerTargetKey() === targetKey;
 }
 
+function setObserverSizeStatus(message, status = 'idle') {
+  const el = $('#observer-size-status');
+  if (!el) return;
+  el.textContent = message;
+  el.dataset.state = status;
+}
+
+const OBSERVER_SIZE_ERRORS = new Set(['invalid_size', 'agent_session_unavailable', 'observer_starting', 'agent_resize_failed']);
+
+function observerSizeError(code) {
+  return OBSERVER_SIZE_ERRORS.has(code) ? t(`observer.size.error.${code}`) : t('observer.size.failed', { code });
+}
+
+// Inputs are filled once per target so status refreshes never clobber edits.
+// Producers without agentSize in their status predate Set size: hide it.
+function renderObserverSizeForm(status = state.observer.status) {
+  const form = $('#observer-size-form');
+  if (!form) return;
+  form.hidden = Boolean(state.observer.historyMode) || !validAgentSize(status?.agentSize);
+  const apply = $('#observer-size-apply');
+  if (apply) apply.disabled = remoteIsReadOnly() || Boolean(state.observer.sizePending);
+  const targetKey = observerTargetKey();
+  if (form.hidden || form.dataset.targetKey === targetKey) return;
+  form.dataset.targetKey = targetKey;
+  $('#observer-size-cols').value = String(status.agentSize.cols);
+  $('#observer-size-rows').value = String(status.agentSize.rows);
+  setObserverSizeStatus('');
+}
+
+async function applyObserverSize(event) {
+  event.preventDefault();
+  if (remoteIsReadOnly() || state.observer.sizePending) return;
+  const size = {
+    cols: Number($('#observer-size-cols')?.value),
+    rows: Number($('#observer-size-rows')?.value)
+  };
+  if (!validAgentSize(size)) {
+    setObserverSizeStatus(t('observer.size.error.invalid_size'), 'error');
+    return;
+  }
+  const targetKey = observerTargetKey();
+  const pending = state.observer.sizePending = { targetKey };
+  renderObserverSizeForm();
+  setObserverSizeStatus(t('observer.size.applying'), 'pending');
+  try {
+    const resp = await fetch(observerEndpoint('/api/observer/agent-size'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(size)
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (observerTargetKey() !== targetKey) return;
+    if (!resp.ok || !validAgentSize(data.agentSize)) {
+      setObserverSizeStatus(observerSizeError(data.error || `http_${resp.status}`), 'error');
+      return;
+    }
+    if (state.observer.status) state.observer.status.agentSize = data.agentSize;
+    setObserverSizeStatus(t('observer.size.applied', data.agentSize), 'done');
+  } catch {
+    if (observerTargetKey() === targetKey) setObserverSizeStatus(observerSizeError('network'), 'error');
+  } finally {
+    if (state.observer.sizePending === pending) state.observer.sizePending = null;
+    renderObserverSizeForm();
+  }
+}
+
 function syncObserverSize(size) {
   if (!validObserverSize(size)) return;
   state.observer.channel?.postMessage({ type: 'size', cols: size.cols, rows: size.rows });
@@ -1987,7 +2052,7 @@ function observerRetryable(error) {
   if ([401, 403].includes(error?.status)) return false;
   if (error?.status === 429) return true;
   return !error?.code && !error?.status ||
-    ['upstream_unreachable', 'target_unavailable', 'operation_obsolete', 'lease_not_found', 'lease_expired', 'lease_mismatch'].includes(error?.code);
+    ['upstream_unreachable', 'target_unavailable', 'target_size_changed', 'operation_obsolete', 'lease_not_found', 'lease_expired', 'lease_mismatch'].includes(error?.code);
 }
 
 async function recoverObserver(error) {
@@ -2494,9 +2559,11 @@ function initObserverControls() {
           control.setAttribute('aria-pressed', String(control === button));
         });
         state.observer.history.setActive(historyMode);
+        renderObserverSizeForm();
       });
     });
   }
+  $('#observer-size-form')?.addEventListener('submit', (event) => { applyObserverSize(event).catch(() => {}); });
 
 }
 
@@ -3695,6 +3762,7 @@ function renderObserverStatus(status = state.observer.status) {
   const tab = $('#observer-tab');
   const available = status?.state === 'installed' && status.desired?.enabled === true && !recoveryReason && !remoteIsReadOnly();
   if (tab) tab.hidden = !available;
+  renderObserverSizeForm(status);
   const stateEl = settingsModal?.querySelector('#observer-settings-state');
   const platformEl = settingsModal?.querySelector('#observer-settings-platform');
   if (stateEl) stateEl.textContent = observerStatusLabel(status);

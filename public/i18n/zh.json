@@ -473,5 +473,16 @@
   "observer.history.field_body": "正文",
   "observer.history.field_input": "输入",
   "observer.history.field_output": "输出",
-  "observer.history.field_raw": "记录"
+  "observer.history.field_raw": "记录",
+  "observer.size.cols": "宽",
+  "observer.size.rows": "高",
+  "observer.size.apply": "Set size",
+  "observer.size.hint": "设置 Agent 终端尺寸（tmux 窗口，不含状态栏）。设定值会记住；运行时重启后需再按一次 Set size。",
+  "observer.size.applying": "设置中…",
+  "observer.size.applied": "已设置为 {cols}×{rows}",
+  "observer.size.error.invalid_size": "宽需为 20–500，高需为 5–199",
+  "observer.size.error.agent_session_unavailable": "Agent 终端未运行，请在其恢复后重试",
+  "observer.size.error.observer_starting": "Observer 正在连接，请稍后再试",
+  "observer.size.error.agent_resize_failed": "设置失败，记住的尺寸未改变",
+  "observer.size.failed": "设置失败（{code}）"
 }

@@ -15,7 +15,7 @@ import { shutdownDashboardTransports } from '../src/lib/dashboard-shutdown.js';
 
 const LEASE_ID = 'a'.repeat(32);
 
-function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null, sizeMonitor } = {}) {
+function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null, sizeMonitor, resizeAgent, starting = false } = {}) {
   const context = { kind: 'cookie', principalId: 'browser', scope: 'admin' };
   const apiContext = { kind: 'api', principalId: 'api-admin', scope: 'admin' };
   const readContext = { kind: 'api', principalId: 'api-read', scope: 'read' };
@@ -24,12 +24,23 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     resizes: [],
     async resize(active, size) { assert.equal(active, this.active); this.resizes.push(size); return true; },
     async reconcilePersisted() { return []; },
+    agentResizes: [],
+    async resizeAgent(request) {
+      this.agentResizes.push(request);
+      if (resizeAgent) return resizeAgent(request);
+      return { cols: request.cols, rows: request.rows, statusLines: 1 };
+    },
   });
   const coordinator = {
+    savedAgentSizes: [],
+    async agentSize() { return this.savedAgentSizes.at(-1) || { cols: 120, rows: 50 }; },
+    async saveAgentSize(size) { this.savedAgentSizes.push(size); return size; },
     async reconcileStartup() { return { state: 'installed', desired: { enabled: true } }; },
     async status() { return { state: 'installed', binaryPath: '/private/zellij', desired: { enabled: true } }; },
   };
   const manager = {
+    runtime: 'claude',
+    isStarting() { return starting; },
     runtimeStatus() { return { state: 'live', error: null }; },
     validateLease(id, supplied) {
       if (id !== LEASE_ID) throw Object.assign(new Error('missing'), { code: 'lease_not_found' });
@@ -75,7 +86,7 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     return upstream;
   };
   const service = new ObserverService({ coordinator, containment, manager, authGate, upstreamFactory, sizeMonitor });
-  return { service, upstreams, resolveConnect };
+  return { service, upstreams, resolveConnect, containment, coordinator };
 }
 
 async function waitUntil(check, timeoutMs = 2_000) {
@@ -891,4 +902,118 @@ test('generation replacement during private resize fences upstream and browser d
   finish(true); await pending;
   assert.deepEqual(events, []);
   f.service.streams.clear();
+});
+
+test('Set size resizes the Agent, then remembers the applied size', async () => {
+  const { service, containment, coordinator } = fixture();
+  const app = await startHttp(service);
+  const post = (body, headers = { Cookie: 'admin=1', Origin: app.origin }) => fetch(`${app.origin}/api/observer/agent-size`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  try {
+    const initial = await fetch(`${app.origin}/api/observer/status`, { headers: { Cookie: 'admin=1' } });
+    assert.deepEqual((await initial.json()).agentSize, { cols: 120, rows: 50 });
+
+    const response = await post({ cols: 132, rows: 60 });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      agentSize: { cols: 132, rows: 60 },
+      applied: { cols: 132, rows: 60, statusLines: 1 },
+    });
+    assert.deepEqual(containment.agentResizes, [{ runtime: 'claude', cols: 132, rows: 60 }]);
+    assert.deepEqual(coordinator.savedAgentSizes, [{ cols: 132, rows: 60 }]);
+
+    const status = await fetch(`${app.origin}/api/observer/status`, { headers: { Cookie: 'admin=1' } });
+    assert.deepEqual((await status.json()).agentSize, { cols: 132, rows: 60 });
+
+    const bearer = await post({ cols: 100, rows: 40 }, { Authorization: 'Bearer admin-token' });
+    assert.equal(bearer.status, 200);
+  } finally { await app.close(); }
+});
+
+test('Set size is an admin write guarded by origin and strict size validation', async () => {
+  const { service, containment, coordinator } = fixture();
+  const app = await startHttp(service);
+  const post = (body, headers) => fetch(`${app.origin}/api/observer/agent-size`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+  const admin = { Cookie: 'admin=1', Origin: app.origin };
+  try {
+    const cases = [
+      [{ cols: 120, rows: 50 }, {}, 401, 'unauthorized'],
+      [{ cols: 120, rows: 50 }, { Cookie: 'admin=1' }, 403, 'origin_required'],
+      [{ cols: 120, rows: 50 }, { Cookie: 'admin=1', Origin: 'https://evil.example' }, 403, 'origin_required'],
+      [{ cols: 120, rows: 50 }, { Authorization: 'Bearer read-token' }, 403, 'insufficient_scope'],
+      [{ cols: 19, rows: 50 }, admin, 400, 'invalid_size'],
+      [{ cols: 501, rows: 50 }, admin, 400, 'invalid_size'],
+      [{ cols: 120, rows: 4 }, admin, 400, 'invalid_size'],
+      [{ cols: 120, rows: 200 }, admin, 400, 'invalid_size'],
+      [{ cols: 120.5, rows: 50 }, admin, 400, 'invalid_size'],
+      [{ cols: '120', rows: 50 }, admin, 400, 'invalid_size'],
+      [{ cols: 120 }, admin, 400, 'invalid_size'],
+      [{ cols: 120, rows: 50, target: 'other' }, admin, 400, 'invalid_size'],
+      [[120, 50], admin, 400, 'invalid_size'],
+      ['{not json', admin, 400, 'invalid_size'],
+    ];
+    for (const [body, headers, status, error] of cases) {
+      const response = await post(body, headers);
+      assert.equal(response.status, status, JSON.stringify([body, headers]));
+      assert.deepEqual(await response.json(), { error });
+    }
+    assert.deepEqual(containment.agentResizes, []);
+    assert.deepEqual(coordinator.savedAgentSizes, []);
+  } finally { await app.close(); }
+});
+
+test('Set size failures leave the remembered size unchanged', async () => {
+  const failures = [
+    [Object.assign(new Error('gone'), { code: 'target_unavailable' }), 409, 'agent_session_unavailable'],
+    [Object.assign(new Error('mismatch'), { code: 'agent_resize_failed' }), 500, 'agent_resize_failed'],
+    [Object.assign(new Error('tmux exited 1'), { code: 1 }), 500, 'agent_resize_failed'],
+    [Object.assign(new Error('status too tall'), { code: 'invalid_size' }), 400, 'invalid_size'],
+  ];
+  for (const [error, status, code] of failures) {
+    const { service, coordinator } = fixture({ resizeAgent: async () => { throw error; } });
+    const app = await startHttp(service);
+    try {
+      const response = await fetch(`${app.origin}/api/observer/agent-size`, {
+        method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin }, body: JSON.stringify({ cols: 120, rows: 50 }),
+      });
+      assert.equal(response.status, status);
+      assert.deepEqual(await response.json(), { error: code });
+      assert.deepEqual(coordinator.savedAgentSizes, []);
+    } finally { await app.close(); }
+  }
+});
+
+test('Set size refuses to race an Observer attachment in progress', async () => {
+  const { service, containment } = fixture({ starting: true });
+  const app = await startHttp(service);
+  try {
+    const response = await fetch(`${app.origin}/api/observer/agent-size`, {
+      method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin }, body: JSON.stringify({ cols: 120, rows: 50 }),
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: 'observer_starting' });
+    assert.deepEqual(containment.agentResizes, []);
+  } finally { await app.close(); }
+});
+
+test('concurrent Set size requests persist in the order they were applied', async () => {
+  const releases = [];
+  const { service, coordinator } = fixture({
+    resizeAgent: (request) => new Promise((resolve) => releases.push(() => resolve({ ...request, statusLines: 1 }))),
+  });
+  const first = service._setAgentSize({ cols: 100, rows: 40 });
+  const second = service._setAgentSize({ cols: 140, rows: 45 });
+  await waitUntil(() => releases.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(releases.length, 1, 'second resize must wait for the first');
+  releases[0]();
+  await first;
+  await waitUntil(() => releases.length === 2);
+  releases[1]();
+  await second;
+  assert.deepEqual(coordinator.savedAgentSizes, [{ cols: 100, rows: 40 }, { cols: 140, rows: 45 }]);
 });
