@@ -120,3 +120,10 @@ test('session labels omit absent or invalid time without empty separators or dup
   const startedAt = new Date(new Date().getFullYear(), 0, 2, 3, 4).toISOString();
   assert.equal(history.sessionLabel({ id: 'a', startedAt }), startedAt);
 });
+
+test('history controls align the search row with the session select, not its label', () => {
+  const css = fs.readFileSync('public/css/style.css', 'utf8');
+  assert.match(css, /\.history-controls \{[^}]*align-items: flex-end;/);
+  assert.match(css, /\.history-controls select, \.history-controls input\[type="search"\] \{[^}]*height: 36px;/);
+  assert.match(css, /\.history-controls label \{[^}]*min-height: 36px;/);
+});
