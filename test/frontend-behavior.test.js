@@ -2102,3 +2102,10 @@ test('Observer retries an attachment aborted by a concurrent Agent resize', asyn
   await new Promise(setImmediate);
   assert.equal(h.sockets.length, 1);
 });
+
+test('app.js busts the cached observer-size module whose exports it now needs', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // Static modules are cached for 60s; a new named import from an unversioned
+  // URL can bind to the previous copy and abort the whole module graph.
+  assert.match(app, /import \{ validAgentSize, validObserverSize \} from '\.\/observer-size\.js\?v=2';/);
+});
