@@ -118,6 +118,11 @@ test('Claude model list includes defaults with display names and specific versio
   assert.ok(ids.includes('claude-opus-4-8'), 'specific opus 4.8');
   assert.ok(ids.includes('claude-opus-4-8[1m]'), 'specific opus 4.8 1M');
   assert.ok(ids.includes('claude-haiku-4-5-20251001'), 'specific haiku');
+  for (const id of ['claude-fable-5-1[1m]', 'claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-opus-5[1m]', 'claude-sonnet-5']) {
+    assert.ok(ids.includes(id), `specific 5-series model ${id}`);
+  }
+  assert.ok(!ids.includes('claude-fable-5-1'), 'no 200k fable 5.1 variant — 1M only');
+  assert.ok(!ids.includes('claude-sonnet-5[1m]'), 'Sonnet 5 is natively 1M; no [1m] variant');
 
   const opusDefault = meta.models.find(m => m.id === 'opus');
   assert.ok(opusDefault.display_name, 'opus has display_name');
@@ -125,7 +130,7 @@ test('Claude model list includes defaults with display names and specific versio
   assert.ok(!meta.models.find(m => m.id === 'claude-opus-4-8').display_name, 'specific version has no display_name');
 });
 
-test('Claude effort mappings: xhigh for Fable/Opus 4.8+/aliases, none for Haiku', () => {
+test('Claude effort mappings: xhigh for Fable/Opus 4.8+/Opus 5/Sonnet 5/aliases, none for Haiku', () => {
   const meta = getActionsMeta(
     { runtime: 'claude', zylosDir: '/tmp/zylos-dashboard-missing' },
     {}
@@ -138,6 +143,9 @@ test('Claude effort mappings: xhigh for Fable/Opus 4.8+/aliases, none for Haiku'
   assert.deepStrictEqual(e['opus[1m]'], ['low', 'medium', 'high', 'xhigh']);
   assert.deepStrictEqual(e['claude-opus-4-8'], ['low', 'medium', 'high', 'xhigh']);
   assert.deepStrictEqual(e['claude-opus-4-8[1m]'], ['low', 'medium', 'high', 'xhigh']);
+  for (const id of ['claude-fable-5-1[1m]', 'claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-opus-5[1m]', 'claude-sonnet-5']) {
+    assert.deepStrictEqual(e[id], ['low', 'medium', 'high', 'xhigh'], id);
+  }
   assert.deepStrictEqual(e['claude-opus-4-6'], ['low', 'medium', 'high']);
   assert.deepStrictEqual(e['claude-sonnet-4-6'], ['low', 'medium', 'high']);
   assert.deepStrictEqual(e['haiku'], []);

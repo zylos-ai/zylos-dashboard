@@ -13,7 +13,10 @@ export const DEFAULT_CLAUDE_MODEL_PRICES = {
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1.00, cacheCreation: 20 },
   'claude-mythos-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 20 },
   'claude-mythos-5': { input: 10, output: 50, cacheRead: 1, cacheCreation: 20 },
-  // Current Fast mode rates apply only to these models (pricing checked 2026-09-15).
+  // Current Fast mode rates apply only to these models (pricing checked 2026-09-28).
+  // Opus 5.5 needs its own key: longest-prefix matching would otherwise bill it as
+  // claude-opus-5. Its cache reads are 0.05x input rather than the usual 0.1x.
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.20, cacheCreation: 8, fastModeMultiplier: 2 },
   'claude-opus-5': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10, fastModeMultiplier: 2 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10, fastModeMultiplier: 2 },
   'claude-opus-4': { input: 5, output: 25, cacheRead: 0.50, cacheCreation: 10 },
@@ -22,7 +25,7 @@ export const DEFAULT_CLAUDE_MODEL_PRICES = {
   'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.10, cacheCreation: 2 }
 };
 
-// OpenAI API pricing, USD/1M tokens, checked 2026-09-15:
+// OpenAI API pricing, USD/1M tokens, checked 2026-09-28:
 // https://developers.openai.com/api/docs/pricing
 // GPT-5.6+ writes replace ordinary input at 1.25x. Above 272K total input,
 // the entire request uses long-context prices, including cached/write input.
@@ -40,15 +43,25 @@ function codexPrice(input, output, cacheRead, cacheCreation) {
 
 export const DEFAULT_CODEX_MODEL_PRICES = {
   'gpt-6-astra': codexPrice(10, 50, 1, 12.5),
+  'gpt-6-sol': codexPrice(2, 10, 0.2, 2.5),
+  'gpt-6-luna': codexPrice(0.1, 0.5, 0.01, 0.125),
   'gpt-5.6-sol': codexPrice(4, 20, 0.4, 5),
   'gpt-5.6-terra': codexPrice(2, 12, 0.2, 2.5),
   'gpt-5.6-luna': codexPrice(0.2, 1.2, 0.02, 0.25),
   'gpt-5.6': codexPrice(4, 20, 0.4, 5),
-  // Earlier models have no separate cache-write surcharge.
-  'gpt-5.5': { input: 5, output: 30, cacheRead: 0.50, cacheCreation: 5 },
+  // Earlier models have no separate cache-write surcharge. GPT-5.5 and GPT-5.4
+  // still switch the entire request to long-context prices above 272K input
+  // (standard/batch/flex only; their priority rates below stay flat).
+  'gpt-5.5': {
+    input: 5, output: 30, cacheRead: 0.50, cacheCreation: 5,
+    longContext: { inputTokenThreshold: 272000, input: 10, output: 45, cacheRead: 1, cacheCreation: 10 }
+  },
   'gpt-5.4-mini': { input: 0.75, output: 4.50, cacheRead: 0.075, cacheCreation: 0.75 },
   'gpt-5.4-nano': { input: 0.20, output: 1.25, cacheRead: 0.02, cacheCreation: 0.20 },
-  'gpt-5.4': { input: 2.50, output: 15, cacheRead: 0.25, cacheCreation: 2.50 },
+  'gpt-5.4': {
+    input: 2.50, output: 15, cacheRead: 0.25, cacheCreation: 2.50,
+    longContext: { inputTokenThreshold: 272000, input: 5, output: 22.50, cacheRead: 0.50, cacheCreation: 5 }
+  },
   'gpt-5.3-codex': { input: 1.75, output: 14, cacheRead: 0.175, cacheCreation: 1.75 },
   'gpt-5.2-codex': { input: 1.75, output: 14, cacheRead: 0.175, cacheCreation: 1.75 },
   'gpt-5.1-codex-mini': { input: 0.25, output: 2, cacheRead: 0.025, cacheCreation: 0.25 },
@@ -68,6 +81,8 @@ export const DEFAULT_CODEX_MODEL_PRICES = {
 
 export const DEFAULT_CODEX_PRIORITY_MODEL_PRICES = {
   'gpt-6-astra': codexPrice(20, 100, 2, 25),
+  'gpt-6-sol': codexPrice(4, 20, 0.4, 5),
+  'gpt-6-luna': codexPrice(0.2, 1, 0.02, 0.25),
   'gpt-5.6-sol': codexPrice(8, 40, 0.8, 10),
   'gpt-5.6-terra': codexPrice(4, 24, 0.4, 5),
   'gpt-5.6-luna': codexPrice(0.4, 2.4, 0.04, 0.5),
