@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Observer: **Set size** in the Live view resizes the Agent's tmux window (width and height, excluding the status line). The Dashboard reads the size back before remembering it in `observer.agentSize` (default 120×50). Set size works for local and Fleet agents, requires an administrator, and is never reapplied automatically, so press it again after a runtime restart.
+
+### Changed
+- Observer now retries viewing automatically when an Agent resize interrupts attachment (`target_size_changed`).
+
 ## [0.6.1] - 2026-09-28
 
 ### Fixed

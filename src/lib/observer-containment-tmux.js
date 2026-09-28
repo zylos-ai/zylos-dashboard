@@ -1,4 +1,5 @@
-import { validObserverSize } from '../../public/js/observer-size.js';
+import { OBSERVER_SIZE_LIMITS, validObserverSize } from '../../public/js/observer-size.js';
+import { readObserverGeometry } from './observer-size-monitor.js';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -92,11 +93,10 @@ export class TmuxObserverContainment extends EventEmitter {
     }
   }
 
-  async _publish({ generation, binaryPath, runtime }) {
-    await this.verifyHelpers();
+  // Resolves the Agent session and the absolute socket of the server hosting it.
+  async _resolveTarget(runtime) {
     const target = runtime === 'codex' ? 'codex-main' : runtime === 'claude' ? 'claude-main' : null;
     if (!target) throw failure('unsupported_runtime', 'Unsupported Observer runtime');
-    if (!Number.isSafeInteger(generation) || generation < 0) throw failure('unsafe_runtime_state', 'Invalid generation');
     const preflight = { tmuxSocket: this.tmuxSocket };
     await this._targetAvailable(preflight, target);
     let result;
@@ -107,6 +107,36 @@ export class TmuxObserverContainment extends EventEmitter {
     }
     const tmuxSocket = result.stdout.trim();
     if (!path.isAbsolute(tmuxSocket) || /[\r\n]/.test(tmuxSocket)) throw failure('unsafe_runtime_state', 'Target socket was not resolved');
+    return { target, tmuxSocket };
+  }
+
+  // The only Agent mutation Observer performs, and only on explicit operator
+  // request. tmux switches the window to window-size=manual as a side effect.
+  async resizeAgent({ runtime, cols, rows }) {
+    await this.verifyHelpers();
+    const { target, tmuxSocket } = await this._resolveTarget(runtime);
+    const agent = { target, tmuxPath: this.tmuxPath, tmuxSocket };
+    const status = await this.exec(this.tmuxPath, targetArgs(agent, 'display-message', '-p', '-t', `=${target}:`, '#{status}'));
+    const match = /^(off|on|[2-5])$/.exec(status.stdout.trim());
+    if (!match) throw failure('agent_resize_failed', 'Agent status line could not be read');
+    const statusLines = match[1] === 'off' ? 0 : match[1] === 'on' ? 1 : Number(match[1]);
+    if (rows + statusLines > OBSERVER_SIZE_LIMITS.maxRows) {
+      throw Object.assign(failure('invalid_size', 'Agent size exceeds Observer limits'),
+        { maxRows: OBSERVER_SIZE_LIMITS.maxRows - statusLines });
+    }
+    await this.exec(this.tmuxPath, targetArgs(agent, 'resize-window', '-t', `=${target}:`, '-x', String(cols), '-y', String(rows)));
+    const geometry = await readObserverGeometry(agent, this.exec);
+    if (!geometry || geometry.cols !== cols || geometry.windowRows !== rows) {
+      throw failure('agent_resize_failed', 'Agent window size did not match after resize');
+    }
+    return { cols, rows, statusLines: geometry.statusLines };
+  }
+
+  async _publish({ generation, binaryPath, runtime }) {
+    await this.verifyHelpers();
+    if (!['codex', 'claude'].includes(runtime)) throw failure('unsupported_runtime', 'Unsupported Observer runtime');
+    if (!Number.isSafeInteger(generation) || generation < 0) throw failure('unsafe_runtime_state', 'Invalid generation');
+    const { target, tmuxSocket } = await this._resolveTarget(runtime);
     binaryPath = path.resolve(binaryPath);
     const binaryStat = await fs.promises.lstat(binaryPath);
     if (!binaryStat.isFile() || binaryStat.isSymbolicLink() || !(binaryStat.mode & 0o111)) throw failure('unsafe_runtime_state', 'Invalid Observer binary');

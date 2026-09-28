@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { buildAgentFleetView, liveStateMood, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
-import { validObserverSize } from '../public/js/observer-size.js';
+import { validAgentSize, validObserverSize } from '../public/js/observer-size.js';
 import { agentColor } from '../src/lib/agent-color.js';
 
 function deferred() {
@@ -31,7 +31,12 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     '#observer-notice': { dataset: {} },
     '#observer-frame': { style: {}, contentWindow: { postMessage(_message, _origin, ports) { if (autoFrameReady) queueMicrotask(() => ports[0].peer.onmessage?.({ data: { type: 'ready' } })); } }, parentElement: { dataset: {} } },
     '#observer-target': {},
-    '#observer-tab': { hidden: false }
+    '#observer-tab': { hidden: false },
+    '#observer-size-form': { hidden: false, dataset: {} },
+    '#observer-size-cols': { value: '120' },
+    '#observer-size-rows': { value: '50' },
+    '#observer-size-apply': { disabled: false },
+    '#observer-size-status': { textContent: '', dataset: {} }
   };
   Object.defineProperty(elements['#observer-frame'], 'srcdoc', { set(value) { this.document = value; queueMicrotask(() => this.onload?.()); }, get() { return this.document; } });
   const settings = Object.fromEntries(['status', 'state', 'platform', 'recovery', 'install', 'enable', 'disable', 'uninstall'].map((name) => [
@@ -55,6 +60,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     classList: { toggle() {} }
   }));
   let fetchImpl = async () => { throw new Error('unexpected fetch'); };
+  let readOnly = false;
   const context = {
     state: {
       remoteAgent: null,
@@ -78,6 +84,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     URL,
     AbortController,
     validObserverSize,
+    validAgentSize,
     ArrayBuffer,
     window: {
       location: { href: 'http://fixture.local/dashboard/', pathname: '/' },
@@ -102,7 +109,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     },
     observerEndpoint: (suffix) => `${context.state.remoteAgent ? `/fleet/${context.state.remoteAgent}` : ''}${suffix}`,
     viewedAgentName: () => context.state.remoteAgent || 'self',
-    remoteIsReadOnly: () => false,
+    remoteIsReadOnly: () => readOnly,
     connectSse() {},
     transitionView() {},
     refreshFleet: async () => {},
@@ -134,6 +141,7 @@ function observerUiHarness(app = fs.readFileSync(path.resolve('public/js/app.js'
     listeners,
     sockets,
     setAutoFrameReady(value) { autoFrameReady = value; },
+    setReadOnly(value) { readOnly = value; },
     settings,
     buttons,
     tabs,
@@ -1526,8 +1534,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=72/);
-  assert.match(index, /style\.css\?v=51/);
+  assert.match(index, /app\.js\?v=73/);
+  assert.match(index, /style\.css\?v=52/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -1594,7 +1602,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=72/);
+  assert.match(index, /app\.js\?v=73/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
@@ -2005,4 +2013,103 @@ test('Observer renderer readiness timeout releases lease and schedules recovery'
   assert.ok(h.calls.some(call => call.url.endsWith('/font-timeout/release')));
   assert.equal(h.elements['#observer-notice'].dataset.state, 'connecting');
   assert.ok(h.timeouts.some(timer => timer.delay !== 5000 && !timer.cancelled));
+});
+
+test('Observer Set size fills remembered size once per target and hides for older producers', () => {
+  const h = observerUiHarness();
+  const form = h.elements['#observer-size-form'];
+  h.context.renderObserverSizeForm({ agentSize: { cols: 132, rows: 60 } });
+  assert.equal(form.hidden, false);
+  assert.equal(h.elements['#observer-size-cols'].value, '132');
+  assert.equal(h.elements['#observer-size-rows'].value, '60');
+  h.elements['#observer-size-rows'].value = '70';
+  h.context.renderObserverSizeForm({ agentSize: { cols: 132, rows: 60 } });
+  assert.equal(h.elements['#observer-size-rows'].value, '70', 'status refresh must not clobber an edit');
+
+  h.context.state.remoteAgent = 'Remote';
+  h.context.renderObserverSizeForm({ agentSize: { cols: 100, rows: 40 } });
+  assert.equal(h.elements['#observer-size-rows'].value, '40');
+  h.context.renderObserverSizeForm({ state: 'installed' });
+  assert.equal(form.hidden, true);
+
+  h.context.renderObserverSizeForm({ agentSize: { cols: 100, rows: 40 } });
+  h.context.state.observer.historyMode = true;
+  h.context.renderObserverSizeForm({ agentSize: { cols: 100, rows: 40 } });
+  assert.equal(form.hidden, true);
+});
+
+test('Observer Set size posts to the viewed agent and reports the outcome', async () => {
+  const h = observerUiHarness();
+  const status = h.elements['#observer-size-status'];
+  const apply = h.elements['#observer-size-apply'];
+  h.context.state.observer.status = { agentSize: { cols: 120, rows: 50 } };
+  h.context.state.remoteAgent = 'Remote';
+  h.context.renderObserverSizeForm();
+  h.elements['#observer-size-cols'].value = '132';
+  h.elements['#observer-size-rows'].value = '60';
+  let respond;
+  h.setFetch(() => new Promise((resolve) => { respond = resolve; }));
+  const pending = h.context.applyObserverSize({ preventDefault() {} });
+  assert.equal(apply.disabled, true);
+  assert.equal(h.calls[0].url, '/fleet/Remote/api/observer/agent-size');
+  assert.equal(h.calls[0].options.method, 'POST');
+  assert.equal(h.calls[0].options.body, '{"cols":132,"rows":60}');
+  await h.context.applyObserverSize({ preventDefault() {} });
+  assert.equal(h.calls.length, 1, 'duplicate submit while pending');
+  respond(observerResponse({ agentSize: { cols: 132, rows: 60 }, applied: { cols: 132, rows: 60, statusLines: 1 } }));
+  await pending;
+  assert.equal(apply.disabled, false);
+  assert.equal(status.textContent, 'observer.size.applied');
+  assert.deepEqual(h.context.state.observer.status.agentSize, { cols: 132, rows: 60 });
+
+  for (const [error, expected] of [['observer_starting', 'observer.size.error.observer_starting'], ['not_found', 'observer.size.failed']]) {
+    h.setFetch(async () => observerResponse({ error }, { ok: false, status: 409 }));
+    await h.context.applyObserverSize({ preventDefault() {} });
+    assert.equal(status.textContent, expected);
+    assert.equal(status.dataset.state, 'error');
+  }
+
+  h.setFetch(async () => observerResponse({ error: 'invalid_size', maxRows: 197 }, { ok: false, status: 400 }));
+  await h.context.applyObserverSize({ preventDefault() {} });
+  assert.equal(status.textContent, 'observer.size.error.rows_limit');
+
+  const before = h.calls.length;
+  h.elements['#observer-size-rows'].value = '201';
+  await h.context.applyObserverSize({ preventDefault() {} });
+  assert.equal(h.calls.length, before);
+  assert.equal(status.textContent, 'observer.size.error.invalid_size');
+
+  h.setReadOnly(true);
+  h.elements['#observer-size-rows'].value = '60';
+  await h.context.applyObserverSize({ preventDefault() {} });
+  assert.equal(h.calls.length, before);
+  h.context.renderObserverSizeForm();
+  assert.equal(apply.disabled, true);
+});
+
+test('Observer retries an attachment aborted by a concurrent Agent resize', async () => {
+  const h = observerUiHarness();
+  let attempts = 0;
+  h.setFetch((url) => {
+    if (String(url).endsWith('/status')) return Promise.resolve(observerResponse({ state: 'installed', desired: { enabled: true } }));
+    if (String(url).endsWith('/leases')) {
+      attempts++;
+      return Promise.resolve(attempts === 1
+        ? observerResponse({ error: 'target_size_changed' }, { ok: false, status: 503 })
+        : observerResponse({ id: 'lease-2' }));
+    }
+    return Promise.resolve(observerResponse({}));
+  });
+  await h.context.openObserver();
+  assert.equal(h.timeouts.at(-1).delay, 1000);
+  h.timeouts.at(-1)();
+  await new Promise(setImmediate);
+  assert.equal(h.sockets.length, 1);
+});
+
+test('app.js busts the cached observer-size module whose exports it now needs', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  // Static modules are cached for 60s; a new named import from an unversioned
+  // URL can bind to the previous copy and abort the whole module graph.
+  assert.match(app, /import \{ validAgentSize, validObserverSize \} from '\.\/observer-size\.js\?v=2';/);
 });

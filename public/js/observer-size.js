@@ -6,3 +6,12 @@ export function validObserverSize(value) {
     value.cols >= OBSERVER_SIZE_LIMITS.minCols && value.cols <= OBSERVER_SIZE_LIMITS.maxCols &&
     value.rows >= OBSERVER_SIZE_LIMITS.minRows && value.rows <= OBSERVER_SIZE_LIMITS.maxRows;
 }
+
+// Agent tmux window size set by the operator (Set size). Rows exclude the tmux
+// status line; the server also checks rows + status lines <= maxRows against
+// the live session, since only it knows the status line count.
+export const DEFAULT_AGENT_SIZE = Object.freeze({ cols: 120, rows: 50 });
+
+export function validAgentSize(value) {
+  return validObserverSize(value);
+}

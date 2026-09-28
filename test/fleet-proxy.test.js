@@ -1479,3 +1479,48 @@ test('history GET routes pass Fleet admin gate and retain secret response guard'
     assert.equal(leaked.status, 502); assert.equal((await leaked.json()).error, 'secret_leak_blocked');
   } finally { await hub.close(); await remote.close(); }
 });
+
+test('fleet forwards Observer Set size with its body and relays the producer verdict', async () => {
+  const seen = [];
+  let producerScope = 'admin';
+  const remote = await listen(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    seen.push([req.method, req.url, req.headers.authorization, body]);
+    const allowed = producerScope === 'admin';
+    res.writeHead(allowed ? 200 : 403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(allowed
+      ? { agentSize: JSON.parse(body), applied: { ...JSON.parse(body), statusLines: 1 } }
+      : { error: 'insufficient_scope' }));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'remote-session-token' }
+  });
+  const hub = await listen((req, res) => {
+    req._authContext = { kind: 'cookie', principalId: 'local-admin', scope: 'admin' };
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  const post = (headers) => fetch(`${hub.origin}/fleet/Remote/api/observer/agent-size`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ cols: 132, rows: 60 }),
+  });
+  try {
+    const crossSite = await post({ Origin: 'https://evil.example' });
+    assert.equal(crossSite.status, 403);
+    assert.equal(seen.length, 0);
+
+    const applied = await post({ Origin: hub.origin });
+    assert.equal(applied.status, 200);
+    assert.deepEqual((await applied.json()).agentSize, { cols: 132, rows: 60 });
+    assert.deepEqual(seen[0], ['POST', '/api/observer/agent-size', 'Bearer remote-session-token', '{"cols":132,"rows":60}']);
+
+    producerScope = 'read';
+    const readOnly = await post({ Origin: hub.origin });
+    assert.equal(readOnly.status, 403);
+    assert.deepEqual(await readOnly.json(), { error: 'insufficient_scope' });
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
