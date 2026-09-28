@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-28
+
+### Fixed
+- Observer history: the search box, Search button and "Show internal records" checkbox now line up with the Session select on wide screens instead of sitting above it (#311).
+
 ## [0.6.0] - 2026-09-28
 
 ### Security
