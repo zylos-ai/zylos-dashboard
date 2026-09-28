@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Private tmux lifecycle for Observer: normal shutdown and uninstall clean its resources; after an unexpected Dashboard crash, restart cleans the previous generation before starting a new viewer on demand. Cleanup failures retain recovery records and leave other Dashboard features available (#299).
 
 ### Fixed
+- Price Claude Opus 5.5 at its own rates (including Fast) instead of inheriting Opus 5 prices through prefix matching, add GPT-6 Sol and GPT-6 Luna standard and Priority prices, and apply GPT-5.5/GPT-5.4 long-context rates to standard requests above 272K input tokens. Stored usage is not repriced.
 - Observer presets now all use 40 rows (80×40, 110×40, 140×40), with one shared definition for the upstream client, renderer and controls.
 - Observer cookie origin checks now work behind multiple proxies without trusting a forwarded protocol, using browser Fetch Metadata with an Origin/Host fallback that preserves nondefault ports.
 - Observer now renders Chinese and other non-ASCII text instead of `_`: its read-only tmux client inherited `LC_ALL=C` and was treated as non-UTF-8; it now attaches with `tmux -u`.
