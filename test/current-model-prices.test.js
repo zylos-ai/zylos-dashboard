@@ -38,9 +38,9 @@ function ingest(t, { model = 'gpt-6-astra', serviceTier = 'standard', usage, con
 }
 
 // Independent tariff expectations: OpenAI API pricing, checked 2026-09-15
-// (GPT-6 Sol/Luna checked 2026-09-28).
+// (GPT-6 Sol/Luna checked 2026-09-28; GPT-6.1 Sol checked 2026-09-30).
 for (const [model, shortCost] of [
-  ['gpt-6-astra', 1.76], ['gpt-6-sol', 0.352], ['gpt-6-luna', 0.0176], ['gpt-5.6-sol', 0.704],
+  ['gpt-6-astra', 1.76], ['gpt-6.1-sol', 0.342], ['gpt-6-sol', 0.352], ['gpt-6-luna', 0.0176], ['gpt-5.6-sol', 0.704],
   ['gpt-5.6-terra', 0.3744], ['gpt-5.6-luna', 0.03744], ['gpt-5.6', 0.704]
 ]) {
   for (const [tier, factor] of [['standard', 1], ['priority', 2], ['fast', 2]]) {
@@ -61,6 +61,8 @@ for (const [count, expected] of [[271999, 2.71999], [272000, 2.72], [272001, 5.4
   });
 }
 for (const [model, tier, count, expected] of [
+  ['gpt-6.1-sol', 'standard', 272000, 0.544], ['gpt-6.1-sol', 'standard', 272001, 1.088004],
+  ['gpt-6.1-sol', 'priority', 272001, 2.176008],
   ['gpt-6-sol', 'standard', 272000, 0.544], ['gpt-6-sol', 'standard', 272001, 1.088004],
   ['gpt-6-sol', 'priority', 272001, 2.176008], ['gpt-6-luna', 'standard', 272001, 0.0544002],
   ['gpt-6-luna', 'priority', 272001, 0.1088004]

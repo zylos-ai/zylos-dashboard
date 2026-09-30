@@ -280,23 +280,6 @@ function redirect(res, location) {
   res.end();
 }
 
-function extractHost(value) {
-  try {
-    return new URL(value).host;
-  } catch {
-    return null;
-  }
-}
-
-function verifyLogoutCsrf(req) {
-  const expectedHost = req.headers.host;
-  const origin = req.headers.origin;
-  const referer = req.headers.referer;
-  if (origin) return extractHost(origin) === expectedHost;
-  if (referer) return extractHost(referer) === expectedHost;
-  return false;
-}
-
 function nextTarget(req, base) {
   const raw = req.url || '/';
   const target = raw === '/' ? browserRoot(base) : browserPath(base, raw);
@@ -532,14 +515,8 @@ export class AuthGate {
       sendText(res, 405, 'method not allowed');
       return true;
     }
-    if (this.enabled && !validateSession(getSessionCookie(req))) {
-      redirect(res, browserPath(base, 'login'));
-      return true;
-    }
-    if (!verifyLogoutCsrf(req)) {
-      sendText(res, 403, 'forbidden');
-      return true;
-    }
+    // Logout must always succeed: no origin check (proxies may rewrite Host)
+    // and no session requirement. A forged logout only ends a session.
     destroySession(getSessionCookie(req));
     clearSessionCookie(res, base);
     redirect(res, browserPath(base, 'login'));

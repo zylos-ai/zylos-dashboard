@@ -138,37 +138,41 @@ test('login sets secure cookie and authenticated requests can reach API and SSE'
   }
 });
 
-test('logout requires same-origin POST and respects forwarded prefix', async () => {
+test('logout succeeds without origin checks and respects forwarded prefix', async () => {
   const { origin, server } = await makeServer();
+  const clearCookie = '__Secure-zylos_dashboard_session=; HttpOnly; Secure; SameSite=Strict; Path=/dashboard; Max-Age=0';
+  const loginCookie = async () => (await fetch(`${origin}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form({ password: 'secret' }),
+    redirect: 'manual'
+  })).headers.get('set-cookie');
+  const logout = headers => fetch(`${origin}/logout`, {
+    method: 'POST',
+    headers: { 'X-Forwarded-Prefix': '/dashboard', ...headers },
+    redirect: 'manual'
+  });
   try {
-    const login = await fetch(`${origin}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form({ password: 'secret' }),
-      redirect: 'manual'
-    });
-    const cookie = login.headers.get('set-cookie');
+    // A proxy that rewrites Host (e.g. Cloudflare in front) makes Origin differ.
+    const cookie = await loginCookie();
+    const mismatched = await logout({ Cookie: cookie, Origin: 'https://agent.example.com' });
+    assert.equal(mismatched.status, 302);
+    assert.equal(mismatched.headers.get('location'), '/dashboard/login');
+    assert.equal(mismatched.headers.get('set-cookie'), clearCookie);
+    const revoked = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie }, redirect: 'manual' });
+    assert.notEqual(revoked.status, 200);
 
-    const missingCsrf = await fetch(`${origin}/logout`, {
-      method: 'POST',
-      headers: { Cookie: cookie },
-      redirect: 'manual'
-    });
-    assert.equal(missingCsrf.status, 403);
+    const noHeaders = await logout({ Cookie: await loginCookie() });
+    assert.equal(noHeaders.status, 302);
+    assert.equal(noHeaders.headers.get('set-cookie'), clearCookie);
 
-    const logout = await fetch(`${origin}/logout`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        Origin: origin,
-        'X-Forwarded-Prefix': '/dashboard'
-      },
-      redirect: 'manual'
-    });
-    assert.equal(logout.status, 302);
-    assert.equal(logout.headers.get('location'), '/dashboard/login');
-    assert.equal(logout.headers.get('set-cookie'),
-      '__Secure-zylos_dashboard_session=; HttpOnly; Secure; SameSite=Strict; Path=/dashboard; Max-Age=0');
+    const expired = await logout({ Cookie: '__Secure-zylos_dashboard_session=stale' });
+    assert.equal(expired.status, 302);
+    assert.equal(expired.headers.get('location'), '/dashboard/login');
+    assert.equal(expired.headers.get('set-cookie'), clearCookie);
+
+    const get = await fetch(`${origin}/logout`, { redirect: 'manual' });
+    assert.equal(get.status, 405);
   } finally {
     await closeServer(server);
   }
