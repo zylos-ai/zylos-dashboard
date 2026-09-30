@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Pricing: `gpt-6.1-sol` (standard and Fast, including long-context rates; cached input is $0.10/1M, half of `gpt-6-sol`).
+
+### Fixed
+- Logout always succeeds: it no longer rejects requests whose Origin differs from Host (as happens behind proxies such as Cloudflare that rewrite Host) and no longer requires a valid session; it always clears the session cookie.
+
 ## [0.6.2] - 2026-09-28
 
 ### Added
