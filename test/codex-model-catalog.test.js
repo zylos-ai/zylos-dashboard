@@ -66,6 +66,37 @@ test('unknown or unset configured model rejects effort mutation without writing'
   }
 });
 
+for (const model of ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6']) {
+  test(`${model} is selectable and saves supported effort while rejecting invalid effort`, async () => {
+    // Each fixture represents its own server with independent request dedup state.
+    const { handleAction: isolatedAction } = await import(`../src/lib/actions.js?fixture=${model}`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-family-effort-'));
+    try {
+      fs.mkdirSync(path.join(dir, '.codex'));
+      const configPath = path.join(dir, '.codex', 'config.toml');
+      fs.writeFileSync(configPath, 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n');
+      const config = { runtime: 'codex', zylosDir: dir };
+      const meta = getActionsMeta(config, {});
+      assert.ok(meta.models.some(entry => entry.id === model));
+      assert.ok(meta.efforts_by_model[model].includes('max'));
+      const switched = await isolatedAction('switch-model', { model }, config);
+      assert.equal(switched.ok, true);
+      assert.match(fs.readFileSync(configPath, 'utf8'), new RegExp(`model = "${model.replaceAll('.', '\\.')}"`));
+      const saved = await isolatedAction('switch-effort', { effort: 'max' }, config);
+      assert.equal(saved.ok, true);
+      assert.equal(getActionsMeta(config, {}).current_effort, 'max');
+      const beforeReject = fs.readFileSync(configPath, 'utf8');
+      const invalid = model === 'gpt-5.6' ? 'invented' : 'ultra';
+      const rejected = await isolatedAction('switch-effort', { effort: invalid }, config);
+      assert.equal(rejected.error, 'invalid_effort');
+      assert.equal(fs.readFileSync(configPath, 'utf8'), beforeReject);
+      assert.deepEqual(codexEffortsForModel('gpt-5.6'), codexEffortsForModel('gpt-5.6-sol'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test('production source has no client model cache reader', () => {
   const root = new URL('../src/', import.meta.url);
   for (const entry of fs.readdirSync(root, { recursive: true })) {

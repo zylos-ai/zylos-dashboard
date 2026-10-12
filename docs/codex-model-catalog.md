@@ -13,6 +13,18 @@ max. These are explicit platform options, not a claim about every Codex provider
 Update this catalog when verified provider capabilities change. Runtime display
 keeps the reported name or raw ID, regardless of catalog membership.
 
+The catalog also includes GPT-5.6-Terra and GPT-5.6-Luna with low through max,
+and `gpt-5.6`, the official Sol alias, with Sol's existing Codex effort options.
+These additions cover all GPT-6/GPT-5.6 entries in Dashboard's default pricing
+catalog without deriving capabilities from prices. OpenAI model documentation
+checked 2026-10-12 confirms the alias and Terra/Luna's max effort ceiling:
+[Sol alias](https://developers.openai.com/api/docs/models/gpt-5.6),
+[Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra), and
+[Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna).
+API documentation also lists `none`; this catalog preserves Dashboard's existing
+Codex reasoning controls, which start at low. Provider/account access remains
+subject to the configured connection; listing a model does not grant access.
+
 Configured and running IDs absent from the catalog remain visible in the settings
 options with an empty effort list. A custom model can still be selected; changing
 its effort is rejected until its capabilities are explicitly catalogued. Pricing
