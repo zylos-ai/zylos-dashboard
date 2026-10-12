@@ -1229,7 +1229,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .info-bar:empty { display: none; }
 
-.info-bar-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.info-bar-text { min-width: 0; flex: 1; white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 768px) {
   .info-bar { flex-wrap: wrap; }
   .info-bar-text { white-space: normal; overflow: visible; text-overflow: unset; flex-basis: 100%; }

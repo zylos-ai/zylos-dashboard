@@ -340,7 +340,7 @@ export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {
     daily_cost: statePayload?.daily_cost ?? metricValue(statePayload, 'daily_cost'),
     weekly_cost: statePayload?.weekly_cost ?? null,
     model: runtimeInfo?.model || runtimeInfo?.model_id || null,
-    effort: runtimeInfo?.effort || runtimeInfo?.service_tier || null,
+    effort: runtimeInfo?.effort || null,
     new_session_threshold: statePayload?.new_session_threshold ?? null,
     cpu_pct: numberOrNull(systemMetrics?.cpu_pct),
     mem_pct: memPct(systemMetrics),

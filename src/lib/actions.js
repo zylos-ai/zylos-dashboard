@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DEFAULT_CODEX_MODEL_PRICES } from './config.js';
+import { getCodexModels, codexEffortsForModel } from './codex-models.js';
 import { compareVersions, isNewerVersion } from './version-utils.js';
 
 const execFileAsync = promisify(execFile);
@@ -24,10 +24,6 @@ function codexConfigPath() {
 
 function codexProjectConfigPath(zylosDir) {
   return path.join(zylosDir || path.join(os.homedir(), 'zylos'), '.codex', 'config.toml');
-}
-
-function codexModelsCachePath() {
-  return path.join(codexHome(), 'models_cache.json');
 }
 
 function c4ControlPath(zylosDir) {
@@ -113,30 +109,6 @@ function writeCodexRootString(key, value, zylosDir) {
     ? text.replace(pattern, line)
     : `${line}\n${text}`;
   fs.writeFileSync(configPath, text.endsWith('\n') ? text : text + '\n', { mode: 0o600 });
-}
-
-export function readCodexModels() {
-  try {
-    const data = JSON.parse(fs.readFileSync(codexModelsCachePath(), 'utf8'));
-    if (Array.isArray(data.models)) {
-      return data.models
-        .filter(m => m?.visibility !== 'hide' && typeof m.slug === 'string' && m.slug)
-        .map(m => ({
-          id: m.slug,
-          display_name: m.display_name || m.slug,
-          default_effort: m.default_reasoning_level || null,
-          efforts: Array.isArray(m.supported_reasoning_levels)
-            ? m.supported_reasoning_levels.map(e => e?.effort).filter(Boolean)
-            : []
-        }));
-    }
-  } catch { /* fall back below */ }
-  return Object.keys(DEFAULT_CODEX_MODEL_PRICES).map(id => ({
-    id,
-    display_name: id,
-    default_effort: 'medium',
-    efforts: ['low', 'medium', 'high', 'xhigh']
-  }));
 }
 
 function log(reqId, msg) {
@@ -328,10 +300,11 @@ async function switchEffort(reqId, body, config, zylosDir) {
     return { ok: true, message: `Effort changed to ${effort}.`, previous: prev, requires_restart: true, messageKey: 'result.effort_changed', messageParams: { value: effort } };
   }
 
-  const codexModels = readCodexModels();
-  const currentModel = readCodexRootString('model', zylosDir) || codexModels[0]?.id || '';
-  const match = codexModels.find(m => m.id === currentModel);
-  const valid = match?.efforts?.length ? match.efforts : ['low', 'medium', 'high', 'xhigh'];
+  const currentModel = readCodexRootString('model', zylosDir);
+  const valid = codexEffortsForModel(currentModel);
+  if (!valid.length) {
+    return { ok: false, error: 'unknown_model_capabilities', message: 'Effort capabilities are unknown for the configured model.', messageKey: 'result.unknown_model_capabilities' };
+  }
   if (!effort || !valid.includes(effort)) {
     return { ok: false, error: 'invalid_effort', message: `effort must be one of: ${valid.join(', ')}`, messageKey: 'result.invalid_effort', messageParams: { values: valid.join(', ') } };
   }
@@ -472,7 +445,7 @@ async function setThreshold(reqId, body, config, zylosDir) {
 
 export function getActionsMeta(config, runtimeInfo) {
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
-  const codexModels = runtime === 'codex' ? readCodexModels() : [];
+  const codexModels = runtime === 'codex' ? getCodexModels() : [];
 
   const claudeModels = [
     { id: 'fable[1m]', display_name: 'Fable [1M] (latest)' },
@@ -500,25 +473,30 @@ export function getActionsMeta(config, runtimeInfo) {
 
   const models = runtime === 'claude'
     ? claudeModels
-    : codexModels.map(m => ({ id: m.id }));
+    : codexModels.map(m => ({ id: m.id, display_name: m.display_name }));
 
   const efforts_by_model = runtime === 'claude'
     ? Object.fromEntries([
         ...claudeModels.map(m => [m.id, effortsForModel(m.id)]),
         ['*', ['low', 'medium', 'high']]
       ])
-    : Object.fromEntries(codexModels.map(m => [m.id, m.efforts.length ? m.efforts : ['low', 'medium', 'high', 'xhigh']]));
+    : Object.fromEntries(codexModels.map(m => [m.id, m.efforts]));
 
   const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
   const settings = runtime === 'claude' ? readSettings(zylosDir) : {};
   const codexModel = runtime === 'codex' ? readCodexRootString('model', zylosDir) : null;
   const codexEffort = runtime === 'codex' ? readCodexRootString('model_reasoning_effort', zylosDir) : null;
   const currentCodexModel = runtime === 'codex'
-    ? codexModel || runtimeInfo?.model_id || models[0]?.id || null
+    ? codexModel || null
     : null;
-  const currentCodexModelInfo = runtime === 'codex'
-    ? codexModels.find(m => m.id === currentCodexModel) || codexModels[0] || null
-    : null;
+  if (runtime === 'codex') {
+    for (const id of [codexModel, runtimeInfo?.model_id]) {
+      if (id && !models.some(model => model.id === id)) {
+        models.push({ id, display_name: id });
+        efforts_by_model[id] = [];
+      }
+    }
+  }
 
   const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
   const defaultThreshold = runtime === 'codex' ? 75 : 70;
@@ -529,7 +507,9 @@ export function getActionsMeta(config, runtimeInfo) {
     current_model: runtime === 'claude' ? settings.model || null : currentCodexModel,
     current_effort: runtime === 'claude'
       ? runtimeInfo?.effort || settings.effortLevel || null
-      : codexEffort || runtimeInfo?.effort || currentCodexModelInfo?.default_effort || null,
+      : codexEffort || null,
+    running_model: runtime === 'codex' ? runtimeInfo?.model_id || null : null,
+    running_effort: runtime === 'codex' ? runtimeInfo?.effort || null : null,
     models,
     efforts_by_model,
     new_session_threshold: newSessionThreshold

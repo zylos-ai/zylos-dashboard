@@ -1,5 +1,16 @@
 import { isNewerVersion } from './version-utils.js';
 
+export function codexRuntimeFields(reported, configured = {}) {
+  return {
+    model: reported?.model || reported?.model_id || null,
+    model_id: reported?.model_id || null,
+    effort: reported?.reasoning_effort || reported?.effort || null,
+    service_tier: reported?.service_tier || null,
+    configured_model: configured.model || null,
+    configured_effort: configured.effort || null,
+  };
+}
+
 export function applyVersionUpdateFields(info, latest, {
   zylosVersion,
   ccEffectiveVersion,

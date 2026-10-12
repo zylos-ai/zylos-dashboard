@@ -391,11 +391,17 @@ function renderInfoBar() {
     parts.push(zv);
   }
   if (ri.runtime) parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
-  if (ri.model) {
+  if (ri.runtime === 'codex') {
+    parts.push(esc(t('info.runtime_model', { value: ri.model || ri.model_id || t('info.unknown') })));
+    parts.push(esc(t('info.runtime_effort', { value: ri.effort ? effortLabel(ri.effort) : t('info.unknown') })));
+    parts.push(esc(t('info.service_tier', { value: ri.service_tier || t('info.unknown') })));
+    if (ri.configured_model) parts.push(esc(t('info.configured_model', { value: ri.configured_model })));
+    if (ri.configured_effort) parts.push(esc(t('info.configured_effort', { value: effortLabel(ri.configured_effort) })));
+  } else if (ri.model) {
     const short = ri.model.replace(' context', '');
     parts.push(esc(short));
   }
-  if (ri.effort) parts.push(esc(effortLabel(ri.effort)));
+  if (ri.runtime !== 'codex' && ri.effort) parts.push(esc(effortLabel(ri.effort)));
   if (ri.runtime === 'codex') {
     const codexVersion = ri.codex_running || ri.codex_version || ri.codex_installed;
     if (codexVersion) {
@@ -2397,13 +2403,19 @@ function applySse(name, data) {
   if (name === 'fleet' && state.remoteAgent) return;
   if (name === 'state_change') {
     const prevRi = state.dashboardState?.runtime_info;
+    const prevSessionId = state.dashboardState?.session?.session_id;
     // The SSE state payload carries only raw state — the agent identity color
     // (hue) is added by /api/state, not by the broadcast. Preserve it across SSE
     // updates so the single-agent mascot stays tinted to match its Agent Fleet
     // tile instead of falling back to the untinted base art on every update.
     const prevAgent = state.dashboardState?.agent;
     state.dashboardState = data;
-    if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
+    if (!data.runtime_info && prevRi) {
+      const sessionChanged = data.session?.session_id !== prevSessionId;
+      state.dashboardState.runtime_info = prevRi.runtime === 'codex' && sessionChanged
+        ? { ...prevRi, model: null, model_id: null, effort: null, service_tier: null }
+        : prevRi;
+    }
     if (!data.agent && prevAgent) state.dashboardState.agent = prevAgent;
     if (data.new_session_threshold) state.newSessionThreshold = data.new_session_threshold;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
@@ -4098,9 +4110,9 @@ function createActionsModal() {
 
   async function selectAction(sel, action, key) {
     if (sel._inFlight) return;
-    const prev = sel._prevValue || sel.value;
+    const prev = sel._prevValue ?? sel.value;
     const val = sel.value;
-    if (val === prev) return;
+    if (!val || val === prev) return;
     sel._inFlight = true;
     try {
       const ok = await execAction(action, { [key]: val });
@@ -4128,6 +4140,9 @@ function createActionsModal() {
       setCustomModelMode(false);
       if (actionsModal?._renderEffortOptions) actionsModal._renderEffortOptions(modelSel.value);
       await selectAction(modelSel, 'switch-model', 'model');
+      if (actionsModal?._renderEffortOptions) {
+        actionsModal._renderEffortOptions(modelSel.value === '__custom__' ? modelCustom.value.trim() : modelSel.value);
+      }
       if (wasCustom && modelSel.value === '__custom__') setCustomModelMode(true);
     }
   });
@@ -4135,7 +4150,10 @@ function createActionsModal() {
     const val = modelCustom.value.trim();
     if (!val) return;
     const ok = await execAction('switch-model', { model: val });
-    if (ok !== false) modelSel._prevValue = '__custom__';
+    if (ok !== false) {
+      modelSel._prevValue = '__custom__';
+      if (actionsModal?._renderEffortOptions) actionsModal._renderEffortOptions(val);
+    }
   }
   modelCustom.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitCustomModel();
@@ -4226,6 +4244,14 @@ async function openActionsModal() {
     if (effortField) effortField.hidden = false;
 
     modelSel.innerHTML = '';
+    if (meta.runtime === 'codex' && !meta.current_model) {
+      const unset = document.createElement('option');
+      unset.value = '';
+      unset.textContent = t('actions.unset');
+      unset.disabled = true;
+      unset.selected = true;
+      modelSel.appendChild(unset);
+    }
     let currentIsSystem = false;
     for (const m of meta.models || []) {
       const opt = document.createElement('option');
@@ -4255,12 +4281,23 @@ async function openActionsModal() {
     const effortsByModel = meta.efforts_by_model || {};
     modal._renderEffortOptions = (modelId) => {
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
-      if (!list.length) {
+      effortSel.innerHTML = '';
+      effortSel.disabled = !list.length;
+      if (!list.length && meta.runtime !== 'codex') {
         effortField.hidden = true;
         return;
       }
       effortField.hidden = false;
-      effortSel.innerHTML = '';
+      if (meta.runtime === 'codex' && !list.includes(meta.current_effort)) {
+        const unset = document.createElement('option');
+        unset.value = '';
+        unset.textContent = meta.current_effort
+          ? t('actions.effort_unavailable', { value: effortLabel(meta.current_effort) })
+          : t('actions.unset');
+        unset.disabled = true;
+        unset.selected = true;
+        effortSel.appendChild(unset);
+      }
       for (const e of list) {
         const opt = document.createElement('option');
         opt.value = e;
