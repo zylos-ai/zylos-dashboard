@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-12
+
+### Added
+- Maintain an independent Codex model and effort catalog, including the GPT-6 and GPT-5.6 families and the `gpt-5.6` Sol alias (#319).
+
+### Fixed
+- Read the running Codex model, effort and service tier from the current session instead of the client discovery cache or configured defaults; clear missing runtime facts when sessions change (#319).
+- Preserve configured models outside the catalog without falling back to another model, and reject effort changes when capabilities are unknown (#319).
+- Keep the last successfully saved Claude or Codex effort when switching models, cancelling changes or recovering from a failed save (#319).
+- Hide the effort field completely for Claude Haiku and keep Fleet effort separate from service tier (#319).
+
 ## [0.6.3] - 2026-09-30
 
 ### Added
