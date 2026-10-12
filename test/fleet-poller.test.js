@@ -610,6 +610,14 @@ test('fleet poller idle watchdog aborts half-open SSE and starts fallback pollin
   await run;
 });
 
+test('Fleet does not substitute service tier or configured identity for runtime evidence', () => {
+  const record = stateToFleetRecord({ name: 'codex' }, {
+    runtime_info: { runtime: 'codex', model: null, effort: null, service_tier: 'priority', configured_model: 'gpt-5.6-sol', configured_effort: 'high' },
+  });
+  assert.equal(record.model, null);
+  assert.equal(record.effort, null);
+});
+
 test('stateToFleetRecord produces a secret-free self record from local API state', () => {
   const name = 'zylos01';
   const record = stateToFleetRecord({

@@ -39,8 +39,9 @@ test('getActionsMeta exposes model and effort controls for Codex runtime', () =>
   const meta = getActionsMeta({ runtime: 'codex', codex_new_session_threshold: '75', zylosDir }, {});
 
   assert.equal(meta.runtime, 'codex');
-  assert.deepEqual(meta.models, [{ id: 'gpt-5.4' }]);
-  assert.deepEqual(meta.efforts_by_model['gpt-5.4'], ['low', 'medium', 'high']);
+  assert.ok(meta.models.some(model => model.id === 'gpt-6.1-sol'));
+  assert.ok(meta.models.some(model => model.id === 'gpt-5.4'));
+  assert.deepEqual(meta.efforts_by_model['gpt-5.4'], []);
   assert.equal(meta.current_model, 'gpt-5.4');
   assert.equal(meta.current_effort, 'high');
   assert.equal(meta.new_session_threshold, 75);
@@ -67,7 +68,7 @@ test('getActionsMeta ignores user-level Codex root model config', () => withCode
   fs.rmSync(zylosDir, { recursive: true, force: true });
 }));
 
-test('getActionsMeta falls back to Codex runtime model and model default effort', () => withCodexHome((dir) => {
+test('getActionsMeta keeps runtime evidence separate from unset configuration', () => withCodexHome((dir) => {
   fs.writeFileSync(path.join(dir, 'models_cache.json'), JSON.stringify({
     models: [{
       slug: 'gpt-5.5',
@@ -83,8 +84,10 @@ test('getActionsMeta falls back to Codex runtime model and model default effort'
     { model: 'GPT-5.5', model_id: 'gpt-5.5' }
   );
 
-  assert.equal(meta.current_model, 'gpt-5.5');
-  assert.equal(meta.current_effort, 'medium');
+  assert.equal(meta.current_model, null);
+  assert.equal(meta.current_effort, null);
+  assert.equal(meta.running_model, 'gpt-5.5');
+  assert.deepEqual(meta.efforts_by_model['gpt-5.5'], []);
 }));
 
 test('getActionsMeta keeps Claude model and effort controls for Claude runtime', () => {
@@ -164,13 +167,13 @@ test('handleAction stores Codex model and effort in config.toml', async () => {
       }]
     }));
 
-    const modelResult = await handleAction('switch-model', { model: 'gpt-5.5' }, { runtime: 'codex', zylosDir });
+    const modelResult = await handleAction('switch-model', { model: 'gpt-6.1-sol' }, { runtime: 'codex', zylosDir });
     assert.equal(modelResult.ok, true);
     const effortResult = await handleAction('switch-effort', { effort: 'xhigh' }, { runtime: 'codex', zylosDir });
     assert.equal(effortResult.ok, true);
 
     const config = fs.readFileSync(path.join(zylosDir, '.codex', 'config.toml'), 'utf8');
-    assert.match(config, /^model = "gpt-5\.5"$/m);
+    assert.match(config, /^model = "gpt-6\.1-sol"$/m);
     assert.match(config, /^model_reasoning_effort = "xhigh"$/m);
     assert.equal(fs.existsSync(path.join(codexHome, 'config.toml')), false);
 

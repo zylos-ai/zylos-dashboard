@@ -51,10 +51,10 @@ import { shutdownDashboardTransports } from './lib/dashboard-shutdown.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
-import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
+import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
 import { isNewerVersion } from './lib/version-utils.js';
-import { applyVersionUpdateFields } from './lib/runtime-info.js';
+import { applyVersionUpdateFields, codexRuntimeFields } from './lib/runtime-info.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
@@ -262,12 +262,8 @@ function buildRuntimeInfo() {
   const ccRunning = slInfo?.cc_version || null;
 
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
-  const codexModels = activeRuntime === 'codex' ? readCodexModels() : [];
   const codexRuntimeInfo = codexRolloutCollector?.getRuntimeInfo?.() || null;
   const codexRunning = activeRuntime === 'codex' ? codexRuntimeInfo?.cli_version || null : null;
-  const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model', config.zylosDir) : null;
-  const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
-  const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort', config.zylosDir) : null;
   const claudeNeedsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
@@ -281,10 +277,12 @@ function buildRuntimeInfo() {
   const info = {
     zylos_version: zylosVersion,
     runtime: activeRuntime,
-    model: activeRuntime === 'codex' ? codexModelInfo?.display_name || codexRuntimeInfo?.model || codexModelInfo?.id || codexModel : slInfo?.model || null,
-    model_id: activeRuntime === 'codex' ? codexModel || null : slInfo?.model_id || null,
-    effort: activeRuntime === 'codex' ? codexEffort || codexModelInfo?.default_effort || null : slInfo?.effort || null,
-    service_tier: activeRuntime === 'codex' ? codexRuntimeInfo?.service_tier || null : null,
+    ...(activeRuntime === 'codex'
+      ? codexRuntimeFields(codexRuntimeInfo, {
+          model: readCodexRootString('model', config.zylosDir),
+          effort: readCodexRootString('model_reasoning_effort', config.zylosDir),
+        })
+      : { model: slInfo?.model || null, model_id: slInfo?.model_id || null, effort: slInfo?.effort || null, service_tier: null }),
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
     codex_version: codexRunning || codexInstalledVersion || null,
