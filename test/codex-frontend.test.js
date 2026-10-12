@@ -112,6 +112,87 @@ test('action change from an unset value submits only explicit choices and restor
   assert.equal(select.value, '');
 });
 
+for (const runtime of ['claude', 'codex']) {
+  test(`${runtime} effort saves survive model changes, cancellation and rejected saves`, async () => {
+    const meta = {
+      runtime, current_model: 'a', current_effort: runtime === 'codex' ? null : 'medium',
+      models: [{ id: 'a' }, { id: 'b' }, { id: 'no-effort' }],
+      efforts_by_model: { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high'], 'no-effort': [] }
+    };
+    const h = actionsHarness(meta);
+    await h.context.openActionsModal();
+    const effort = h.get('#action-effort');
+    const model = h.get('#action-model');
+    const handlers = {};
+    model.addEventListener = (event, handler) => { handlers[event] = handler; };
+    let accept = true;
+    const calls = [];
+    h.context.execAction = async (action, body) => { calls.push({ action, body }); return accept; };
+    h.context.actionsModal = h.modal;
+    h.context.modelSel = model;
+    h.context.modelCustom = { value: '' };
+    h.context.setCustomModelMode = () => {};
+    vm.runInContext(app.slice(app.indexOf('  async function selectAction('),
+      app.indexOf("  const modelSel = overlay.querySelector('#action-model');")), h.context);
+    vm.runInContext(app.slice(app.indexOf("  modelSel.addEventListener('change', async () => {"),
+      app.indexOf('  async function submitCustomModel()')), h.context);
+
+    effort.value = 'high';
+    await h.context.selectAction(effort, 'switch-effort', 'effort');
+    assert.equal(effort._prevValue, 'high');
+
+    accept = false;
+    model.value = 'b';
+    await handlers.change();
+    assert.equal(model.value, 'a');
+    assert.equal(effort.value, 'high');
+
+    accept = true;
+    model.value = 'b';
+    await handlers.change();
+    assert.equal(model.value, 'b');
+    assert.equal(effort.value, 'high');
+    effort.value = 'low';
+    await h.context.selectAction(effort, 'switch-effort', 'effort');
+    model.value = 'a';
+    await handlers.change();
+    assert.equal(effort.value, 'low');
+
+    accept = false;
+    effort.value = 'medium';
+    await h.context.selectAction(effort, 'switch-effort', 'effort');
+    assert.equal(effort.value, 'low');
+    model.value = 'b';
+    await handlers.change();
+    assert.equal(effort.value, 'low');
+
+    accept = true;
+    model.value = 'no-effort';
+    await handlers.change();
+    assert.equal(effort.disabled, true);
+    model.value = 'a';
+    await handlers.change();
+    assert.equal(effort.disabled, false);
+    assert.equal(effort.value, 'low');
+    assert.equal(calls.filter(call => call.action === 'switch-effort').length, 3);
+  });
+
+  test(`${runtime} rejected first effort save does not change the original selection`, async () => {
+    const current = runtime === 'codex' ? null : 'medium';
+    const h = actionsHarness({ runtime, current_model: 'a', current_effort: current,
+      models: [{ id: 'a' }], efforts_by_model: { a: ['low', 'medium', 'high'] } });
+    await h.context.openActionsModal();
+    h.context.execAction = async () => false;
+    vm.runInContext(app.slice(app.indexOf('  async function selectAction('),
+      app.indexOf("  const modelSel = overlay.querySelector('#action-model');")), h.context);
+    const effort = h.get('#action-effort');
+    effort.value = 'high';
+    await h.context.selectAction(effort, 'switch-effort', 'effort');
+    h.modal._renderEffortOptions('a');
+    assert.equal(effort.value, current || '');
+  });
+}
+
 test('raw SSE session switch clears Codex runtime identity while preserving configuration', () => {
   const context = vm.createContext({ state: { dashboardState: { session: { session_id: 'old' }, runtime_info: {
     runtime: 'codex', model: 'old-model', model_id: 'old-model', effort: 'high', service_tier: 'priority', configured_model: 'configured'

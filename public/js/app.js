@@ -4117,7 +4117,10 @@ function createActionsModal() {
     try {
       const ok = await execAction(action, { [key]: val });
       if (ok === false) sel.value = prev;
-      else sel._prevValue = val;
+      else {
+        sel._prevValue = val;
+        if (action === 'switch-effort') sel._currentEffort = val;
+      }
     } finally {
       sel._inFlight = false;
     }
@@ -4279,6 +4282,7 @@ async function openActionsModal() {
     }
 
     const effortsByModel = meta.efforts_by_model || {};
+    effortSel._currentEffort = meta.current_effort;
     modal._renderEffortOptions = (modelId) => {
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
       effortSel.innerHTML = '';
@@ -4288,11 +4292,11 @@ async function openActionsModal() {
         return;
       }
       effortField.hidden = false;
-      if (meta.runtime === 'codex' && !list.includes(meta.current_effort)) {
+      if (meta.runtime === 'codex' && !list.includes(effortSel._currentEffort)) {
         const unset = document.createElement('option');
         unset.value = '';
-        unset.textContent = meta.current_effort
-          ? t('actions.effort_unavailable', { value: effortLabel(meta.current_effort) })
+        unset.textContent = effortSel._currentEffort
+          ? t('actions.effort_unavailable', { value: effortLabel(effortSel._currentEffort) })
           : t('actions.unset');
         unset.disabled = true;
         unset.selected = true;
@@ -4302,7 +4306,7 @@ async function openActionsModal() {
         const opt = document.createElement('option');
         opt.value = e;
         opt.textContent = effortLabel(e);
-        if (e === meta.current_effort) opt.selected = true;
+        if (e === effortSel._currentEffort) opt.selected = true;
         effortSel.appendChild(opt);
       }
       effortSel._prevValue = effortSel.value;
