@@ -12,7 +12,7 @@ function element() {
   return { textContent: '', innerHTML: '', hidden: false, classList: { add() {}, remove() {}, toggle() {} } };
 }
 
-test('Codex info bar distinguishes unknown runtime evidence from configured values and tier', () => {
+test('compact Codex info bar uses runtime evidence without configured values or tier', () => {
   const bar = element();
   const context = vm.createContext({
     state: { dashboardState: { runtime_info: { runtime: 'codex', configured_model: 'gpt-6.1-sol', configured_effort: 'high' } } },
@@ -21,12 +21,12 @@ test('Codex info bar distinguishes unknown runtime evidence from configured valu
   });
   vm.runInContext(app.slice(app.indexOf('function renderInfoBar()'), app.indexOf('// ─── Render: State')), context);
   context.renderInfoBar();
-  assert.match(bar.innerHTML, /Model: Unknown.*Effort: Unknown.*Tier: Unknown/);
-  assert.match(bar.innerHTML, /Configured model: gpt-6.1-sol.*Configured effort: high/);
-  context.state.dashboardState.runtime_info = { runtime: 'codex', model: 'gpt-6-sol', effort: 'medium', service_tier: 'priority' };
+  assert.match(bar.innerHTML, /Model: Unknown.*Effort: Unknown/);
+  assert.doesNotMatch(bar.innerHTML, /Configured|Tier:|gpt-6.1-sol|high/);
+  context.state.dashboardState.runtime_info = { runtime: 'codex', zylos_version: '0.9.0', model: 'gpt-6-sol', effort: 'medium', service_tier: 'priority', codex_running: '0.162.1', codex_installed: '0.163.0' };
   context.renderInfoBar();
-  assert.match(bar.innerHTML, /Model: gpt-6-sol.*Effort: medium.*Tier: priority/);
-  assert.doesNotMatch(bar.innerHTML, /Configured|gpt-6.1-sol|high/);
+  assert.match(bar.innerHTML, /zylos v0.9.0 · Model: gpt-6-sol · Effort: medium · Codex v0.162.1/);
+  assert.doesNotMatch(bar.innerHTML, /Configured|Tier:|priority|0.163.0|gpt-6.1-sol|high/);
   context.state.dashboardState.runtime_info = { runtime: 'claude', model: 'Opus 4.6', effort: 'high' };
   context.renderInfoBar();
   assert.match(bar.innerHTML, /Opus 4.6 · high/);
