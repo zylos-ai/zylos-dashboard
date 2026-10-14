@@ -390,13 +390,10 @@ function renderInfoBar() {
     if (ri.zylos_update) zv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.zylos_update }))}">↑${esc(ri.zylos_update)}</span>`;
     parts.push(zv);
   }
-  if (ri.runtime) parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
+  if (ri.runtime && ri.runtime !== 'codex') parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
   if (ri.runtime === 'codex') {
     parts.push(esc(t('info.runtime_model', { value: ri.model || ri.model_id || t('info.unknown') })));
     parts.push(esc(t('info.runtime_effort', { value: ri.effort ? effortLabel(ri.effort) : t('info.unknown') })));
-    parts.push(esc(t('info.service_tier', { value: ri.service_tier || t('info.unknown') })));
-    if (ri.configured_model) parts.push(esc(t('info.configured_model', { value: ri.configured_model })));
-    if (ri.configured_effort) parts.push(esc(t('info.configured_effort', { value: effortLabel(ri.configured_effort) })));
   } else if (ri.model) {
     const short = ri.model.replace(' context', '');
     parts.push(esc(short));
@@ -4037,7 +4034,7 @@ function createActionsModal() {
     <div class="action-group">
       <span class="action-group-label">${esc(t('actions.agent_control'))}</span>
       <div class="action-row">
-        <button class="action-btn" data-action="interrupt" type="button">${esc(t('actions.interrupt'))}</button>
+        <button class="action-btn" data-action="chop-chop" type="button">${esc(t('actions.chop_chop'))}</button>
         <button class="action-btn action-warn" data-action="restart-session" type="button">${esc(t('actions.restart'))}</button>
       </div>
     </div>
@@ -4354,7 +4351,7 @@ function updateRestartDot() {
   btn.title = pending ? t('info.pending_restart') : '';
 }
 
-const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
+const CONFIRM_ACTIONS = new Set(['interrupt', 'chop-chop', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
 let countdownTimer = null;
 let pendingConfirmCancel = null;
@@ -4439,6 +4436,7 @@ async function execAction(action, body) {
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
       'interrupt': t('confirm.interrupt'),
+      'chop-chop': t('confirm.chop_chop'),
       'restart-session': t('confirm.restart'),
       'switch-runtime': body?.runtime === 'codex'
         ? t('confirm.switch_runtime_codex')

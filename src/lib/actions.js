@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { getCodexModels, codexEffortsForModel } from './codex-models.js';
 import { compareVersions, isNewerVersion } from './version-utils.js';
 
@@ -145,6 +146,7 @@ export async function handleAction(action, body, config) {
   try {
     switch (action) {
       case 'interrupt': result = await interrupt(reqId, zylosDir); break;
+      case 'chop-chop': result = await chopChop(reqId, zylosDir); break;
       case 'restart-session': result = await restartSession(reqId, config); break;
       case 'switch-runtime': result = await switchRuntime(reqId, body, config); break;
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
@@ -178,6 +180,41 @@ async function interrupt(reqId, zylosDir) {
   } catch (err) {
     log(reqId, `c4-control failed: ${err.message}`);
     return { ok: false, error: 'interrupt_failed', message: err.message, messageKey: 'result.interrupt_failed', messageParams: { error: err.message } };
+  }
+}
+
+async function chopChop(reqId, zylosDir) {
+  const interrupted = await interrupt(reqId, zylosDir);
+  if (!interrupted.ok) {
+    return {
+      ...interrupted, error: 'chop_chop_escape_failed',
+      messageKey: 'result.chop_chop_escape_failed',
+      escape_enqueued: false, continue_enqueued: false
+    };
+  }
+
+  // Match interrupt's enqueue guarantee; delivery to the runtime is asynchronous.
+  await delay(500);
+  const c4Control = c4ControlPath(zylosDir);
+  try {
+    log(reqId, 'enqueue control: continue (priority=0, bypass-state)');
+    await execFileAsync('node', [
+      c4Control, 'enqueue', '--content', 'continue', '--priority', '0',
+      '--bypass-state', '--no-ack-suffix'
+    ], { timeout: 5000 });
+    return {
+      ok: true, message: 'Escape and continue controls queued',
+      messageKey: 'result.chop_chop_ok',
+      escape_enqueued: true, continue_enqueued: true
+    };
+  } catch (err) {
+    log(reqId, `continue enqueue failed: ${err.message}`);
+    return {
+      ok: false, error: 'chop_chop_continue_failed',
+      message: `Escape queued, but continue could not be queued: ${err.message}`,
+      messageKey: 'result.chop_chop_continue_failed', messageParams: { error: err.message },
+      escape_enqueued: true, continue_enqueued: false
+    };
   }
 }
 

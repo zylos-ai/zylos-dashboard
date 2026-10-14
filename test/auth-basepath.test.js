@@ -572,7 +572,7 @@ test('/api/memory is admin-gated and browser sessions can read tree', async () =
   }
 });
 
-test('proxied remote writes require consumer admin API scope or browser session', async () => {
+test('proxied interrupt and chop-chop writes require consumer admin API scope or browser session', async () => {
   let actionHits = 0;
   let memoryWriteHits = 0;
   const remote = await listen((req, res) => {
@@ -585,7 +585,7 @@ test('proxied remote writes require consumer admin API scope or browser session'
       }));
       return;
     }
-    if (req.url === '/api/actions/interrupt') {
+    if (req.url === '/api/actions/interrupt' || req.url === '/api/actions/chop-chop') {
       actionHits += 1;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -654,6 +654,18 @@ test('proxied remote writes require consumer admin API scope or browser session'
     assert.equal(adminWrite.status, 200);
     assert.equal(actionHits, 1);
 
+    const deniedChop = await fetch(`${origin}/fleet/Remote/api/actions/chop-chop`, {
+      method: 'POST', headers: { Authorization: `Bearer ${readToken}`, 'Content-Type': 'application/json' }, body: '{}'
+    });
+    assert.equal(deniedChop.status, 403);
+    assert.equal(actionHits, 1);
+    const allowedChop = await fetch(`${origin}/fleet/Remote/api/actions/chop-chop`, {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' }, body: '{}'
+    });
+    assert.equal(allowedChop.status, 200);
+    assert.deepEqual(await allowedChop.json(), { ok: true });
+    assert.equal(actionHits, 2);
+
     const readMemoryWrite = await fetch(`${origin}/fleet/Remote/api/memory/file?path=identity.md`, {
       method: 'PUT',
       headers: {
@@ -694,7 +706,7 @@ test('proxied remote writes require consumer admin API scope or browser session'
       body: '{}'
     });
     assert.equal(browserWrite.status, 200);
-    assert.equal(actionHits, 2);
+    assert.equal(actionHits, 3);
 
     const browserMemoryWrite = await fetch(`${origin}/fleet/Remote/api/memory/file?path=identity.md`, {
       method: 'PUT',
