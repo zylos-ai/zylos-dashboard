@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-14
+
+### Added
+- Add confirmed Chop-chop control (Chinese: "催一催") to the Actions modal: enqueue Escape through the existing Interrupt path, wait 500ms after successful enqueue, then enqueue exactly `continue`. Report failures separately for each stage while retaining authentication, Fleet permissions and duplicate request protection (#322).
+
+### Changed
+- Simplify the Codex status line to Zylos version, observed model, observed effort and Codex version. Missing runtime evidence stays Unknown rather than falling back to configured values (#322).
+- Preserve the existing Interrupt API while replacing its Actions button with Chop-chop (#322).
+
+### Notes
+- The 500ms wait separates enqueue commands; it does not guarantee runtime delivery timing or that the Agent resumes work (#322).
+
 ## [0.6.4] - 2026-10-12
 
 ### Added
