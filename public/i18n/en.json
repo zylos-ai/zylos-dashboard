@@ -240,6 +240,7 @@
   "actions.upgrade_cc": "Upgrade CC",
   "actions.upgrade_codex": "Upgrade Codex",
   "info.update_available": "v{version} available — click Actions to upgrade",
+  "info.zylos_update_hint": "v{version} available. To upgrade, ask your agent: \"Please upgrade your zylos-core to the latest version.\"",
   "info.restart_available": "v{version} installed — restart to apply",
   "info.version_available": "v{version} available",
   "info.pending_restart": "Pending changes require restart to take effect",

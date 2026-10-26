@@ -1275,6 +1275,12 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   white-space: nowrap;
 }
 .info-bar-update:hover { text-decoration: underline; }
+.info-bar-hint {
+  color: #f59e0b;
+  font-size: 11px;
+  cursor: help;
+  white-space: nowrap;
+}
 
 /* ─── ① Runtime State ─── */
 .runtime-split {

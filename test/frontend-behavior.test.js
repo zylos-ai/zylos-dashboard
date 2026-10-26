@@ -204,6 +204,20 @@ test('Codex runtime renders CLI update badge in info bar and actions modal', () 
   assert.match(app, /ccVer\.classList\.toggle\('action-ver-dot', !!cliUpdate\)/);
 });
 
+test('zylos-core upgrade is left to the agent: no Actions button, info bar shows a non-action hint', () => {
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const en = JSON.parse(fs.readFileSync(path.resolve('public/i18n/en.json'), 'utf8'));
+  const zh = JSON.parse(fs.readFileSync(path.resolve('public/i18n/zh.json'), 'utf8'));
+  assert.doesNotMatch(app, /data-action="upgrade-zylos"/);
+  assert.doesNotMatch(app, /action-zylos-ver/);
+  assert.match(app, /data-action="upgrade-cc"/);
+  assert.match(app, /if \(ri\.zylos_update\) zv \+= ` <span class="info-bar-hint" id="zylos-update-hint"/);
+  assert.doesNotMatch(app, /ri\.zylos_update[^\n]*info-bar-update/);
+  assert.match(app, /e\.target\.closest\('#actions-btn, \.info-bar-update'\)/);
+  assert.match(en['info.zylos_update_hint'], /ask your agent: "Please upgrade your zylos-core to the latest version\."/);
+  assert.match(zh['info.zylos_update_hint'], /请升级你的 zylos-core 到最新版本/);
+});
+
 test('Codex runtime info exposes running, installed, effective, and restart fields', () => {
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
   assert.match(index, /const codexRunning = activeRuntime === 'codex' \? codexRuntimeInfo\?\.cli_version \|\| null : null;/);
