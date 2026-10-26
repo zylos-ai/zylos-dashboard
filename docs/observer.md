@@ -94,6 +94,21 @@ still requires its credential. Dashboard restart cleans the previous generation
 before allowing fresh viewing, without reusing the old session. An enabled
 setting alone does not start a viewer.
 
+Lease creation (`POST /api/observer/leases`) and renewal
+(`POST /api/observer/leases/<id>/renew`) responses include a one-time `ticket`
+alongside the lease `id`, `expiresAt`, `generation` and `resource`. The browser
+opens `/observer/stream` offering the `Sec-WebSocket-Protocol` tokens
+`zylos-observer-v1`, `lease.<id>` and, when it has one, `ticket.<ticket>`, in any
+order; the server always selects `zylos-observer-v1`. A ticket is needed only
+when a cookie-authenticated handshake fails the origin check, for example when
+Chromium (which sends no Fetch Metadata on WebSocket handshakes) connects
+through a proxy that rewrites `Host`. Tickets are bound to the lease and
+principal, expire after 30 seconds and work once; renewal mints a fresh one,
+and only the newest few per lease stay valid. Bearer-token handshakes ignore
+tickets. A Fleet target's relay replaces the ticket with its own for the
+browser-facing hop. See
+[Observer request origins](modules/deployment.md#observer-request-origins).
+
 ## Automatic viewing recovery
 
 Restarting the agent process inside the same tmux pane can leave viewing intact.

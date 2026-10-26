@@ -1,4 +1,5 @@
 import { isSameOriginRequest } from './request-origin.js';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -15,6 +16,8 @@ import { SECRET_PATTERN } from './redaction/dashboard-secret-pattern.js';
 const STREAM_GUARD_TAIL_CHARS = 128;
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 const MAX_MEMORY_WRITE_BODY_BYTES = 2 * 1024 * 1024 + 64 * 1024;
+const OBSERVER_TICKET_TTL_MS = 30_000;
+const MAX_OBSERVER_TICKETS_PER_LEASE = 3;
 
 function decodeAgentName(value) {
   try {
@@ -211,6 +214,8 @@ export class FleetProxy {
     this.authGate = authGate;
     this.observerConnect = observerConnect;
     this.observerLeases = new Map();
+    // Local one-time relay handshake tickets; the upstream hop uses Bearer.
+    this.observerTickets = new Map();
     this.observerStreams = new Set();
   }
 
@@ -221,6 +226,29 @@ export class FleetProxy {
         for (const stream of [...this.observerStreams]) if (stream.leaseId === id) stream.close();
       }
     }
+    for (const [value, ticket] of this.observerTickets) {
+      if (ticket.expiresAt <= now || !this.observerLeases.has(ticket.leaseId)) this.observerTickets.delete(value);
+    }
+  }
+
+  mintObserverTicket(leaseId, binding, now = Date.now()) {
+    const owned = [];
+    for (const [value, ticket] of this.observerTickets) if (ticket.leaseId === leaseId) owned.push(value);
+    // Map order is mint order, so the oldest tickets are dropped first.
+    while (owned.length >= MAX_OBSERVER_TICKETS_PER_LEASE) this.observerTickets.delete(owned.shift());
+    const value = crypto.randomBytes(32).toString('base64url');
+    this.observerTickets.set(value, {
+      leaseId, agentName: binding.agentName, principal: binding.principal, expiresAt: now + OBSERVER_TICKET_TTL_MS,
+    });
+    return value;
+  }
+
+  consumeObserverTicket(value, leaseId, agentName, context) {
+    const ticket = typeof value === 'string' ? this.observerTickets.get(value) : undefined;
+    if (!ticket) return false;
+    this.observerTickets.delete(value);
+    return ticket.expiresAt > Date.now() && ticket.leaseId === leaseId && ticket.agentName === agentName &&
+      samePrincipal(ticket.principal, context);
   }
 
   async handle(req, res, url) {
@@ -427,11 +455,15 @@ export class FleetProxy {
           if (/^[A-Za-z0-9_-]{32}$/.test(lease.id)) {
             const current = this.observerLeases.get(lease.id);
             if (!current || (current.agentName === agent.name && samePrincipal(current.principal, req._authContext))) {
-              this.observerLeases.set(lease.id, {
+              const binding = {
                 agentName: agent.name,
                 principal: req._authContext,
                 expiresAt: Number(lease.expiresAt),
-              });
+              };
+              this.observerLeases.set(lease.id, binding);
+              // The browser presents this local ticket to the relay; any
+              // upstream ticket only serves the remote Dashboard's own check.
+              buffer = Buffer.from(JSON.stringify({ ...lease, ticket: this.mintObserverTicket(lease.id, binding) }));
             }
           }
         } catch { /* malformed upstream response is returned and rejected by the browser */ }
@@ -483,12 +515,17 @@ export class FleetProxy {
     const agent = this.config.fleet?.agents?.find((candidate) => candidate.name === agentName);
     const context = req._authContext;
     const exactOrigin = isSameOriginRequest(req);
-    const protocol = String(req.headers['sec-websocket-protocol'] || '');
-    const leaseId = protocol.split(',').map((value) => value.trim()).find((value) => value.startsWith('lease.'))?.slice(6);
+    const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map((value) => value.trim());
+    const leaseId = protocols.find((value) => value.startsWith('lease.'))?.slice(6);
+    const ticket = protocols.find((value) => value.startsWith('ticket.'))?.slice(7);
     this.pruneObserverLeases();
     const binding = leaseId && this.observerLeases.get(leaseId);
-    if (!agent || !context || context.scope !== 'admin' || (context.kind === 'cookie' && !exactOrigin) || !binding ||
-        binding.agentName !== agentName || !samePrincipal(binding.principal, context)) {
+    // Chromium omits Fetch Metadata on WebSocket handshakes; a one-time ticket
+    // from the origin-checked lease response replaces the Origin/Host fallback.
+    if (!agent || !context || context.scope !== 'admin' || !binding ||
+        binding.agentName !== agentName || !samePrincipal(binding.principal, context) ||
+        (context.kind === 'cookie' && !exactOrigin && (Object.hasOwn(req.headers, 'sec-fetch-site') ||
+          !this.consumeObserverTicket(ticket, leaseId, agentName, context)))) {
       rejectObserverUpgrade(socket, 404, 'lease_not_found');
       return true;
     }

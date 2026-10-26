@@ -427,3 +427,46 @@ for (const action of ['disable', 'uninstall', 'shutdown', 'revoke']) {
     assert.equal(f.containment.active, null);
   });
 }
+
+test('create and renew return one-time WebSocket tickets bound to lease and principal', async () => {
+  const f = fixture({ ticketTtlMs: 100 });
+  const admin = context('admin');
+  const lease = await f.manager.createLease(admin);
+  const other = await f.manager.createLease(context('admin'));
+  assert.match(lease.ticket, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(Object.keys(lease).sort(), ['expiresAt', 'generation', 'id', 'resource', 'ticket']);
+  const renewed = f.manager.renewLease(lease.id, admin);
+  assert.match(renewed.ticket, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(renewed.ticket, lease.ticket);
+
+  assert.equal(f.manager.consumeTicket(lease.ticket, lease.id, context('admin', 'admin-refreshed')), true,
+    'same stable principal may present the ticket');
+  assert.equal(f.manager.consumeTicket(lease.ticket, lease.id, admin), false, 'tickets are single-use');
+  assert.equal(f.manager.consumeTicket(other.ticket, lease.id, admin), false, 'ticket from another lease');
+  assert.equal(f.manager.consumeTicket(renewed.ticket, lease.id, context('other')), false, 'ticket for another principal');
+  assert.equal(f.manager.consumeTicket('x'.repeat(43), lease.id, admin), false, 'garbage ticket');
+  assert.equal(f.manager.consumeTicket(undefined, lease.id, admin), false);
+
+  const late = f.manager.renewLease(lease.id, admin).ticket;
+  f.advance(100);
+  assert.equal(f.manager.consumeTicket(late, lease.id, admin), false, 'expired ticket');
+});
+
+test('tickets are bounded per lease and dropped with their lease', async () => {
+  const f = fixture();
+  const admin = context('admin');
+  const lease = await f.manager.createLease(admin);
+  const tickets = [lease.ticket];
+  for (let i = 0; i < 4; i += 1) tickets.push(f.manager.renewLease(lease.id, admin).ticket);
+  assert.equal(f.manager.tickets.size, 3);
+  assert.equal(f.manager.consumeTicket(tickets[0], lease.id, admin), false, 'oldest ticket was evicted');
+  assert.equal(f.manager.consumeTicket(tickets[4], lease.id, admin), true);
+  f.manager.releaseLease(lease.id, admin);
+  assert.equal(f.manager.tickets.size, 0);
+  assert.equal(f.manager.consumeTicket(tickets[3], lease.id, admin), false);
+
+  const second = await f.manager.createLease(admin);
+  await f.manager.invalidateAndDisable();
+  assert.equal(f.manager.tickets.size, 0);
+  assert.equal(f.manager.consumeTicket(second.ticket, second.id, admin), false);
+});

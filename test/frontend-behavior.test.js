@@ -922,7 +922,8 @@ test('Observer UI is optional, read-only, agent-routed, and releases leases on e
   assert.match(index, /id="tab-observer"/);
   assert.match(index, /sandbox="allow-scripts"/);
   assert.match(app, /new MessageChannel\(\)/);
-  assert.match(app, /new WebSocket\(streamUrl, \['zylos-observer-v1', `lease\.\$\{lease\.id\}`\]\)/);
+  assert.match(app, /new WebSocket\(streamUrl, \['zylos-observer-v1', `lease\.\$\{lease\.id\}`, \.\.\.\(ticket \? \[`ticket\.\$\{ticket\}`\] : \[\]\)\]\)/);
+  assert.match(app, /const ticket = observer\.lease\?\.ticket;/);
   assert.match(app, /X-Observer-Lease/);
   assert.match(app, /observer\.channel\?\.postMessage\(\{ type: 'render', bytes: event\.data \}, \[event\.data\]\)/);
   assert.match(app, /if \(activeTabName\(\) === 'observer' && name !== 'observer'\) closeObserver/);
@@ -1548,7 +1549,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=77/);
+  assert.match(index, /app\.js\?v=78/);
   assert.match(index, /style\.css\?v=54/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
@@ -1616,7 +1617,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=77/);
+  assert.match(index, /app\.js\?v=78/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

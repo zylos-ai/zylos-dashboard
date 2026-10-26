@@ -4,6 +4,9 @@ const DEFAULT_MAX_VIEWERS = 4;
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_IDLE_GRACE_MS = 5_000;
 const DEFAULT_REVALIDATE_MS = 10_000;
+const DEFAULT_TICKET_TTL_MS = 30_000;
+// Renewal mints a ticket every few seconds; only the newest few stay usable.
+const MAX_TICKETS_PER_LEASE = 3;
 
 export class ObserverManagerError extends Error {
   constructor(code, message) {
@@ -29,6 +32,7 @@ export class ObserverManager {
     leaseTtlMs = DEFAULT_LEASE_TTL_MS,
     idleGraceMs = DEFAULT_IDLE_GRACE_MS,
     revalidateMs = DEFAULT_REVALIDATE_MS,
+    ticketTtlMs = DEFAULT_TICKET_TTL_MS,
     now = () => Date.now(),
   }) {
     this.coordinator = coordinator;
@@ -40,8 +44,11 @@ export class ObserverManager {
     this.leaseTtlMs = leaseTtlMs;
     this.idleGraceMs = idleGraceMs;
     this.revalidateMs = revalidateMs;
+    this.ticketTtlMs = ticketTtlMs;
     this.now = now;
     this.leases = new Map();
+    // One-time WebSocket handshake tickets, keyed by 256-bit random value.
+    this.tickets = new Map();
     this.generation = null;
     this._starting = null;
     this._pendingLeases = 0;
@@ -155,7 +162,7 @@ export class ObserverManager {
         expiresAt: createdAt + this.leaseTtlMs,
       };
       this.leases.set(id, lease);
-      return this.publicLease(lease);
+      return { ...this.publicLease(lease), ticket: this._mintTicket(lease) };
     } finally {
       this._pendingLeases -= 1;
       this._scheduleIdleStop();
@@ -171,12 +178,45 @@ export class ObserverManager {
     };
   }
 
+  // Tickets let a cookie WebSocket handshake prove it read the response of the
+  // origin-checked lease request when the browser omits Fetch Metadata and a
+  // proxy rewrites Host. They are bound to the lease and principal, short-lived
+  // and single-use.
+  _mintTicket(lease) {
+    const now = this.now();
+    const owned = [];
+    for (const [value, ticket] of this.tickets) {
+      if (ticket.expiresAt <= now) this.tickets.delete(value);
+      else if (ticket.leaseId === lease.id) owned.push(value);
+    }
+    // Map order is mint order, so the oldest tickets are dropped first.
+    while (owned.length >= MAX_TICKETS_PER_LEASE) this.tickets.delete(owned.shift());
+    const value = crypto.randomBytes(32).toString('base64url');
+    this.tickets.set(value, { leaseId: lease.id, principal: lease.principal, expiresAt: now + this.ticketTtlMs });
+    return value;
+  }
+
+  _dropTickets(leaseId) {
+    for (const [value, ticket] of this.tickets) if (ticket.leaseId === leaseId) this.tickets.delete(value);
+  }
+
+  consumeTicket(value, leaseId, context) {
+    const ticket = typeof value === 'string' ? this.tickets.get(value) : undefined;
+    if (!ticket) return false;
+    // Any presentation spends the ticket, including a mismatched one.
+    this.tickets.delete(value);
+    const lease = this.leases.get(leaseId);
+    return ticket.expiresAt > this.now() && ticket.leaseId === leaseId && Boolean(lease) &&
+      samePrincipal(ticket.principal, context) && samePrincipal(lease.principal, context);
+  }
+
   validateLease(id, context, { target = this.target, renew = false } = {}) {
     this._requireAdmin(context);
     const lease = this.leases.get(id);
     if (!lease) throw new ObserverManagerError('lease_not_found', 'Observer lease was not found');
     if (lease.expiresAt <= this.now()) {
       this.leases.delete(id);
+      this._dropTickets(id);
       this._scheduleIdleStop();
       throw new ObserverManagerError('lease_expired', 'Observer lease expired');
     }
@@ -190,12 +230,14 @@ export class ObserverManager {
   }
 
   renewLease(id, context, options) {
-    return this.publicLease(this.validateLease(id, context, { ...options, renew: true }));
+    const lease = this.validateLease(id, context, { ...options, renew: true });
+    return { ...this.publicLease(lease), ticket: this._mintTicket(lease) };
   }
 
   releaseLease(id, context, options) {
     const lease = this.validateLease(id, context, options);
     this.leases.delete(id);
+    this._dropTickets(id);
     this._scheduleIdleStop();
     return { released: true, id: lease.id };
   }
@@ -207,10 +249,12 @@ export class ObserverManager {
       if (lease.expiresAt <= now || !refreshed ||
           lease.generation !== this.generation || lease.generation !== this.containment.active?.generation) {
         this.leases.delete(id);
+        this._dropTickets(id);
       } else {
         lease.principal = refreshed;
       }
     }
+    for (const [value, ticket] of this.tickets) if (ticket.expiresAt <= now) this.tickets.delete(value);
     this._scheduleIdleStop();
     return this.leases.size;
   }
@@ -221,6 +265,7 @@ export class ObserverManager {
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
+    this.tickets.clear();
     this.generation = null;
     try {
       if (this._retiring) await this._retiring;
@@ -249,6 +294,7 @@ export class ObserverManager {
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
+    this.tickets.clear();
     this.generation = null;
     try {
       if (this._retiring) await this._retiring;
@@ -277,6 +323,7 @@ export class ObserverManager {
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
+    this.tickets.clear();
     if (this._retiring) await this._retiring;
     if (this._idleStopping) await this._idleStopping;
     const starting = this._starting;
@@ -334,6 +381,7 @@ export class ObserverManager {
     this._clearIdleTimer();
     this._stopRevalidation();
     this.leases.clear();
+    this.tickets.clear();
     this.generation = null;
     const retirement = Promise.resolve().then(async () => {
       try {

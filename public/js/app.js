@@ -2202,7 +2202,9 @@ async function openObserver() {
 
     const streamUrl = new URL(endpoints.stream, window.location.href);
     streamUrl.protocol = streamUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(streamUrl, ['zylos-observer-v1', `lease.${lease.id}`]);
+    // Renewal replaces the stored lease, so use its newest one-time ticket.
+    const ticket = observer.lease?.ticket;
+    const ws = new WebSocket(streamUrl, ['zylos-observer-v1', `lease.${lease.id}`, ...(ticket ? [`ticket.${ticket}`] : [])]);
     observer.ws = ws;
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (event) => {
