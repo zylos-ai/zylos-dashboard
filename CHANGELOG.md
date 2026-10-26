@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-10-26
+
 ### Fixed
 - Observer live terminal no longer fails with `origin_required` in Chromium behind a reverse proxy that rewrites `Host`. Chromium sends no Fetch Metadata on WebSocket handshakes, so lease creation and renewal now return a short-lived, single-use `ticket` bound to the lease and principal; the browser offers it as a `ticket.<value>` WebSocket subprotocol token, and cookie handshakes that fail the Origin/Host check are admitted only with a valid ticket. Fleet relays mint their own tickets for the browser-facing hop (#326).
 
