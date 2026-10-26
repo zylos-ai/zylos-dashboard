@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-26
+
+### Changed
+- Hide the "Upgrade zylos" button from the Actions modal. A one-click zylos-core upgrade can fail on unexpected conditions and, without the Agent involved, cannot recover; users should ask their Agent to upgrade zylos-core instead (#324).
+- The info bar's zylos-core update marker no longer opens the Actions modal; clicking it (or Enter/Space) shows a hint to ask the Agent to upgrade, closed with Escape or an outside click. Codex/CC update markers are unchanged (#324).
+
+### Notes
+- The backend `upgrade-zylos` action is kept so the button can be restored easily (#324).
+
 ## [0.6.5] - 2026-10-14
 
 ### Added
