@@ -387,7 +387,7 @@ function renderInfoBar() {
   const parts = [];
   if (ri.zylos_version) {
     let zv = `zylos v${ri.zylos_version}`;
-    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.zylos_update }))}">↑${esc(ri.zylos_update)}</span>`;
+    if (ri.zylos_update) zv += ` <span class="info-bar-hint" id="zylos-update-hint" role="button" tabindex="0" title="${esc(t('info.zylos_update_hint', { version: ri.zylos_update }))}">↑${esc(ri.zylos_update)}</span>`;
     parts.push(zv);
   }
   if (ri.runtime && ri.runtime !== 'codex') parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
@@ -4077,9 +4077,6 @@ function createActionsModal() {
     <div class="action-group">
       <span class="action-group-label">${esc(t('actions.upgrade'))}</span>
       <div class="action-row">
-        <button class="action-btn" data-action="upgrade-zylos" type="button">
-          ${esc(t('actions.upgrade_zylos'))}<span class="action-ver" id="action-zylos-ver"></span>
-        </button>
         <button class="action-btn" data-action="upgrade-cc" type="button">
           <span id="action-cli-label">${esc(t('actions.upgrade_cc'))}</span><span class="action-ver" id="action-cc-ver"></span>
         </button>
@@ -4311,12 +4308,8 @@ async function openActionsModal() {
     modal._renderEffortOptions(modelSel.value === '__custom__' ? meta.current_model : modelSel.value);
 
     const ri = state.dashboardState?.runtime_info;
-    const zylosVer = modal.querySelector('#action-zylos-ver');
     const ccVer = modal.querySelector('#action-cc-ver');
     const cliLabel = modal.querySelector('#action-cli-label');
-    zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
-    zylosVer.classList.toggle('action-ver-dot', !!ri?.zylos_update);
-    zylosVer.title = ri?.zylos_update ? t('info.version_available', { version: ri.zylos_update }) : '';
     if (cliLabel) cliLabel.textContent = meta.runtime_cli === 'codex' ? t('actions.upgrade_codex') : t('actions.upgrade_cc');
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
     const cliUpdate = meta.runtime_cli === 'codex' ? ri?.codex_restart || ri?.codex_update : ri?.cc_update;
@@ -4499,8 +4492,40 @@ async function execAction(action, body) {
   }
 }
 
+// zylos-core upgrades are done by the agent itself (it can recover from a failed
+// upgrade); the dashboard only tells the user what to ask their agent.
+let zylosHintPopover = null;
+function toggleZylosUpdateHint(anchor) {
+  if (!zylosHintPopover) {
+    zylosHintPopover = document.createElement('div');
+    zylosHintPopover.className = 'tip-popover';
+    zylosHintPopover.hidden = true;
+    document.body.appendChild(zylosHintPopover);
+  }
+  const pop = zylosHintPopover;
+  if (!anchor || !pop.hidden) { pop.hidden = true; return; }
+  const p = document.createElement('p');
+  p.textContent = anchor.getAttribute('title') || '';
+  pop.replaceChildren(p);
+  const rect = anchor.getBoundingClientRect();
+  pop.style.top = `${rect.bottom + 6}px`;
+  pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 288))}px`;
+  pop.hidden = false;
+}
+
 function initInfoBarButtons() {
+  document.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest?.('#zylos-update-hint')) {
+      e.preventDefault();
+      toggleZylosUpdateHint(e.target.closest('#zylos-update-hint'));
+    } else if (e.key === 'Escape') {
+      toggleZylosUpdateHint(null);
+    }
+  });
   document.addEventListener('click', (e) => {
+    const hint = e.target.closest('#zylos-update-hint');
+    if (hint) { e.preventDefault(); toggleZylosUpdateHint(hint); return; }
+    toggleZylosUpdateHint(null);
     if (e.target.closest('#fleet-manage-btn')) { e.preventDefault(); openFleetManageModal(); return; }
     if (e.target.closest('#settings-btn')) { e.preventDefault(); openSettingsModal(); return; }
     if (e.target.closest('#actions-btn, .info-bar-update')) {
