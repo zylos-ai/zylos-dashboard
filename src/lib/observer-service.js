@@ -12,6 +12,7 @@ import {
 
 const OBSERVER_PROTOCOL = 'zylos-observer-v1';
 const LEASE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const REVALIDATE_MS = 10_000;
 const MAX_STARTUP_DISPLAY_BYTES = 2 * 1024 * 1024;
 
@@ -27,11 +28,16 @@ function firstHeader(value) {
   return String(Array.isArray(value) ? value[0] : value || '').split(',')[0].trim();
 }
 
+// Accepts the Observer protocol, one lease token and an optional one-time
+// ticket token, in any order. Unknown or repeated tokens are rejected.
 function parseProtocol(value) {
   const parts = String(value || '').split(',').map((part) => part.trim()).filter(Boolean);
-  if (parts.length !== 2 || parts[0] !== OBSERVER_PROTOCOL || !parts[1].startsWith('lease.')) return null;
-  const leaseId = parts[1].slice('lease.'.length);
-  return LEASE_ID_PATTERN.test(leaseId) ? leaseId : null;
+  if (parts.length < 2 || parts.length > 3 || parts.filter((part) => part === OBSERVER_PROTOCOL).length !== 1) return null;
+  const leases = parts.filter((part) => part.startsWith('lease.')).map((part) => part.slice('lease.'.length));
+  const tickets = parts.filter((part) => part.startsWith('ticket.')).map((part) => part.slice('ticket.'.length));
+  if (leases.length !== 1 || tickets.length > 1 || 1 + leases.length + tickets.length !== parts.length) return null;
+  if (!LEASE_ID_PATTERN.test(leases[0]) || (tickets.length && !TICKET_PATTERN.test(tickets[0]))) return null;
+  return { leaseId: leases[0], ticket: tickets[0] || null };
 }
 
 function parseAgentSize(body) {
@@ -328,9 +334,18 @@ export class ObserverService {
       }
       await this._ready();
       if (aborted || socket.destroyed || socket.writableEnded) return true;
-      const context = this._authContext(req, { requireOrigin: true });
-      const leaseId = parseProtocol(req.headers['sec-websocket-protocol']);
-      if (!leaseId) throw new ObserverHttpError(404, 'invalid_protocol');
+      const context = this._authContext(req);
+      const protocol = parseProtocol(req.headers['sec-websocket-protocol']);
+      // Chromium omits Fetch Metadata on WebSocket handshakes, so a proxy that
+      // rewrites Host defeats the Origin fallback. A one-time ticket from the
+      // origin-checked lease response substitutes only for that fallback.
+      if (context.kind === 'cookie' && !isSameOriginRequest(req) &&
+          !(protocol?.ticket && !Object.hasOwn(req.headers, 'sec-fetch-site') &&
+            this.manager.consumeTicket(protocol.ticket, protocol.leaseId, context))) {
+        throw new ObserverHttpError(403, 'origin_required');
+      }
+      if (!protocol) throw new ObserverHttpError(404, 'invalid_protocol');
+      const { leaseId } = protocol;
       const lease = this.manager.validateLease(leaseId, context);
       if ([...this.streams].some((current) => current.leaseId === leaseId && !current.closed)) {
         throw Object.assign(new Error('Observer lease already has a stream'), { code: 'lease_in_use' });

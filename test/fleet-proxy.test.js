@@ -1524,3 +1524,105 @@ test('fleet forwards Observer Set size with its body and relays the producer ver
     await remote.close();
   }
 });
+
+test('fleet Observer relay admits a rewritten-Host cookie handshake only with its own one-time ticket', async () => {
+  let leases = 0;
+  const upstreamHeaders = [];
+  const upstreamSockets = [];
+  const upstreamTicket = 'u'.repeat(43);
+  const remote = await listen((req, res) => {
+    const renew = req.url.match(/^\/api\/observer\/leases\/([A-Za-z0-9_-]{32})\/renew$/);
+    if (req.method === 'POST' && (req.url === '/api/observer/leases' || renew)) {
+      const id = renew ? renew[1] : `${'l'.repeat(31)}${(leases += 1)}`;
+      res.writeHead(renew ? 200 : 201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id, expiresAt: Date.now() + 30_000, generation: 3, resource: 'frame', ticket: upstreamTicket }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  remote.server.on('upgrade', (req, socket, head) => {
+    upstreamHeaders.push(req.headers);
+    const upstream = acceptObserverWebSocket(req, socket, head, 'zylos-observer-v1');
+    upstreamSockets.push(upstream);
+    upstream.activate();
+  });
+  const principals = {
+    'session=a': { kind: 'cookie', principalId: 'admin-a', scope: 'admin' },
+    'session=b': { kind: 'cookie', principalId: 'admin-b', scope: 'admin' },
+  };
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin }] } },
+    poller: { getSessionToken: async () => 'remote-admin-token' },
+    authGate: { revalidateAuthContext: (value) => value },
+  });
+  const identify = (req) => { req._authContext = principals[req.headers.cookie]; };
+  const hub = await listen((req, res) => {
+    identify(req);
+    proxy.handle(req, res, new URL(req.url, 'http://hub.test'));
+  });
+  hub.server.on('upgrade', (req, socket, head) => {
+    identify(req);
+    proxy.handleUpgrade(req, socket, head);
+  });
+  // The public origin differs from the Host the hub receives.
+  const publicOrigin = 'https://dashboard.example';
+  const post = async (path, cookie = 'session=a') => {
+    const response = await fetch(`${hub.origin}/fleet/Remote/api/observer/${path}`, {
+      method: 'POST', headers: { Cookie: cookie, Origin: publicOrigin, 'Sec-Fetch-Site': 'same-origin' },
+    });
+    assert.ok(response.ok);
+    return response.json();
+  };
+  const connect = (leaseId, ticket, extra = {}) => connectObserverWebSocket({
+    port: hub.server.address().port, path: '/fleet/Remote/observer/stream',
+    headers: {
+      Cookie: 'session=a', Origin: publicOrigin,
+      'Sec-WebSocket-Protocol': ['zylos-observer-v1', `lease.${leaseId}`, ...(ticket ? [`ticket.${ticket}`] : [])].join(', '),
+      ...extra,
+    },
+  });
+  const browsers = [];
+  try {
+    const lease = await post('leases');
+    const other = await post('leases');
+    const foreign = await post('leases', 'session=b');
+    assert.match(lease.ticket, /^[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(lease.ticket, upstreamTicket, 'the browser receives the relay ticket, not the upstream one');
+    assert.equal(lease.generation, 3, 'upstream lease fields are preserved');
+    const renewed = await post(`leases/${lease.id}/renew`);
+    assert.match(renewed.ticket, /^[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(renewed.ticket, lease.ticket);
+
+    for (const [leaseId, ticket, extra] of [
+      [lease.id, null],
+      [lease.id, upstreamTicket],
+      [lease.id, 'A'.repeat(43)],
+      [lease.id, other.ticket],
+      [foreign.id, foreign.ticket],
+      [lease.id, lease.ticket, { 'Sec-Fetch-Site': 'cross-site' }],
+    ]) await assert.rejects(connect(leaseId, ticket, extra), /rejected \(404\)/);
+    assert.equal(upstreamSockets.length, 0, 'rejected upgrades must not reach the producer');
+
+    const browser = await connect(lease.id, renewed.ticket);
+    browsers.push(browser);
+    browser.activate();
+    assert.equal(browser.closed, false);
+    await assert.rejects(connect(lease.id, renewed.ticket), /rejected \(404\)/, 'tickets are single-use');
+    for (const ticket of proxy.observerTickets.values()) ticket.expiresAt = Date.now() - 1;
+    await assert.rejects(connect(lease.id, lease.ticket), /rejected \(404\)/, 'expired ticket');
+
+    // Same-origin handshakes still need no ticket.
+    const sameOrigin = await connect(other.id, null, { Origin: hub.origin });
+    browsers.push(sameOrigin);
+    sameOrigin.activate();
+    assert.equal(upstreamSockets.length, 2);
+    assert.ok(upstreamHeaders.every((h) => h.authorization === 'Bearer remote-admin-token'));
+    assert.ok(upstreamHeaders.every((h) => /^zylos-observer-v1, lease\.[A-Za-z0-9_-]{32}$/.test(h['sec-websocket-protocol'])),
+      'the relay never forwards browser tickets upstream');
+  } finally {
+    for (const browser of browsers) browser.destroy();
+    for (const socket of upstreamSockets) socket.destroy();
+    await hub.close();
+    await remote.close();
+  }
+});

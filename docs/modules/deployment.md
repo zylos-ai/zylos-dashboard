@@ -231,10 +231,23 @@ When the header is absent, a canonical HTTP(S) `Origin` must match the request's
 the **Origin scheme**, not a forwarded protocol. Bearer-token authentication and
 logout CSRF checks are unchanged.
 
-This does not require `X-Forwarded-Proto` or proxy trust. The fallback still
-requires proxies to preserve the external `Host`; browsers that omit Fetch
-Metadata on WebSocket handshakes use that fallback. A rewritten Host can
-therefore reject an otherwise legitimate connection.
+This does not require `X-Forwarded-Proto` or proxy trust. Unsafe HTTP requests
+still use the fallback only when Fetch Metadata is absent, so proxies should
+preserve the external `Host` for clients that omit it.
+
+Chromium never sends `Sec-Fetch-*` headers on WebSocket handshakes, so behind a
+proxy that rewrites Host its Observer handshakes would fail the fallback with
+`origin_required` (#326). Lease creation and renewal therefore also return a
+one-time `ticket`, which the browser offers as a `ticket.<value>`
+`Sec-WebSocket-Protocol` token. A cookie handshake that fails the
+`Origin`/`Host` fallback is admitted only when it carries no `Sec-Fetch-Site`
+header and presents an unexpired, unused ticket minted for the same lease and
+principal. Tickets are 256-bit random values, expire after 30 seconds and are
+spent on first presentation. They come from the origin-checked lease POST,
+whose response other origins cannot read, so they prove the same provenance
+without depending on `Host`. An explicit non-`same-origin` `Sec-Fetch-Site`
+value is still rejected even with a ticket. A Fleet relay mints its own tickets
+for the browser-facing hop; its upstream hop keeps using its Bearer credential.
 
 The fallback deliberately does not compare schemes. `Secure` restricts cookie
 transmission to secure connections, not the initiating page's scheme; modern

@@ -15,8 +15,9 @@ import { shutdownDashboardTransports } from '../src/lib/dashboard-shutdown.js';
 
 const LEASE_ID = 'a'.repeat(32);
 
-function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null, sizeMonitor, resizeAgent, starting = false } = {}) {
+function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = null, sizeMonitor, resizeAgent, starting = false, managerFactory } = {}) {
   const context = { kind: 'cookie', principalId: 'browser', scope: 'admin' };
+  const otherContext = { kind: 'cookie', principalId: 'other-browser', scope: 'admin' };
   const apiContext = { kind: 'api', principalId: 'api-admin', scope: 'admin' };
   const readContext = { kind: 'api', principalId: 'api-read', scope: 'read' };
   const containment = Object.assign(new EventEmitter(), {
@@ -24,6 +25,7 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     resizes: [],
     async resize(active, size) { assert.equal(active, this.active); this.resizes.push(size); return true; },
     async reconcilePersisted() { return []; },
+    async stopGeneration() { return { stopped: true }; },
     agentResizes: [],
     async resizeAgent(request) {
       this.agentResizes.push(request);
@@ -36,6 +38,7 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     async agentSize() { return this.savedAgentSizes.at(-1) || { cols: 120, rows: 50 }; },
     async saveAgentSize(size) { this.savedAgentSizes.push(size); return size; },
     async reconcileStartup() { return { state: 'installed', desired: { enabled: true } }; },
+    async firstLease() { return containment.active; },
     async status() { return { state: 'installed', binaryPath: '/private/zellij', desired: { enabled: true } }; },
   };
   const manager = {
@@ -58,6 +61,7 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     enabled: authEnabled,
     resolveAuthContext(req) {
       if (req.headers.cookie === 'admin=1') return context;
+      if (req.headers.cookie === 'admin=2') return otherContext;
       if (req.headers.authorization === 'Bearer admin-token') return apiContext;
       if (req.headers.authorization === 'Bearer read-token') return readContext;
       return null;
@@ -85,7 +89,10 @@ function fixture({ authEnabled = true, deferUpstream = false, initialDisplay = n
     upstreams.push(upstream);
     return upstream;
   };
-  const service = new ObserverService({ coordinator, containment, manager, authGate, upstreamFactory, sizeMonitor });
+  const service = new ObserverService({
+    coordinator, containment, authGate, upstreamFactory, sizeMonitor,
+    manager: managerFactory ? managerFactory({ coordinator, containment, authGate }) : manager,
+  });
   return { service, upstreams, resolveConnect, containment, coordinator };
 }
 
@@ -1016,4 +1023,110 @@ test('concurrent Set size requests persist in the order they were applied', asyn
   releases[1]();
   await second;
   assert.deepEqual(coordinator.savedAgentSizes, [{ cols: 100, rows: 40 }, { cols: 140, rows: 45 }]);
+});
+
+test('one-time ticket admits a cookie WebSocket when a proxy rewrites Host and Fetch Metadata is absent', async () => {
+  let clock = 1_000;
+  const { service, upstreams } = fixture({
+    managerFactory: (deps) => new ObserverManager({ ...deps, runtime: 'claude', ticketTtlMs: 1_000, now: () => clock }),
+  });
+  const app = await startHttp(service);
+  // The public origin differs from the Host the Dashboard receives.
+  const publicOrigin = 'https://dashboard.example';
+  const lease = async (cookie = 'admin=1') => {
+    const response = await fetch(`${app.origin}/api/observer/leases`, {
+      method: 'POST', headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin', Origin: publicOrigin },
+    });
+    assert.equal(response.status, 201);
+    return response.json();
+  };
+  const renew = async (id) => {
+    const response = await fetch(`${app.origin}/api/observer/leases/${id}/renew`, {
+      method: 'POST', headers: { Cookie: 'admin=1', 'Sec-Fetch-Site': 'same-origin' },
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const connect = (leaseId, ticket, extra = {}) => connectObserverWebSocket({
+    port: app.server.address().port, path: '/observer/stream',
+    headers: {
+      Cookie: 'admin=1', Origin: publicOrigin,
+      'Sec-WebSocket-Protocol': [OBSERVER_WEBSOCKET_PROTOCOL, `lease.${leaseId}`, ...(ticket ? [`ticket.${ticket}`] : [])].join(', '),
+      ...extra,
+    },
+  });
+  const sockets = [];
+  try {
+    const first = await lease();
+    const second = await lease();
+    const foreign = await lease('admin=2');
+    assert.match(first.ticket, /^[A-Za-z0-9_-]{43}$/);
+    const renewed = await renew(first.id);
+    assert.match(renewed.ticket, /^[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(renewed.ticket, first.ticket);
+
+    await assert.rejects(connect(first.id, null), /rejected \(403\)/, 'no ticket');
+    await assert.rejects(connect(first.id, 'A'.repeat(43)), /rejected \(403\)/, 'garbage ticket');
+    await assert.rejects(connect(first.id, second.ticket), /rejected \(403\)/, 'ticket from another lease');
+    await assert.rejects(connect(foreign.id, foreign.ticket), /rejected \(403\)/, 'ticket for another principal');
+    await assert.rejects(connect(first.id, first.ticket, { 'Sec-Fetch-Site': 'cross-site' }), /rejected \(403\)/,
+      'explicit cross-site Fetch Metadata is never overridden by a ticket');
+    await assert.rejects(connect(first.id, `${first.ticket}, ticket.${renewed.ticket}`), /rejected \(403\)/, 'repeated ticket token');
+    assert.equal(upstreams.length, 0, 'rejected handshakes must not allocate upstreams');
+
+    const third = await renew(first.id);
+    // Token order is not significant.
+    const socket = await connectObserverWebSocket({
+      port: app.server.address().port, path: '/observer/stream',
+      headers: {
+        Cookie: 'admin=1', Origin: publicOrigin,
+        'Sec-WebSocket-Protocol': `ticket.${third.ticket}, ${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${first.id}`,
+      },
+    });
+    sockets.push(socket);
+    socket.activate();
+    assert.equal(socket.closed, false);
+    assert.equal(upstreams.length, 1);
+    // A reused ticket fails the origin check before the lease-in-use check.
+    await assert.rejects(connect(first.id, third.ticket), /rejected \(403\)/, 'reused ticket');
+    await assert.rejects(connect(first.id, renewed.ticket), /rejected \(409\)/, 'an unused ticket reaches the lease check');
+
+    const expiring = await lease();
+    clock += 1_000;
+    await assert.rejects(connect(expiring.id, expiring.ticket), /rejected \(403\)/, 'expired ticket');
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await service.shutdown();
+    await app.close();
+  }
+});
+
+test('same-origin cookie and bearer WebSocket handshakes do not need a ticket', async () => {
+  const { service, upstreams } = fixture({
+    managerFactory: (deps) => new ObserverManager({ ...deps, runtime: 'claude' }),
+  });
+  const app = await startHttp(service);
+  const sockets = [];
+  try {
+    const cookieLease = await (await fetch(`${app.origin}/api/observer/leases`, {
+      method: 'POST', headers: { Cookie: 'admin=1', Origin: app.origin },
+    })).json();
+    const bearerLease = await (await fetch(`${app.origin}/api/observer/leases`, {
+      method: 'POST', headers: { Authorization: 'Bearer admin-token' },
+    })).json();
+    for (const headers of [
+      { Cookie: 'admin=1', Origin: app.origin, 'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${cookieLease.id}` },
+      { Authorization: 'Bearer admin-token', 'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${bearerLease.id}` },
+    ]) {
+      const socket = await connectObserverWebSocket({ port: app.server.address().port, path: '/observer/stream', headers });
+      sockets.push(socket);
+      socket.activate();
+      assert.equal(socket.closed, false);
+    }
+    assert.equal(upstreams.length, 2);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await service.shutdown();
+    await app.close();
+  }
 });

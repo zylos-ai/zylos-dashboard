@@ -922,7 +922,8 @@ test('Observer UI is optional, read-only, agent-routed, and releases leases on e
   assert.match(index, /id="tab-observer"/);
   assert.match(index, /sandbox="allow-scripts"/);
   assert.match(app, /new MessageChannel\(\)/);
-  assert.match(app, /new WebSocket\(streamUrl, \['zylos-observer-v1', `lease\.\$\{lease\.id\}`\]\)/);
+  assert.match(app, /new WebSocket\(streamUrl, \['zylos-observer-v1', `lease\.\$\{lease\.id\}`, \.\.\.\(ticket \? \[`ticket\.\$\{ticket\}`\] : \[\]\)\]\)/);
+  assert.match(app, /const ticket = observer\.lease\?\.ticket;/);
   assert.match(app, /X-Observer-Lease/);
   assert.match(app, /observer\.channel\?\.postMessage\(\{ type: 'render', bytes: event\.data \}, \[event\.data\]\)/);
   assert.match(app, /if \(activeTabName\(\) === 'observer' && name !== 'observer'\) closeObserver/);
