@@ -2056,7 +2056,7 @@ function observerRetryable(error) {
   if ([401, 403].includes(error?.status)) return false;
   if (error?.status === 429) return true;
   return !error?.code && !error?.status ||
-    ['upstream_unreachable', 'target_unavailable', 'target_size_changed', 'operation_obsolete', 'lease_not_found', 'lease_expired', 'lease_mismatch'].includes(error?.code);
+    ['upstream_unreachable', 'target_unavailable', 'target_size_changed', 'operation_obsolete', 'lease_not_found', 'lease_expired', 'lease_mismatch', 'pong_timeout', 'lease_invalid'].includes(error?.code);
 }
 
 async function recoverObserver(error) {
@@ -2066,7 +2066,7 @@ async function recoverObserver(error) {
   const retry = observerRetryable(error);
   await closeObserver({ preserveNotice: true, preserveIntent: retry });
   if (!retry) {
-    setObserverNotice(error?.message || t('observer.not_available'), 'error');
+    setObserverNotice(error?.code === 'auth_expired' ? t('observer.session_expired') : error?.message || t('observer.not_available'), 'error');
     return;
   }
   if (observer.intent !== intent) return;
@@ -2224,9 +2224,9 @@ async function openObserver() {
     ws.onerror = () => {
       if (observerSessionCurrent(generation, targetKey) && observer.ws === ws) setObserverNotice(t('observer.disconnected'), 'error');
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (!observerSessionCurrent(generation, targetKey) || observer.ws !== ws) return;
-      recoverObserver().catch(() => {});
+      recoverObserver(event.reason === 'auth_expired' ? { code: 'auth_expired' } : undefined).catch(() => {});
     };
     observer.renewTimer = setInterval(() => {
       renewObserverLease(generation, targetKey, lease, endpoints).catch((error) => {

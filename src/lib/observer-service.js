@@ -369,8 +369,13 @@ export class ObserverService {
             stream.awaitingPong = true;
             stream.downstream.ping();
           }
-        } catch {
-          this._closeStream(stream, 1008, 'lease_expired');
+        } catch (error) {
+          const code = error?.code || error?.message || 'unknown';
+          const reason = code === 'pong_timeout' ? 'pong_timeout'
+            : ['auth_expired', 'admin_required'].includes(code) ? 'auth_expired' : 'lease_invalid';
+          const logCode = String(code).replace(/[^\w-]/g, '_').slice(0, 80);
+          console.error(`[observer] stream closed: ${reason} (${logCode}) lease=${stream.leaseId.slice(0, 8)}…`);
+          this._closeStream(stream, 1008, reason);
         }
       }, REVALIDATE_MS);
       stream.timer.unref?.();

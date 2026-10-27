@@ -133,7 +133,7 @@ test('usage_event unique index deduplicates null-session replay keys atomically'
   assert.equal(store.queryMetrics({ name: 'usage_event' }).length, 1);
 }));
 
-test('metric maintenance preserves otel data and skips large guarded VACUUM', () => withStore((store) => {
+test('metric maintenance preserves otel data with incremental reclamation', () => withStore(async (store) => {
   const maintenanceNow = new Date('2026-06-07T00:00:00.000Z');
   const oldTimestamp = new Date(maintenanceNow.getTime() - 120 * 24 * 60 * 60 * 1000).toISOString();
   store.insertMetric({
@@ -155,19 +155,15 @@ test('metric maintenance preserves otel data and skips large guarded VACUUM', ()
     confidence: 'actual'
   });
 
-  const result = runMetricMaintenance(store, {
-    now: maintenanceNow,
-    vacuumMaxBytes: 1
-  });
-
-  assert.equal(result.vacuum.skipped, true);
-  assert.equal(result.vacuum.reason, 'db_too_large');
+  const result = await runMetricMaintenance(store, { now: maintenanceNow });
+  assert.equal(result.conversion, null);
+  assert.equal(store.autoVacuumMode(), 2);
   const remaining = store.queryMetrics({ name: 'cache_hit_rate' });
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].source, 'otel_token_usage');
 }));
 
-test('metric maintenance deletes legacy PM2 detail rows without deleting PM2 summary', () => withStore((store) => {
+test('metric maintenance deletes legacy PM2 detail rows without deleting PM2 summary', () => withStore(async (store) => {
   const now = '2026-06-07T23:59:00.000Z';
   for (const metricName of ['pm2_cpu', 'pm2_memory', 'pm2_restarts', 'pm2_status', 'pm2_uptime', 'pm2_summary']) {
     store.insertMetric({
@@ -181,7 +177,7 @@ test('metric maintenance deletes legacy PM2 detail rows without deleting PM2 sum
     });
   }
 
-  runMetricMaintenance(store, {
+  await runMetricMaintenance(store, {
     now: new Date('2026-06-08T00:00:00.000Z')
   });
 
