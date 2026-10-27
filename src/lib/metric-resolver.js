@@ -245,15 +245,13 @@ export class MetricResolver {
 
   _getLatestMetric(metricName, source) {
     try {
-      const rows = this.store.queryMetrics({
+      return this.store.latestMetric({
         name: metricName,
+        source,
+        runtime: RUNTIME_NEUTRAL_SOURCES.has(source) ? null : this._activeRuntime(),
         since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
         until: new Date().toISOString()
       });
-
-      const matching = rows.filter(r => r.source === source && this._metricRowMatchesRuntime(r));
-      if (matching.length === 0) return null;
-      return matching[matching.length - 1];
     } catch {
       return null;
     }

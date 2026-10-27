@@ -175,3 +175,40 @@ test('C4Reader — missing db returns safe defaults', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('average response matches the previous SQL on ties, channels and cutoff; caches for 60s', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-27T12:00:00Z') });
+  const f = makeFixture();
+  try {
+    const put = f.db.prepare("INSERT INTO conversations(timestamp,direction,channel,content) VALUES (?,?,?,'x')");
+    const entries = [
+      ['00:00:00', 'in', 'telegram'], ['00:00:00', 'out', 'telegram'],
+      ['00:00:04', 'in', 'telegram'], ['00:00:05', 'out', 'telegram'],
+      ['00:00:05', 'out', 'telegram'], ['00:00:05', 'in', 'telegram'],
+      ['00:00:07', 'out', 'telegram'], ['01:00:00', 'in', 'telegram'],
+      ['01:10:00', 'out', 'telegram'], ['02:00:00', 'in', 'lark'],
+      ['02:09:59', 'out', 'lark'], ['03:00:00', 'in', 'unanswered'],
+      ['00:00:00', 'in', 'system'], ['00:00:01', 'out', 'system']
+    ];
+    for (const [time, direction, channel] of entries) put.run(`2026-10-27 ${time}`, direction, channel);
+    put.run('2026-10-26 23:59:59', 'in', 'telegram');
+    const legacy = () => {
+      const { avg_s } = f.db.prepare(`SELECT AVG(response_delay_s) avg_s FROM (
+        SELECT i.id, (julianday(MIN(o.timestamp))-julianday(i.timestamp))*86400 response_delay_s
+        FROM conversations i JOIN conversations o ON o.channel=i.channel AND o.direction='out'
+          AND o.timestamp>i.timestamp AND julianday(o.timestamp)-julianday(i.timestamp)<0.0069444
+        WHERE i.direction='in' AND i.timestamp>='2026-10-27' AND i.channel NOT IN ('scheduler','system','control')
+        GROUP BY i.id) WHERE response_delay_s>0`).get();
+      return avg_s == null ? null : Math.round(avg_s);
+    };
+    const first = f.reader.getAvgResponseTime();
+    assert.equal(first, legacy());
+    put.run('2026-10-27 03:00:01', 'out', 'unanswered');
+    assert.notEqual(legacy(), first);
+    assert.equal(f.reader.getAvgResponseTime(), first);
+    t.mock.timers.tick(60_000);
+    assert.equal(f.reader.getAvgResponseTime(), legacy());
+    t.mock.timers.setTime(new Date('2026-10-28T00:00:00Z').getTime());
+    assert.equal(f.reader.getAvgResponseTime(), null);
+  } finally { cleanup(f); }
+});

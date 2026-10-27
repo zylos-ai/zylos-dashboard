@@ -34,23 +34,61 @@ export class SpoolDrainer {
   }
 
   drainLive(stateEngine) {
-    return this._drain(stateEngine);
+    if (this._draining) return Promise.resolve({ processed: 0, duplicates: 0, errors: 0 });
+    this._draining = true;
+    this._stopRequested = false;
+    this._liveDrain = (async () => {
+      try {
+        const steps = this._drainSteps(stateEngine);
+        let started = performance.now();
+        while (true) {
+          const step = steps.next(this._stopRequested);
+          if (step.done) return step.value;
+          if (performance.now() - started >= 50) {
+            await new Promise(resolve => setImmediate(resolve));
+            started = performance.now();
+          }
+        }
+      } finally {
+        this._draining = false;
+      }
+    })();
+    return this._liveDrain;
   }
 
   startPeriodicDrain(stateEngine, intervalMs = 30_000) {
     this.stopPeriodicDrain();
-    this._timer = setInterval(() => this.drainLive(stateEngine), intervalMs);
+    this._timer = setInterval(() => {
+      this.drainLive(stateEngine).catch(err => {
+        process.stderr.write(`[spool-drainer] Live drain error: ${err.message}\n`);
+      });
+    }, intervalMs);
     this._timer.unref();
   }
 
   stopPeriodicDrain() {
+    this._stopRequested = true;
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
     }
+    return this._liveDrain;
   }
 
   _drain(stateEngine) {
+    if (this._draining) return { processed: 0, duplicates: 0, errors: 0 };
+    this._draining = true;
+    try {
+      const steps = this._drainSteps(stateEngine);
+      let step;
+      do { step = steps.next(); } while (!step.done);
+      return step.value;
+    } finally {
+      this._draining = false;
+    }
+  }
+
+  *_drainSteps(stateEngine) {
     const result = { processed: 0, duplicates: 0, errors: 0 };
 
     try {
@@ -71,12 +109,16 @@ export class SpoolDrainer {
     const failedLines = [];
     let lastProcessedRuntime = null;
 
-    for (const line of lines) {
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
       try {
         const record = JSON.parse(line);
         const { ingest_id, hook_event_name, data, received_at, runtime } = record;
 
-        if (!ALLOWED_EVENTS.has(hook_event_name)) continue;
+        if (!ALLOWED_EVENTS.has(hook_event_name)) {
+          if (yield) { failedLines.push(...lines.slice(index + 1)); break; }
+          continue;
+        }
 
         const payload = data || record;
         const sanitized = this.sanitizer.sanitizeHookPayload(hook_event_name, payload);
@@ -125,6 +167,12 @@ export class SpoolDrainer {
           failedLines.push(line);
           process.stderr.write(`[spool-drainer] Line error: ${err.message}\n`);
         }
+      }
+      if (yield) {
+        // Shutdown may arrive while the live drain is yielded. Preserve the
+        // unprocessed tail alongside failures before the database is closed.
+        failedLines.push(...lines.slice(index + 1));
+        break;
       }
     }
 
