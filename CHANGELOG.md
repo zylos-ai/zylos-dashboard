@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-10-27
+
+### Fixed
+- Observer disconnects now say why: streams closed by the periodic revalidation still use close code `1008`, but the reason is `pong_timeout`, `auth_expired` or `lease_invalid` instead of always `lease_expired`, and each closure logs one `[observer] stream closed: <reason> (<code>)` line to stderr. When the login has expired the page stops reconnecting and shows "Observer authorization expired."; every other close reason (including dashboard restarts) still reconnects automatically (#332, #333).
+- "Today" and "7 days" cost windows start exactly at local midnight. The start no longer drifts by 0–999 ms (so a cost row stamped just after midnight was counted or dropped at random), and on daylight-saving change days it is no longer off by one hour (#332, #333).
+
+### Changed
+- Database space is reclaimed incrementally instead of by a weekly full `VACUUM`, which blocked the dashboard (HTTP and Observer) for the whole rewrite (#332, #333).
+  - New databases are created with `auto_vacuum=INCREMENTAL`. After each hourly retention pass, free pages are released in chunks of 1,000 pages (at most 10,000 per run), yielding to the event loop between chunks.
+  - Existing databases are converted once, during hourly maintenance on a Sunday (UTC) after the service has started, never on the startup path: `PRAGMA auto_vacuum=INCREMENTAL; VACUUM`. This one rewrite pauses the dashboard and Observer for roughly 15–30 seconds per GB of effective data. It runs only when effective data `(page_count − freelist_count) × page_size` is at most 2 GiB and the database filesystem has at least twice that free; otherwise it logs the reason and points to `docs/modules/db-maintenance.md` for a manual conversion. A failed conversion is retried on a later Sunday, not every hour.
+  - The old 2 GB file-size limit is gone: a bloated file with little live data is now converted automatically.
+  - No schema migration number is used; `PRAGMA auto_vacuum=2` marks a converted database.
+
+### Known limitations
+- The one-time conversion checks free space only on the database's filesystem. SQLite writes its temporary copy to its temp directory (`SQLITE_TMPDIR`, else `/var/tmp` or `/tmp`). If that is a small tmpfs, set `SQLITE_TMPDIR` to a directory on a larger disk, or convert manually as described in `docs/modules/db-maintenance.md`.
+
 ## [0.6.8] - 2026-10-27
 
 ### Fixed
