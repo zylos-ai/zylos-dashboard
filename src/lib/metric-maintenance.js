@@ -1,4 +1,14 @@
-export function runMetricMaintenance(store, { now = new Date(), lastVacuumDate = null, vacuumMaxBytes = 2 * 1024 * 1024 * 1024 } = {}) {
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+
+export async function runMetricMaintenance(store, {
+  now = new Date(), lastConversionDate = null,
+  conversionMaxBytes = 2 * 1024 * 1024 * 1024,
+  vacuumChunkPages = 1000, vacuumMaxPages = 10000, signal,
+} = {}) {
+  if (!Number.isSafeInteger(vacuumChunkPages) || vacuumChunkPages < 1 ||
+      !Number.isSafeInteger(vacuumMaxPages) || vacuumMaxPages < 1) {
+    throw new RangeError('Invalid incremental vacuum limits');
+  }
   const anchor = now.toISOString();
   store.deleteMetricsByNameAndSource('usage_event', '%', 90, anchor);
   store.deleteMetricsByNameAndSource('ttft%', '%', 90, anchor);
@@ -18,8 +28,30 @@ export function runMetricMaintenance(store, { now = new Date(), lastVacuumDate =
   store.walCheckpoint();
 
   const dateKey = anchor.slice(0, 10);
-  const shouldVacuum = now.getUTCDay() === 0 && lastVacuumDate !== dateKey;
-  if (!shouldVacuum) return { vacuum: null, lastVacuumDate };
-  const vacuum = store.vacuumIfSmall(vacuumMaxBytes);
-  return { vacuum, lastVacuumDate: dateKey };
+  let conversion = null;
+  if (store.autoVacuumMode() !== 2 && now.getUTCDay() === 0 && lastConversionDate !== dateKey && !signal?.aborted) {
+    conversion = store.enableIncrementalVacuum(conversionMaxBytes);
+    lastConversionDate = dateKey;
+    if (conversion.skipped) {
+      process.stderr.write(`[retention] Skipped auto_vacuum conversion: ${conversion.reason}; effectiveBytes=${conversion.effectiveBytes}, freeBytes=${conversion.freeBytes ?? 'unknown'}; see docs/modules/db-maintenance.md\n`);
+    }
+  }
+
+  let pagesFreed = 0;
+  let chunks = 0;
+  if (store.autoVacuumMode() === 2) {
+    for (let budget = vacuumMaxPages; budget > 0 && !signal?.aborted;) {
+      if (store.spaceUsage().freePages === 0) break;
+      const pages = Math.min(vacuumChunkPages, budget);
+      const freed = store.incrementalVacuum(pages);
+      pagesFreed += freed;
+      chunks += 1;
+      budget -= pages;
+      if (freed === 0) break;
+      // Let HTTP, Observer heartbeats and shutdown run between bounded chunks.
+      await yieldToEventLoop();
+    }
+    if (pagesFreed > 0 && !signal?.aborted) store.walCheckpoint();
+  }
+  return { conversion, lastConversionDate, pagesFreed, chunks };
 }

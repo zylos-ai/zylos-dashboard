@@ -1,6 +1,6 @@
 # Dashboard DB Maintenance
 
-`dashboard.db` uses SQLite. Retention deletes old metric rows, but SQLite does not shrink the database file until `VACUUM` rewrites it.
+`dashboard.db` uses SQLite. New databases enable `auto_vacuum=INCREMENTAL` before creating tables, so retention can reclaim completely free pages without rewriting the whole database.
 
 ## Automatic Maintenance
 
@@ -14,17 +14,28 @@ The dashboard runs hourly retention cleanup:
 - `otel_*` sources: preserved (sample data for future use)
 - other legacy metrics: 90 days
 
-Automatic `VACUUM` is guarded. It runs only when the database file is smaller than 2 GB. Larger databases are skipped and require manual compaction during a maintenance window.
+After each hourly cleanup, incremental reclamation runs in chunks of at most 1,000 pages, yielding to the event loop between chunks. Each run requests at most 10,000 pages (about 39 MiB at a 4 KiB page size); remaining free pages wait for later hourly runs. The page limit bounds work, not wall-clock latency, which depends on disk speed. WAL checkpointing makes the recovered space visible in the database file. Incremental vacuum frees completely empty pages; it does not repack partially empty pages.
+
+Existing databases are **not converted during startup**. During hourly maintenance on Sunday (UTC), an unconverted database is considered for a one-time switch:
+
+- Effective data is `(page_count - freelist_count) * page_size` and must be at most 2 GiB. The bloated file size is not the limit.
+- Available space on the database filesystem must be at least twice that effective data size. If space cannot be determined, conversion is skipped.
+- Eligible databases run `PRAGMA auto_vacuum=INCREMENTAL; VACUUM` once. The `VACUUM` is synchronous and holds a write lock: the dashboard and Observer can pause for several seconds (or longer on slower storage). It runs after service startup, never on the startup readiness path.
+- Ineligible databases log the reason, effective bytes, available bytes, and this document's path. The process retries on a later Sunday, not on every hourly tick that day.
+- `PRAGMA auto_vacuum=2` is the persistent completion marker; no schema migration number is consumed. Once converted, there is no weekly full `VACUUM`.
+
+The automatic conversion is transactional at SQLite's file-rewrite boundary: a failed `VACUUM` leaves the original database usable, and maintenance logs the error. It may retry on a later maintenance tick. Keep normal database backups; for a planned manual conversion, take the backup below first.
 
 ## Manual Compaction For Large Databases
 
 Use this for already-bloated databases after retention has removed old rows.
 
-1. Check free disk. `VACUUM` rewrites the database and can temporarily need free space roughly equal to the database size.
+1. Check effective data and available disk. Budget at least twice the effective data size as free space for conversion, plus space for the rollback backup. Allow a maintenance window for the synchronous rewrite.
 
    ```bash
    df -h ~/zylos
    ls -lh ~/zylos/components/dashboard/dashboard.db
+   sqlite3 ~/zylos/components/dashboard/dashboard.db "SELECT (p.page_count - f.freelist_count) * s.page_size AS effective_bytes FROM pragma_page_count p, pragma_freelist_count f, pragma_page_size s;"
    ```
 
 2. Stop the dashboard so no live writes compete with the exclusive SQLite lock.
@@ -41,11 +52,13 @@ Use this for already-bloated databases after retention has removed old rows.
    cp ~/zylos/components/dashboard/dashboard.db-shm ~/zylos/components/dashboard/dashboard.db-shm.bak 2>/dev/null || true
    ```
 
-4. Compact the database.
+4. Enable incremental reclamation and compact the database once.
 
    ```bash
-   sqlite3 ~/zylos/components/dashboard/dashboard.db "VACUUM; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;"
+   sqlite3 ~/zylos/components/dashboard/dashboard.db "PRAGMA auto_vacuum=INCREMENTAL; VACUUM; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize; PRAGMA auto_vacuum;"
    ```
+
+   The last result must be `2`. Later hourly maintenance can now reclaim free pages automatically.
 
 5. Restart and validate.
 

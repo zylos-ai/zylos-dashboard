@@ -1734,6 +1734,8 @@ if (isMain && process.argv.includes('--smoke')) {
   });
 
   let retentionTimer = null;
+  let retentionRun = null;
+  const retentionAbort = new AbortController();
 
   server.listen(config.port, config.host, () => {
     console.log(`zylos-dashboard listening on http://${config.host}:${config.port}`);
@@ -1760,17 +1762,16 @@ if (isMain && process.argv.includes('--smoke')) {
         });
 
         // Retention cleanup timer (hourly)
-        let lastVacuumDate = null;
+        let lastConversionDate = null;
         retentionTimer = setInterval(() => {
-          try {
-            const result = runMetricMaintenance(store, { lastVacuumDate });
-            lastVacuumDate = result.lastVacuumDate;
-            if (result.vacuum?.skipped) {
-              process.stderr.write(`[retention] Skipped VACUUM: ${result.vacuum.reason} (${result.vacuum.sizeBytes} > ${result.vacuum.maxBytes})\n`);
-            }
-          } catch (err) {
+          if (retentionRun || retentionAbort.signal.aborted) return;
+          retentionRun = runMetricMaintenance(store, {
+            lastConversionDate, signal: retentionAbort.signal,
+          }).then((result) => {
+            lastConversionDate = result.lastConversionDate;
+          }).catch((err) => {
             process.stderr.write(`[retention] Error: ${err.message}\n`);
-          }
+          }).finally(() => { retentionRun = null; });
         }, 60 * 60 * 1000);
         retentionTimer.unref();
       })().catch((err) => {
@@ -1795,6 +1796,8 @@ if (isMain && process.argv.includes('--smoke')) {
       const dumped = ingestQueue.dumpToSpool();
       if (dumped) process.stderr.write(`[ingest-queue] ${dumped} unprocessed event(s) saved to spool for next start\n`);
       if (retentionTimer) clearInterval(retentionTimer);
+      retentionAbort.abort();
+      await retentionRun;
       fleetPoller.stop();
       sse.closeAll();
       let exitCode = 0;

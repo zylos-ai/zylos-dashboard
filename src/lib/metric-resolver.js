@@ -1,18 +1,25 @@
-function dayBoundsUTC(tz, daysBack = 0) {
-  const now = new Date();
+export function dayBoundsUTC(tz, daysBack = 0, now = new Date()) {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: tz, year: 'numeric', month: 'numeric', day: 'numeric',
-    hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false
+    hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23'
   });
-  const p = {};
-  for (const { type, value } of fmt.formatToParts(now)) {
-    if (type !== 'literal') p[type] = parseInt(value);
-  }
-  const asIfUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
-  const offsetMs = asIfUTC - now.getTime();
-  const midnightUTC = Date.UTC(p.year, p.month - 1, p.day) - offsetMs;
-  const since = new Date(midnightUTC - daysBack * 86400000);
-  return { since: since.toISOString(), until: now.toISOString() };
+  const parts = (date) => Object.fromEntries(fmt.formatToParts(date)
+    .filter(({ type }) => type !== 'literal')
+    .map(({ type, value }) => [type, Number(value)]));
+  const offsetAt = (timestamp) => {
+    const date = new Date(timestamp);
+    const p = parts(date);
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second)
+      - (timestamp - date.getUTCMilliseconds());
+  };
+  const p = parts(now);
+  // Subtract calendar days before converting the target local midnight. A day
+  // spanning a DST transition need not contain exactly 24 hours.
+  const localMidnight = Date.UTC(p.year, p.month - 1, p.day - daysBack);
+  let midnightUTC = localMidnight - offsetAt(localMidnight);
+  // Resolve the offset at midnight itself, rather than at the current time.
+  midnightUTC = localMidnight - offsetAt(midnightUTC);
+  return { since: new Date(midnightUTC).toISOString(), until: now.toISOString() };
 }
 
 const METRIC_CHAINS = {
@@ -124,8 +131,9 @@ export class MetricResolver {
   resolveAggregated(metricName) {
     const tz = process.env.TZ || 'UTC';
     const sessionId = this._stateEngine?.getCurrentSessionId?.() || null;
-    const today = dayBoundsUTC(tz);
-    const week = dayBoundsUTC(tz, 7);
+    const now = new Date();
+    const today = dayBoundsUTC(tz, 0, now);
+    const week = dayBoundsUTC(tz, 7, now);
 
     if (metricName === 'session_cost' || metricName === 'cost') {
       return {

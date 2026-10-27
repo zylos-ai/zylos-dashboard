@@ -302,6 +302,52 @@ test('exact Observer upgrade authenticates before upstream and rejects browser i
   }
 });
 
+for (const [failure, reason] of [
+  ['pong_timeout', 'pong_timeout'],
+  ['auth_expired', 'auth_expired'],
+  ['admin_required', 'auth_expired'],
+  ['lease_mismatch', 'lease_invalid'],
+]) {
+  test(`Observer revalidation closes ${failure} with its public reason and one safe log`, async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const { service } = fixture();
+    const app = await startHttp(service);
+    let socket;
+    try {
+      socket = await connectObserverWebSocket({
+        port: app.server.address().port,
+        path: '/observer/stream',
+        headers: {
+          Cookie: 'admin=1', Origin: app.origin,
+          'Sec-WebSocket-Protocol': `${OBSERVER_WEBSOCKET_PROTOCOL}, lease.${LEASE_ID}`,
+        },
+      });
+      socket.activate();
+      const stream = [...service.streams][0];
+      assert.ok(stream.downstream);
+      const close = t.mock.method(stream.downstream, 'close');
+      const log = t.mock.method(console, 'error', () => {});
+      if (failure === 'pong_timeout') stream.awaitingPong = true;
+      else if (failure === 'auth_expired') service.authGate.revalidateAuthContext = () => null;
+      else service.manager.validateLease = () => { throw Object.assign(new Error(failure), { code: failure }); };
+
+      t.mock.timers.tick(10_000);
+      assert.equal(close.mock.callCount(), 1);
+      assert.deepEqual(close.mock.calls[0].arguments, [1008, reason]);
+      assert.equal(log.mock.callCount(), 1);
+      const [line] = log.mock.calls[0].arguments;
+      assert.equal(line, `[observer] stream closed: ${reason} (${failure}) lease=aaaaaaaa…`);
+      assert.ok(!line.includes(LEASE_ID));
+      assert.ok(!line.includes('\n'));
+      assert.equal(service.streams.size, 0);
+    } finally {
+      await service.shutdown();
+      socket?.destroy();
+      await app.close();
+    }
+  });
+}
+
 test('display received before downstream admission is delivered after activation', async () => {
   const { service } = fixture({ initialDisplay: 'INITIAL SNAPSHOT' });
   const app = await startHttp(service);

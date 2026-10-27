@@ -91,6 +91,10 @@ export class Store {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     this.db = new Database(dbPath);
+    // Empty databases can enable pointer maps without rewriting existing data.
+    if (this.db.pragma('page_count', { simple: true }) === 0) {
+      this.db.pragma('auto_vacuum = INCREMENTAL');
+    }
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.migrate();
@@ -821,13 +825,45 @@ export class Store {
     return { vacuumed: true };
   }
 
-  vacuumIfSmall(maxBytes = 2 * 1024 * 1024 * 1024) {
-    const sizeBytes = this.dbSizeBytes();
-    if (sizeBytes > maxBytes) {
-      return { vacuumed: false, skipped: true, reason: 'db_too_large', sizeBytes, maxBytes };
-    }
-    this.vacuum();
-    return { vacuumed: true, skipped: false, sizeBytes, maxBytes };
+  autoVacuumMode() {
+    return this.db.pragma('auto_vacuum', { simple: true });
+  }
+
+  spaceUsage() {
+    const pageCount = this.db.pragma('page_count', { simple: true });
+    const freePages = this.db.pragma('freelist_count', { simple: true });
+    const pageSize = this.db.pragma('page_size', { simple: true });
+    return { pageCount, freePages, pageSize, effectiveBytes: (pageCount - freePages) * pageSize };
+  }
+
+  diskFreeBytes() {
+    const file = this.db.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file;
+    if (!file) return null;
+    const stats = fs.statfsSync(path.dirname(file));
+    return stats.bavail * stats.bsize;
+  }
+
+  enableIncrementalVacuum(maxEffectiveBytes = 2 * 1024 * 1024 * 1024) {
+    const mode = this.autoVacuumMode();
+    if (mode === 2) return { converted: false, alreadyEnabled: true };
+    const { effectiveBytes } = this.spaceUsage();
+    let freeBytes = null;
+    try { freeBytes = this.diskFreeBytes(); } catch { /* Skip when free space cannot be verified. */ }
+    const reason = effectiveBytes > maxEffectiveBytes ? 'effective_data_too_large'
+      : !Number.isFinite(freeBytes) ? 'disk_space_unknown'
+        : freeBytes < effectiveBytes * 2 ? 'insufficient_disk_space' : null;
+    if (reason) return { converted: false, skipped: true, reason, effectiveBytes, freeBytes };
+    this.db.pragma('auto_vacuum = INCREMENTAL');
+    // FULL already has pointer maps. NONE needs a single rewrite to create them.
+    if (mode === 0) this.vacuum();
+    return { converted: true, effectiveBytes, freeBytes };
+  }
+
+  incrementalVacuum(pages = 1000) {
+    if (!Number.isSafeInteger(pages) || pages < 1) throw new RangeError('Invalid vacuum page limit');
+    const before = this.spaceUsage().freePages;
+    this.db.pragma(`incremental_vacuum(${pages})`);
+    return Math.max(0, before - this.spaceUsage().freePages);
   }
 
   insertFact(fact) {
