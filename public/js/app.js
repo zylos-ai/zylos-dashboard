@@ -2226,7 +2226,7 @@ async function openObserver() {
     };
     ws.onclose = (event) => {
       if (!observerSessionCurrent(generation, targetKey) || observer.ws !== ws) return;
-      recoverObserver(event.reason ? { code: event.reason } : undefined).catch(() => {});
+      recoverObserver(event.reason === 'auth_expired' ? { code: 'auth_expired' } : undefined).catch(() => {});
     };
     observer.renewTimer = setInterval(() => {
       renewObserverLease(generation, targetKey, lease, endpoints).catch((error) => {

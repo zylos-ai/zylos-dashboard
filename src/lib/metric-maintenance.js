@@ -30,8 +30,15 @@ export async function runMetricMaintenance(store, {
   const dateKey = anchor.slice(0, 10);
   let conversion = null;
   if (store.autoVacuumMode() !== 2 && now.getUTCDay() === 0 && lastConversionDate !== dateKey && !signal?.aborted) {
-    conversion = store.enableIncrementalVacuum(conversionMaxBytes);
     lastConversionDate = dateKey;
+    try {
+      conversion = store.enableIncrementalVacuum(conversionMaxBytes);
+    } catch (error) {
+      // Return the attempt date even on failure so the hourly caller does not
+      // repeat a costly conversion throughout the same Sunday.
+      conversion = { converted: false, failed: true, reason: 'conversion_failed' };
+      process.stderr.write(`[retention] auto_vacuum conversion failed: ${error.message}; retry on a later Sunday\n`);
+    }
     if (conversion.skipped) {
       process.stderr.write(`[retention] Skipped auto_vacuum conversion: ${conversion.reason}; effectiveBytes=${conversion.effectiveBytes}, freeBytes=${conversion.freeBytes ?? 'unknown'}; see docs/modules/db-maintenance.md\n`);
     }

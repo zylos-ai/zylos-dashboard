@@ -42,8 +42,9 @@ test('Observer onclose reads auth_expired, stops reconnecting, and shows the loc
   assert.deepEqual(h.notices, [['observer.session_expired', 'error']]);
 });
 
-test('Observer pong_timeout and lease_invalid close reasons preserve backoff reconnect', async () => {
-  for (const reason of ['pong_timeout', 'lease_invalid', '']) {
+test('Observer all non-authentication close reasons preserve backoff reconnect', async () => {
+  for (const reason of ['pong_timeout', 'lease_invalid', 'dashboard_shutdown', 'upstream_closed',
+    'child_failure', 'observer_stopped', 'observer_unavailable', 'stream_error', 'unknown_future_reason', '']) {
     const h = harness();
     h.observer.ws.onclose({ reason });
     await new Promise(resolve => setImmediate(resolve));

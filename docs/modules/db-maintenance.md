@@ -24,7 +24,7 @@ Existing databases are **not converted during startup**. During hourly maintenan
 - Ineligible databases log the reason, effective bytes, available bytes, and this document's path. The process retries on a later Sunday, not on every hourly tick that day.
 - `PRAGMA auto_vacuum=2` is the persistent completion marker; no schema migration number is consumed. Once converted, there is no weekly full `VACUUM`.
 
-The automatic conversion is transactional at SQLite's file-rewrite boundary: a failed `VACUUM` leaves the original database usable, and maintenance logs the error. It may retry on a later maintenance tick. Keep normal database backups; for a planned manual conversion, take the backup below first.
+The automatic conversion is transactional at SQLite's file-rewrite boundary: a failed `VACUUM` leaves the original database usable, and maintenance logs the error. The attempt date is retained even on failure, so it retries on a later Sunday rather than every hourly tick in the same process. Keep normal database backups; for a planned manual conversion, take the backup below first.
 
 ## Manual Compaction For Large Databases
 

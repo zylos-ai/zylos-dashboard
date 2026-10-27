@@ -62,6 +62,36 @@ test('Sunday converts once and later Sundays never do a full VACUUM', async (t) 
   assert.equal(store.db.prepare('SELECT value FROM retained').get().value, 'keep me');
 });
 
+test('conversion failure records the attempt date and retries only on a later Sunday', async (t) => {
+  const store = fixture(t, { legacy: true });
+  let attempts = 0;
+  const enable = store.enableIncrementalVacuum.bind(store);
+  store.enableIncrementalVacuum = (...args) => {
+    attempts++;
+    if (attempts === 1) throw new Error('simulated VACUUM failure');
+    return enable(...args);
+  };
+  const lines = [];
+  t.mock.method(process.stderr, 'write', (line) => { lines.push(line); return true; });
+  const first = await runMetricMaintenance(store, { now: sunday });
+  assert.equal(first.conversion.failed, true);
+  assert.equal(first.lastConversionDate, '2026-06-07');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /simulated VACUUM failure/);
+  assert.equal(store.autoVacuumMode(), 0);
+  const sameDay = await runMetricMaintenance(store, {
+    now: new Date('2026-06-07T02:00:00Z'), lastConversionDate: first.lastConversionDate,
+  });
+  assert.equal(sameDay.conversion, null);
+  assert.equal(attempts, 1);
+  const nextWeek = await runMetricMaintenance(store, {
+    now: new Date('2026-06-14T01:00:00Z'), lastConversionDate: sameDay.lastConversionDate,
+  });
+  assert.equal(nextWeek.conversion.converted, true);
+  assert.equal(attempts, 2);
+  assert.equal(store.autoVacuumMode(), 2);
+});
+
 test('conversion measures effective pages rather than the bloated file size', async (t) => {
   const store = fixture(t, { legacy: true });
   fillOldMetrics(store, 100);
