@@ -289,3 +289,69 @@ test('processing failure routes the event to the spool for replay (#260)', async
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test('queue yields after 50ms even when fewer than 25 events ran (#321)', async () => {
+  let processed = 0;
+  const queue = new IngestQueue({ process: () => { blockFor(30); processed++; } });
+  for (let i = 0; i < 5; i++) queue.push(eventBody(i));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(processed > 0 && processed < 5, `processed ${processed} before yielding`);
+  await until(() => !queue.draining);
+  assert.equal(processed, 5);
+});
+
+test('live spool yields, prevents reentry, retains failed and concurrently appended lines (#321)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spool-sliced-'));
+  const store = dedupStore();
+  const realInsert = store.insertEvent;
+  store.insertEvent = event => {
+    blockFor(30);
+    if (event.ingest_id === 'fail') throw new Error('injected storage failure');
+    return realInsert(event);
+  };
+  const sanitizer = { sanitizeHookPayload: () => ({ session_id: 's1', metadata: {} }) };
+  const drainer = new SpoolDrainer(store, sanitizer, { dataDir });
+  fs.mkdirSync(path.dirname(drainer.spoolPath), { recursive: true });
+  const bodies = ['1', '2', 'fail', '3', '3', '4'].map(ingest_id => ({ ingest_id, hook_event_name: 'PostToolUse', data: {} }));
+  fs.writeFileSync(drainer.spoolPath, bodies.map(JSON.stringify).join('\n') + '\n');
+  const replayed = [];
+  try {
+    const running = drainer.drainLive({ onEvent: event => replayed.push(event.ingest_id) });
+    assert.ok(replayed.length > 0 && replayed.length < 4);
+    const appended = { ingest_id: 'new', hook_event_name: 'PostToolUse', data: {} };
+    fs.appendFileSync(drainer.spoolPath, JSON.stringify(appended) + '\n');
+    assert.deepEqual(await drainer.drainLive({ onEvent() { assert.fail('reentered'); } }), { processed: 0, duplicates: 0, errors: 0 });
+    const result = await running;
+    assert.deepEqual(result, { processed: 4, duplicates: 1, errors: 1 });
+    assert.deepEqual(replayed, ['1', '2', '3', '4']);
+    const retained = fs.readFileSync(drainer.spoolPath, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(retained.map(row => row.ingest_id), ['new', 'fail']);
+    assert.equal(fs.existsSync(drainer.processingPath), false);
+    store.insertEvent = realInsert;
+    const next = await drainer.drainLive({ onEvent: event => replayed.push(event.ingest_id) });
+    assert.deepEqual(next, { processed: 2, duplicates: 0, errors: 0 });
+    assert.deepEqual(replayed.slice(-2), ['new', 'fail']);
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('stopping a yielded live replay saves its unprocessed tail before shutdown (#321)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spool-stop-'));
+  const store = dedupStore();
+  const original = store.insertEvent;
+  store.insertEvent = event => { blockFor(30); return original(event); };
+  const drainer = new SpoolDrainer(store, { sanitizeHookPayload: () => ({ metadata: {} }) }, { dataDir });
+  fs.mkdirSync(path.dirname(drainer.spoolPath), { recursive: true });
+  const lines = Array.from({ length: 5 }, (_, i) => JSON.stringify({ ingest_id: String(i), hook_event_name: 'Stop' }));
+  fs.writeFileSync(drainer.spoolPath, lines.join('\n') + '\n');
+  try {
+    const run = drainer.drainLive({ onEvent() {} });
+    await drainer.stopPeriodicDrain();
+    const result = await run;
+    assert.ok(result.processed < 5 && result.processed > 0);
+    const remaining = fs.readFileSync(drainer.spoolPath, 'utf8').trim().split('\n');
+    assert.equal(remaining.length + result.processed, 5);
+    assert.equal(fs.existsSync(drainer.processingPath), false);
+    const rest = drainer.drainToDb();
+    assert.equal(rest.processed + result.processed, 5);
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});

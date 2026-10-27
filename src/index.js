@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createCoalescedBroadcast, createSessionCache, broadcastFleetSnapshot } from './lib/coalesced-broadcast.js';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -193,41 +194,19 @@ if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}"
 
 // SSE hub
 const sse = new SseHub(15_000);
-let fleetStateTimer = null;
-let lastFleetStateBroadcastAt = 0;
 let fleetPollerReady = false; // fleetPoller is declared later (TDZ guard)
 
 function broadcastFleetState() {
   try {
-    lastFleetStateBroadcastAt = Date.now();
-    sse.broadcast('fleet_state', buildApiStatePayload());
+    broadcastFleetSnapshot(sse, buildApiStatePayload, statePayload => {
+      if (fleetPollerReady) broadcastFleet(fleetPoller.getFleet(), statePayload);
+    });
   } catch (err) {
     process.stderr.write(`[fleet] fleet_state SSE broadcast skipped: ${err.message}\n`);
   }
-  // Without this, our own wall only received `fleet` events when a remote
-  // happened to send fleet_state (every 30s for an idle remote) or the 10s
-  // browser fallback fired, so the self tile lagged the single-agent view by
-  // 10-30s. Riding the same 1s-throttled path keeps it in sync.
-  if (fleetPollerReady) broadcastFleet(fleetPoller.getFleet());
 }
 
-function scheduleFleetStateBroadcast() {
-  const elapsed = Date.now() - lastFleetStateBroadcastAt;
-  if (elapsed >= 1000) {
-    if (fleetStateTimer) {
-      clearTimeout(fleetStateTimer);
-      fleetStateTimer = null;
-    }
-    broadcastFleetState();
-    return;
-  }
-  if (fleetStateTimer) return;
-  fleetStateTimer = setTimeout(() => {
-    fleetStateTimer = null;
-    broadcastFleetState();
-  }, 1000 - elapsed);
-  fleetStateTimer.unref?.();
-}
+const scheduleFleetStateBroadcast = createCoalescedBroadcast(broadcastFleetState);
 
 // 6b. Version checker (polls GitHub + npm registry every 12h)
 const versionChecker = new VersionChecker({
@@ -328,8 +307,10 @@ function getSystemMetrics() {
   };
 }
 
+const getCachedCostAggregate = createSessionCache(() => metricResolver.resolveAggregated('cost') || {});
+
 function getCostTiers() {
-  const aggregate = metricResolver.resolveAggregated('cost') || {};
+  const aggregate = getCachedCostAggregate(stateEngine.getCurrentSessionId());
   return {
     session_cost: aggregate.session ?? metricResolver.resolve('session_cost').value ?? null,
     daily_cost: aggregate.today ?? metricResolver.resolve('daily_cost').value ?? null,
@@ -423,27 +404,28 @@ function buildApiStatePayload() {
   return stateData;
 }
 
-function buildSelfFleetRecord() {
+function buildSelfFleetRecord(statePayload = buildApiStatePayload()) {
   return stateToFleetRecord({
     name: config.agent?.name,
     color: agentColor(config.agent?.name)
-  }, buildApiStatePayload(), {
+  }, statePayload, {
     self: true,
     base_url: null
   });
 }
 
-function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet()) {
+function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet(), statePayload) {
   return buildSafeFleetPayload({
     remoteFleet,
-    selfRecord: buildSelfFleetRecord(),
+    selfRecord: buildSelfFleetRecord(statePayload),
     nowIso: new Date().toISOString()
   });
 }
 
-function broadcastFleet(remoteFleet) {
+function broadcastFleet(remoteFleet, statePayload) {
+  if (sse.clients.size === 0) return;
   try {
-    const { payload, redacted } = buildFullFleetPayload(remoteFleet);
+    const { payload, redacted } = buildFullFleetPayload(remoteFleet, statePayload);
     sse.broadcast('fleet', payload);
     if (redacted) process.stderr.write('[fleet] SSE broadcast redacted: fleet_secret_leak_guard\n');
   } catch (err) {
@@ -1809,7 +1791,7 @@ if (isMain && process.argv.includes('--smoke')) {
       if (conversationCollector) conversationCollector.stop();
       if (codexRolloutCollector) codexRolloutCollector.stop();
       stateEngine.stopSnapshotTimer();
-      spoolDrainer.stopPeriodicDrain();
+      await spoolDrainer.stopPeriodicDrain();
       const dumped = ingestQueue.dumpToSpool();
       if (dumped) process.stderr.write(`[ingest-queue] ${dumped} unprocessed event(s) saved to spool for next start\n`);
       if (retentionTimer) clearInterval(retentionTimer);

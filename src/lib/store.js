@@ -272,6 +272,21 @@ export class Store {
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(12);
     }
+    if (currentVersion < 13) {
+      process.stderr.write('[store] Building metric lookup and cost indexes (migration 13)\n');
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_metric_latest
+            ON metric_points(metric_name, source, timestamp);
+          CREATE INDEX IF NOT EXISTS idx_metric_cost_time
+            ON metric_points(metric_name, timestamp, json_extract(dimensions, '$.cost'));
+          CREATE INDEX IF NOT EXISTS idx_metric_cost_session
+            ON metric_points(metric_name, session_id, timestamp, json_extract(dimensions, '$.cost'));
+        `);
+        this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(13);
+      })();
+    }
+
   }
 
   _prepareStatements() {
@@ -356,6 +371,14 @@ export class Store {
       SELECT * FROM metric_points
       WHERE metric_name = @name AND timestamp >= @since AND timestamp <= @until
       ORDER BY timestamp ASC
+    `);
+
+    this._latestMetric = this.db.prepare(`
+      SELECT * FROM metric_points
+      WHERE metric_name = @name AND source = @source
+        AND timestamp >= @since AND timestamp <= @until
+        AND (@runtime IS NULL OR COALESCE(NULLIF(runtime, ''), 'claude') = @runtime)
+      ORDER BY timestamp DESC, id DESC LIMIT 1
     `);
 
     this._deleteOldMetrics = this.db.prepare(`
@@ -708,6 +731,12 @@ export class Store {
       ...row,
       dimensions: row.dimensions ? JSON.parse(row.dimensions) : null
     }));
+  }
+
+  latestMetric({ name, source, since, until, runtime = null }) {
+    const row = this._latestMetric.get({ name, source, runtime,
+      since: since || '1970-01-01T00:00:00Z', until: until || '2099-12-31T23:59:59Z' });
+    return row ? { ...row, dimensions: row.dimensions ? JSON.parse(row.dimensions) : null } : null;
   }
 
   deleteMetricsOlderThan(days) {

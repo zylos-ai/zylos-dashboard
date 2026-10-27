@@ -50,8 +50,11 @@ export class IngestQueue {
   }
 
   _drainBatch() {
-    const batch = this.items.splice(0, this.batchSize);
-    for (const body of batch) {
+    const started = performance.now();
+    let processed = 0;
+    while (this.items.length && processed < this.batchSize) {
+      const body = this.items.shift();
+      processed++;
       try {
         this.processFn(body);
         this.stats.processed_total++;
@@ -60,6 +63,7 @@ export class IngestQueue {
         this.log(`[ingest-queue] process error, event sent to spool: ${err.message}\n`);
         this._appendToSpool([body]);
       }
+      if (performance.now() - started >= 50) break;
     }
     if (this.items.length > 0) {
       setImmediate(() => this._drainBatch());

@@ -95,23 +95,32 @@ export class C4Reader {
     const db = this._open();
     if (!db) return null;
     const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
+    if (this._responseTimeCache?.day === today && now - this._responseTimeCache.at < 60_000) {
+      return this._responseTimeCache.value;
+    }
     try {
-      const row = db.prepare(`
-        SELECT AVG(response_delay_s) as avg_s FROM (
-          SELECT i.id,
-            CAST((julianday(MIN(o.timestamp)) - julianday(i.timestamp)) * 86400 AS REAL) as response_delay_s
-          FROM conversations i
-          JOIN conversations o ON o.channel = i.channel
-            AND o.direction = 'out'
-            AND o.timestamp > i.timestamp
-            AND julianday(o.timestamp) - julianday(i.timestamp) < 0.0069444
-          WHERE i.direction = 'in'
-            AND i.timestamp >= ?
-            AND i.channel NOT IN ('scheduler', 'system', 'control')
-          GROUP BY i.id
-        ) WHERE response_delay_s > 0
-      `).get(today);
-      return row?.avg_s != null ? Math.round(row.avg_s) : null;
+      // Incoming rows precede outgoing rows at equal timestamps, preserving
+      // the old join's strictly-later response rule. Keep SQLite's date math
+      // and exact ten-minute cutoff to avoid changing boundary rounding.
+      const rows = db.prepare(`
+        SELECT channel, direction, timestamp, julianday(timestamp) AS day
+        FROM conversations
+        WHERE timestamp >= ? AND direction IN ('in', 'out')
+          AND channel NOT IN ('scheduler', 'system', 'control')
+        ORDER BY channel, timestamp DESC, direction ASC
+      `).all(today);
+      let channel = null, nextOutbound = null, total = 0, count = 0;
+      for (const row of rows) {
+        if (row.channel !== channel) { channel = row.channel; nextOutbound = null; }
+        if (row.direction === 'out') { nextOutbound = row; continue; }
+        if (!nextOutbound || row.day == null || nextOutbound.day == null) continue;
+        const delta = nextOutbound.day - row.day;
+        if (delta > 0 && delta < 0.0069444) { total += delta * 86400; count++; }
+      }
+      const value = count ? Math.round(total / count) : null;
+      this._responseTimeCache = { day: today, at: Date.now(), value };
+      return value;
     } catch {
       return null;
     }
@@ -154,5 +163,6 @@ export class C4Reader {
   close() {
     this._db?.close();
     this._db = null;
+    this._responseTimeCache = null;
   }
 }
