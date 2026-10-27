@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-10-27
+
+### Fixed
+- Event-loop starvation on busy agents: the backend could pin a core, time out `/api/*` and drop Observer sessions (`lease_expired`) because every hook event synchronously rebuilt the full state payload, twice per broadcast (#321, #329).
+  - Latest-metric lookups use an indexed `ORDER BY timestamp DESC LIMIT 1` query instead of loading and parsing 24h of rows; source/runtime selection and fallback semantics are unchanged.
+  - Cost totals (session / today / 7 days) are served from covering indexes and cached for 15s (invalidated on session change); totals are unchanged.
+  - The per-channel average reply time is computed in one ordered pass over today's messages and cached for 60s, replacing a self-join over the whole channel history; results are unchanged.
+  - Fleet state broadcasts run off the ingest path, coalesce triggers in a 1s window measured from the end of the previous broadcast, build one payload shared by `fleet_state` and the self fleet tile, and are skipped when there are no SSE subscribers.
+  - Live spool replay and the ingest queue yield to the event loop every 50ms; shutdown during a replay saves the unprocessed tail back to the spool.
+
+### Changed
+- Schema migration 13 adds three `metric_points` indexes. The first start after upgrading builds them and logs `Building metric lookup and cost indexes (migration 13)`; on large databases this can take from seconds to a few minutes.
+
 ## [0.6.7] - 2026-10-26
 
 ### Fixed
