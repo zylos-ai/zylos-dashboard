@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `statusline_summary` rows are now kept for 1 day instead of 30. The dashboard only displays the latest row and the metric resolver ignores rows older than 24 hours, so older history was never read; on a busy host this was about 5,700 rows (~20 MB over 30 days) per day.
+- `runtime_events` are now kept for 7 days instead of 30. The timeline shows the last 30 minutes and agent state uses only events after the last snapshot; on a busy host this table was about 155 MB at 30 days. For usage ranges longer than 7 days, output tokens without a project are split across projects using only the tool calls from the stored 7 days.
 
 ## [0.6.9] - 2026-10-27
 

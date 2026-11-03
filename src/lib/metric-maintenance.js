@@ -24,7 +24,10 @@ export async function runMetricMaintenance(store, {
   store.deleteMetricsByNameAndSource('pm2_status', '%', 0, anchor);
   store.deleteMetricsByNameAndSource('pm2_uptime', '%', 0, anchor);
   store.deleteOtherLegacyMetricsOlderThan(90, anchor);
-  store.deleteEventsOlderThan(30, anchor);
+  // Events feed the live timeline (last 30 min), the state engine (events after
+  // the last snapshot) and project attribution of unattributed output tokens.
+  // Seven days covers those; older events were rarely read.
+  store.deleteEventsOlderThan(7, anchor);
   store.deleteSnapshotsOlderThan(7, anchor);
   store.deleteFactsOlderThan(365, anchor);
   store.walCheckpoint();

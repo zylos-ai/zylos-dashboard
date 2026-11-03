@@ -188,3 +188,15 @@ test('statusline_summary keeps one day while usage_event keeps 90 days', async (
     'usage_event@2026-06-06T23:00:00.000Z',
   ]);
 });
+
+test('runtime_events keep 7 days', async (t) => {
+  const store = fixture(t);
+  const insert = store.db.prepare(`INSERT INTO runtime_events
+    (id, ingest_id, event_seq, timestamp, runtime, event_type, category)
+    VALUES (?, ?, ?, ?, 'claude', 'post_tool_use', 'tool')`);
+  insert.run('keep', 'keep', 1, '2026-06-01T12:00:00.000Z');
+  insert.run('drop', 'drop', 2, '2026-05-31T12:00:00.000Z');
+  await runMetricMaintenance(store, { now: monday });
+  const left = store.db.prepare('SELECT id FROM runtime_events ORDER BY id').all().map(r => r.id);
+  assert.deepEqual(left, ['keep']);
+});
