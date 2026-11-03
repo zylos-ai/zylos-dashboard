@@ -8,7 +8,7 @@ The dashboard runs hourly retention cleanup:
 
 - `usage_event`: 90 days
 - `ttft%` and `turn_duration%`: 90 days
-- `statusline_summary`: 30 days
+- `statusline_summary`: 1 day (only the latest row is displayed, and the metric resolver ignores rows older than 24 hours)
 - `system_summary`: 14 days
 - `pm2_summary` and legacy `pm2_%`: 7 days
 - `otel_*` sources: preserved (sample data for future use)
