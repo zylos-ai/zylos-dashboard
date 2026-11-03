@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `statusline_summary` rows are now kept for 1 day instead of 30. The dashboard only displays the latest row and the metric resolver ignores rows older than 24 hours, so older history was never read; on a busy host this was about 5,700 rows (~20 MB over 30 days) per day.
+
 ## [0.6.9] - 2026-10-27
 
 ### Fixed
