@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Fleet API: each agent record in `/api/fleet` (and the `fleet` SSE event) now includes `disk_free_bytes`, the bytes available on the filesystem holding the Zylos directory. It is `null` until the agent has reported it or when the agent's dashboard is too old to send it, and the last known value is kept while the agent is offline. Unlike `disk_pct`, it does not depend on how the filesystem total is defined, so it suits free-space and growth-rate tracking; the README now explains why `disk_pct` can read a few points higher than `df` on macOS APFS and Linux ext4 (#290).
+
 ## [0.6.10] - 2026-11-03
 
 ### Changed

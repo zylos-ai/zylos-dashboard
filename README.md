@@ -117,6 +117,24 @@ The dashboard is served at `/dashboard/` through the Caddy reverse proxy:
 https://<your-host>/dashboard/
 ```
 
+## Fleet API
+
+`GET /api/fleet` returns one record per agent on the Fleet wall,
+including the local agent (`self: true`). Disk usage is reported for the
+filesystem that holds the Zylos directory:
+
+| Field | Meaning |
+|-------|---------|
+| `disk_pct` | `(total − available) / total × 100`, from `statfs` |
+| `disk_free_bytes` | Bytes available to the agent (`statfs` `bavail × bsize`); `null` when the agent's dashboard is too old to report it |
+
+`disk_pct` can read a few points higher than the agent's own `df`. On macOS
+APFS the total is the whole container, including the System, Preboot, Recovery
+and VM volumes; on Linux ext4 the root-reserved blocks count as used. Both
+numbers are correct, but they use different denominators. Available space is
+the same under both conventions, so use `disk_free_bytes` to track free space
+or growth rate over time, and `disk_pct` for thresholds.
+
 ## Architecture
 
 ```
