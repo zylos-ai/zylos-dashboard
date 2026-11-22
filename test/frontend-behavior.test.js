@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
-import { buildAgentFleetView, liveStateMood, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
+import { buildAgentFleetView, compactMoney, liveStateMood, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
 import { validAgentSize, validObserverSize } from '../public/js/observer-size.js';
 import { agentColor } from '../src/lib/agent-color.js';
 
@@ -538,11 +538,61 @@ test('fleet tile renders mini ring with centered value and label below', () => {
   assert.match(html, /class="fleet-mini-ring-dial"><span>8%<\/span><\/span>\s*<small>CPU<\/small>/);
 });
 
-test('fleet tile cost values carry the full amount as a hover title', () => {
+test('fleet tile cost values shorten amounts from $1000 and keep the full amount as a hover title', () => {
   const html = renderAgentFleetHtml({ agents: [{ name: 'a', state: 'IDLE', session_cost: 4905.66, daily_cost: 0.5, weekly_cost: 49056.6 }] });
-  assert.match(html, /<strong title="\$4905\.66">\$4905\.66<\/strong>/);
+  assert.match(html, /<strong title="\$4905\.66">\$4\.9K<\/strong>/);
   assert.match(html, /<strong title="\$0\.5000">\$0\.5000<\/strong>/);
-  assert.match(html, /<strong title="\$49056\.60">\$49056\.60<\/strong>/);
+  assert.match(html, /<strong title="\$49056\.60">\$49\.1K<\/strong>/);
+});
+
+test('compactMoney keeps money() below $1000 and shortens larger amounts to K / M', () => {
+  assert.equal(compactMoney(null), '--');
+  assert.equal(compactMoney(''), '--');
+  assert.equal(compactMoney('abc'), '--');
+  assert.equal(compactMoney(0), '$0.0000');
+  assert.equal(compactMoney(0.5), '$0.5000');
+  assert.equal(compactMoney(999.99), '$999.99');
+  // 999.995 would print as "$1000.00" (8 chars), so it already goes compact.
+  assert.equal(compactMoney(999.995), '$1.0K');
+  assert.equal(compactMoney(1000), '$1.0K');
+  assert.equal(compactMoney(4905.66), '$4.9K');
+  assert.equal(compactMoney('4905.66'), '$4.9K');
+  assert.equal(compactMoney(9999.99), '$10.0K');
+  assert.equal(compactMoney(12345.67), '$12.3K');
+  assert.equal(compactMoney(999_949), '$999.9K');
+  assert.equal(compactMoney(999_950), '$1.0M');
+  assert.equal(compactMoney(1_234_567), '$1.2M');
+  // Every compact label fits the narrowest cost box (7 monospace chars).
+  for (const v of [999.99, 4905.66, 12345.67, 123456.78, 999_949, 9_876_543]) {
+    assert.ok(compactMoney(v).length <= 7, `${v} -> ${compactMoney(v)}`);
+  }
+});
+
+test('fleet summary totals keep the full money() format', () => {
+  const view = buildAgentFleetView({ agents: [{ name: 'a', state: 'IDLE', session_cost: 4905.66, daily_cost: 12345.67, weekly_cost: 0.5 }] });
+  assert.deepEqual(view.costTotals, { session: '$4905.66', daily: '$12345.67', weekly: '$0.5000' });
+});
+
+test('fleet grid shows 4 tiles per row from 1122px and never 5', () => {
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  const m = css.match(/\.agent-grid \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(max\((\d+)px, calc\(\(100% - (\d) \* var\(--space-md\)\) \/ (\d)\)\), 1fr\)\);/);
+  assert.ok(m, 'agent-grid track rule changed');
+  const [minTrack, gaps, cap] = m.slice(1).map(Number);
+  assert.equal(gaps, cap - 1);
+  // Insets around the grid content box: fleet-view padding 24+24, card
+  // padding 16+16 and border 1+1, grid padding 16+16; card max-width 1400px.
+  const gap = 16;
+  const columnsAt = (viewport) => {
+    const content = Math.min(viewport - 48, 1400) - 66;
+    const track = Math.max(minTrack, (content - gaps * gap) / cap);
+    return Math.max(1, Math.floor((content + gap) / (track + gap)));
+  };
+  assert.equal(columnsAt(1121), 3);
+  assert.equal(columnsAt(1122), 4);
+  assert.equal(columnsAt(1201), 4);
+  assert.equal(columnsAt(865), 2);
+  assert.equal(columnsAt(866), 3);
+  for (const w of [1202, 1280, 1400, 1920, 3840]) assert.equal(columnsAt(w), 4, `${w}px`);
 });
 
 test('fleet tile renders link quality chips and granular failure reasons', () => {

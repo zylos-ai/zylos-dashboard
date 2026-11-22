@@ -35,6 +35,17 @@ function money(value) {
   return `$${n.toFixed(2)}`;
 }
 
+// Fleet tile cost boxes are only ~55px wide at the narrowest 4-per-row layout,
+// too narrow for "$4905.66". Amounts that would print as $1000.00 or more are
+// shortened ($4.9K, $12.3K, $1.2M); the tile keeps money() in the hover title.
+export function compactMoney(value) {
+  const full = money(value);
+  const n = Number(value);
+  if (full === '--' || n < 999.995) return full;
+  if (n < 999_950) return `$${(n / 1000).toFixed(1)}K`;
+  return `$${(n / 1_000_000).toFixed(1)}M`;
+}
+
 function compactText(value, fallback) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   return text || fallback;
@@ -286,9 +297,12 @@ export function buildAgentFleetView(fleet, options = {}) {
       activityFeed,
       rate5hPct: pctValue(agent.rate_limit_pct),
       rate7dPct: pctValue(agent.rate_limit_7d_pct),
-      sessionCostLabel: money(agent.session_cost ?? agent.cost),
-      dailyCostLabel: money(agent.daily_cost),
-      weeklyCostLabel: money(agent.weekly_cost),
+      sessionCostLabel: compactMoney(agent.session_cost ?? agent.cost),
+      sessionCostTitle: money(agent.session_cost ?? agent.cost),
+      dailyCostLabel: compactMoney(agent.daily_cost),
+      dailyCostTitle: money(agent.daily_cost),
+      weeklyCostLabel: compactMoney(agent.weekly_cost),
+      weeklyCostTitle: money(agent.weekly_cost),
       cpuPct: agent.cpu_pct,
       memPct: agent.mem_pct,
       diskPct: agent.disk_pct,
@@ -366,9 +380,9 @@ function renderTile(tile, labels) {
       <span class="context-chip${tile.overThreshold ? ' is-over' : ''}" title="${escapeHtml(labels.contextChipTitle)}">${ctxLabel} <small>/ ${thresholdLabel}</small></span>
     </div>
     <div class="fleet-cost-rows">
-      <span><small>${escapeHtml(labels.sessionCost)}</small><strong title="${escapeHtml(tile.sessionCostLabel)}">${escapeHtml(tile.sessionCostLabel)}</strong></span>
-      <span><small>${escapeHtml(labels.dailyCost)}</small><strong title="${escapeHtml(tile.dailyCostLabel)}">${escapeHtml(tile.dailyCostLabel)}</strong></span>
-      <span><small>${escapeHtml(labels.weeklyCost)}</small><strong title="${escapeHtml(tile.weeklyCostLabel)}">${escapeHtml(tile.weeklyCostLabel)}</strong></span>
+      <span><small>${escapeHtml(labels.sessionCost)}</small><strong title="${escapeHtml(tile.sessionCostTitle)}">${escapeHtml(tile.sessionCostLabel)}</strong></span>
+      <span><small>${escapeHtml(labels.dailyCost)}</small><strong title="${escapeHtml(tile.dailyCostTitle)}">${escapeHtml(tile.dailyCostLabel)}</strong></span>
+      <span><small>${escapeHtml(labels.weeklyCost)}</small><strong title="${escapeHtml(tile.weeklyCostTitle)}">${escapeHtml(tile.weeklyCostLabel)}</strong></span>
     </div>
     <div class="fleet-system-rings">
       ${miniRing(labels.cpu, tile.cpuPct, labels)}

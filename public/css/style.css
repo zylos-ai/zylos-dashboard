@@ -784,7 +784,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .agent-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* 240px minimum track, capped at 4 columns: the minimum never drops below a
+     quarter of the row, so a 5th column cannot fit even at the 1400px
+     max-width. With the fleet-view, card and grid insets (114px) this gives
+     3 per row from 866px and 4 from 1122px viewport width. */
+  grid-template-columns: repeat(auto-fill, minmax(max(240px, calc((100% - 3 * var(--space-md)) / 4)), 1fr));
   gap: var(--space-md);
   padding: var(--space-md);
 }
@@ -816,9 +820,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--border-focus));
   box-shadow: var(--shadow-card-hover);
 }
-/* Right after the grid gains a column (3 at ~926px, 4 at ~1202px) tiles are
-   only ~260px wide; trim the inner padding so wide cost values such as
-   "$49056.60" are cut off over a narrower width range. */
+/* Right after the grid gains a column (3 at 866px, 4 at 1122px) tiles are
+   only ~240px wide; trim the inner padding to give the cost values and other
+   tile rows more room. */
 @media (min-width: 761px) and (max-width: 1320px) {
   .agent-tile { padding: var(--space-md) 12px; }
 }
