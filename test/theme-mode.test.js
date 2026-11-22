@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
-import { THEME_KEY, THEME_MODES, nextThemeMode, normalizeThemeMode, resolveTheme } from '../public/js/theme-mode.js';
+import { LEGACY_THEME_KEY, THEME_KEY, THEME_MODES, initTheme, nextThemeMode, normalizeThemeMode, resolveTheme } from '../public/js/theme-mode.js';
 
 function memoryStorage(initial = {}) {
   const items = { ...initial };
@@ -45,67 +44,40 @@ test('nextThemeMode cycles system -> light -> dark -> system', () => {
   assert.equal(nextThemeMode('bogus'), 'light');
 });
 
-function runIndexBootstrap({ stored, systemDark, storageThrows = false }) {
+// The inline bootstrap cannot import theme-mode.js and is not executed here;
+// its behavior is only covered by the browser sweep. This guards the shared literals.
+test('index.html bootstrap uses the same storage key and mode names as theme-mode.js', () => {
   const html = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  const attrs = {};
-  const storage = memoryStorage(stored === undefined ? {} : { [THEME_KEY]: stored });
-  const context = {
-    localStorage: storageThrows ? { getItem() { throw new Error('denied'); } } : storage,
-    window: { matchMedia: (query) => ({ matches: query === '(prefers-color-scheme: dark)' && systemDark }) },
-    document: { documentElement: { setAttribute: (name, value) => { attrs[name] = value; } } }
-  };
-  vm.runInNewContext(source, context);
-  return attrs;
-}
-
-test('index.html bootstrap resolves the stored mode and system scheme before first paint', () => {
-  for (const systemDark of [false, true]) {
-    for (const stored of [undefined, 'system', 'light', 'dark', 'bogus']) {
-      const mode = normalizeThemeMode(stored);
-      assert.deepEqual(runIndexBootstrap({ stored, systemDark }), {
-        'data-theme': resolveTheme(mode, systemDark),
-        'data-theme-mode': mode
-      }, `stored=${stored} systemDark=${systemDark}`);
-    }
-  }
-  assert.deepEqual(runIndexBootstrap({ systemDark: true, storageThrows: true }), { 'data-theme': 'dark', 'data-theme-mode': 'system' });
+  const literals = new Set([...source.matchAll(/'([^']*)'/g)].map((m) => m[1]));
+  assert.ok(literals.has(THEME_KEY), `inline script should read '${THEME_KEY}'`);
+  for (const mode of THEME_MODES) assert.ok(literals.has(mode), `inline script should know mode '${mode}'`);
+  for (const attr of ['data-theme', 'data-theme-mode']) assert.ok(literals.has(attr), `inline script should set ${attr}`);
 });
 
 function themeHarness({ bootMode, systemDark, storage = memoryStorage() }) {
-  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
-  const start = app.indexOf('// ─── Theme ───');
-  const source = app.slice(start, app.indexOf('// ─── Formatting ───', start));
   const query = fakeDarkQuery(systemDark);
   const button = { dataset: {}, listeners: {}, addEventListener(event, handler) { this.listeners[event] = handler; } };
   const root = { dataset: bootMode ? { themeMode: bootMode } : {} };
   let chartThemeCalls = 0;
-  const context = {
-    window: { matchMedia: () => query },
-    document: { documentElement: root },
-    $: (selector) => (selector === '#theme-toggle' ? button : null),
+  initTheme({
+    root,
+    getStorage: () => storage,
+    darkQuery: query,
+    toggle: button,
     t: (key) => `t:${key}`,
-    localStorage: storage,
-    applyChartTheme: () => { chartThemeCalls += 1; },
-    LEGACY_THEME_KEY: 'zylos-dashboard-theme',
-    THEME_KEY,
-    normalizeThemeMode,
-    resolveTheme,
-    nextThemeMode
-  };
-  vm.createContext(context);
-  vm.runInContext(source, context);
-  context.initTheme();
+    onApply: () => { chartThemeCalls += 1; }
+  });
   return { root, button, query, storage, click: () => button.listeners.click(), chartThemeCalls: () => chartThemeCalls };
 }
 
 test('initTheme adopts the mode set by the bootstrap and drops the legacy key', () => {
-  const storage = memoryStorage({ 'zylos-dashboard-theme': 'light' });
+  const storage = memoryStorage({ [LEGACY_THEME_KEY]: 'light' });
   const ui = themeHarness({ bootMode: 'dark', systemDark: false, storage });
   assert.equal(ui.root.dataset.theme, 'dark');
   assert.equal(ui.root.dataset.themeMode, 'dark');
   assert.equal(ui.button.title, 't:theme.dark');
-  assert.equal('zylos-dashboard-theme' in storage.items, false);
+  assert.equal(LEGACY_THEME_KEY in storage.items, false);
   assert.equal(ui.chartThemeCalls(), 1);
 });
 
@@ -134,4 +106,14 @@ test('theme toggle cycles modes, persists each choice and re-themes the page', (
     ['dark', 'dark', 'dark', 't:theme.dark'],
     ['system', 'dark', 'system', 't:theme.system']
   ]);
+  assert.equal(ui.chartThemeCalls(), 4);
+});
+
+test('initTheme and the toggle still work when storage access throws', () => {
+  const root = { dataset: { themeMode: 'system' } };
+  const button = { dataset: {}, addEventListener(event, handler) { this.click = handler; } };
+  initTheme({ root, getStorage: () => { throw new Error('denied'); }, darkQuery: fakeDarkQuery(true), toggle: button, t: (key) => key });
+  assert.equal(root.dataset.theme, 'dark');
+  button.click();
+  assert.deepEqual([root.dataset.themeMode, root.dataset.theme], ['light', 'light']);
 });

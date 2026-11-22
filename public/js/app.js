@@ -5,7 +5,7 @@ import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2'
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
 import { priceWithEditedBaseRates } from './pricing-form.js';
-import { THEME_KEY, normalizeThemeMode, resolveTheme, nextThemeMode } from './theme-mode.js';
+import { initTheme } from './theme-mode.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -21,8 +21,6 @@ const PARENT_DASHBOARD_PATH = REMOTE_AGENT ? `${BASE_PATH.slice(0, REMOTE_AGENT_
 const REMOTE_ACCESS = document.documentElement.dataset.remoteAccess === 'admin' ? 'admin' : 'read';
 
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
-// Pre-dark-mode builds always wrote 'light' here, so it never meant a choice.
-const LEGACY_THEME_KEY = 'zylos-dashboard-theme';
 const PROMPT_TRANSIENT_SECONDS = 5;
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
@@ -131,37 +129,6 @@ function remoteIsReadOnly() {
 
 function viewedAgentName() {
   return state.remoteAgent || REMOTE_AGENT || state.dashboardState?.agent?.name || '';
-}
-
-// ─── Theme ───
-const darkSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
-let themeMode = 'system';
-
-function applyTheme(mode) {
-  themeMode = normalizeThemeMode(mode);
-  const root = document.documentElement;
-  root.dataset.theme = resolveTheme(themeMode, darkSchemeQuery?.matches);
-  root.dataset.themeMode = themeMode;
-  const btn = $('#theme-toggle');
-  if (btn) {
-    btn.dataset.i18nTitle = `theme.${themeMode}`;
-    btn.title = t(btn.dataset.i18nTitle);
-  }
-  applyChartTheme();
-}
-
-function initTheme() {
-  try { localStorage.removeItem(LEGACY_THEME_KEY); } catch { /* storage unavailable */ }
-  // The inline bootstrap in index.html already read the stored mode.
-  applyTheme(document.documentElement.dataset.themeMode);
-  darkSchemeQuery?.addEventListener?.('change', () => {
-    if (themeMode === 'system') applyTheme('system');
-  });
-  $('#theme-toggle')?.addEventListener('click', () => {
-    const next = nextThemeMode(themeMode);
-    try { localStorage.setItem(THEME_KEY, next); } catch { /* best-effort */ }
-    applyTheme(next);
-  });
 }
 
 // ─── Formatting ───
@@ -4609,7 +4576,14 @@ window.addEventListener('beforeunload', () => {
 window.addEventListener('pagehide', () => { closeObserver({ release: true }).catch(() => {}); });
 
 // ─── Init ───
-initTheme();
+initTheme({
+  root: document.documentElement,
+  getStorage: () => localStorage,
+  darkQuery: window.matchMedia?.('(prefers-color-scheme: dark)'),
+  toggle: $('#theme-toggle'),
+  t,
+  onApply: applyChartTheme
+});
 await initI18n();
 await refreshObserverStatus({ quiet: true });
 initTabs();
