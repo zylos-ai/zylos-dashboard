@@ -20,8 +20,12 @@ const PARENT_DASHBOARD_PATH = REMOTE_AGENT ? `${BASE_PATH.slice(0, REMOTE_AGENT_
 const REMOTE_ACCESS = document.documentElement.dataset.remoteAccess === 'admin' ? 'admin' : 'read';
 
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
-const THEMES = ['light'];
-const THEME_KEY = 'zylos-dashboard-theme';
+// 'system' follows prefers-color-scheme. The inline script in index.html
+// applies the same resolution before first paint.
+const THEME_MODES = ['system', 'light', 'dark'];
+const THEME_KEY = 'zylos-dashboard-theme-mode';
+// Pre-dark-mode builds always wrote 'light' here, so it never meant a choice.
+const LEGACY_THEME_KEY = 'zylos-dashboard-theme';
 const PROMPT_TRANSIENT_SECONDS = 5;
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
@@ -133,11 +137,38 @@ function viewedAgentName() {
 }
 
 // ─── Theme ───
-function initTheme(theme) {
-  const stored = localStorage.getItem(THEME_KEY);
-  const resolved = THEMES.includes(theme) ? theme : (THEMES.includes(stored) ? stored : 'light');
-  document.documentElement.dataset.theme = resolved;
-  localStorage.setItem(THEME_KEY, resolved);
+const darkSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+let themeMode = 'system';
+
+function applyTheme(mode) {
+  themeMode = THEME_MODES.includes(mode) ? mode : 'system';
+  const dark = themeMode === 'dark' || (themeMode === 'system' && Boolean(darkSchemeQuery?.matches));
+  const root = document.documentElement;
+  root.dataset.theme = dark ? 'dark' : 'light';
+  root.dataset.themeMode = themeMode;
+  const btn = $('#theme-toggle');
+  if (btn) {
+    btn.dataset.i18nTitle = `theme.${themeMode}`;
+    btn.title = t(btn.dataset.i18nTitle);
+  }
+  applyChartTheme();
+}
+
+function initTheme() {
+  let stored = null;
+  try {
+    localStorage.removeItem(LEGACY_THEME_KEY);
+    stored = localStorage.getItem(THEME_KEY);
+  } catch { /* storage unavailable: follow the system */ }
+  applyTheme(stored);
+  darkSchemeQuery?.addEventListener?.('change', () => {
+    if (themeMode === 'system') applyTheme('system');
+  });
+  $('#theme-toggle')?.addEventListener('click', () => {
+    const next = THEME_MODES[(THEME_MODES.indexOf(themeMode) + 1) % THEME_MODES.length];
+    try { localStorage.setItem(THEME_KEY, next); } catch { /* best-effort */ }
+    applyTheme(next);
+  });
 }
 
 // ─── Formatting ───
@@ -2850,9 +2881,32 @@ const CHART_COLORS = {
   blueBg: 'rgba(59, 130, 246, 0.35)',
   pink: '#ec4899',
   pinkBg: 'rgba(236, 72, 153, 0.35)',
+  // Theme-dependent; refreshed from CSS custom properties by applyChartTheme().
   grid: 'rgba(15, 118, 110, 0.06)',
-  text: '#7a8794'
+  text: '#7a8794',
+  tooltip: '#101827'
 };
+
+function applyChartTheme() {
+  const css = getComputedStyle(document.documentElement);
+  const read = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+  CHART_COLORS.grid = read('--chart-grid', CHART_COLORS.grid);
+  CHART_COLORS.text = read('--text-muted', CHART_COLORS.text);
+  CHART_COLORS.tooltip = read('--chart-tooltip-bg', CHART_COLORS.tooltip);
+  if (!window.Chart) return;
+  Chart.defaults.color = CHART_COLORS.text;
+  for (const chart of Object.values(state.charts)) {
+    if (!chart) continue;
+    const { scales = {}, plugins = {} } = chart.options;
+    for (const scale of Object.values(scales)) {
+      if (scale.grid) scale.grid.color = CHART_COLORS.grid;
+      if (scale.ticks) scale.ticks.color = CHART_COLORS.text;
+    }
+    if (plugins.tooltip) plugins.tooltip.backgroundColor = CHART_COLORS.tooltip;
+    if (plugins.legend?.labels) plugins.legend.labels.color = CHART_COLORS.text;
+    chart.update('none');
+  }
+}
 
 function barChartOpts(yCallback, stacked) {
   return {
@@ -2861,7 +2915,7 @@ function barChartOpts(yCallback, stacked) {
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { display: true, position: 'top', labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } },
-      tooltip: { backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6 }
+      tooltip: { backgroundColor: CHART_COLORS.tooltip, titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6 }
     },
     scales: {
       x: {
@@ -2891,7 +2945,7 @@ function horizontalBarOpts() {
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6,
+        backgroundColor: CHART_COLORS.tooltip, titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6,
         callbacks: { label: (ctx) => `${ctx.dataset.label}: ${tok(ctx.raw)}` }
       }
     },

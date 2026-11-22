@@ -383,7 +383,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .memory-action.primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 .memory-action:disabled,
 .memory-mode:disabled {
@@ -711,6 +711,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .header-icon-btn:focus-visible,
 .fleet-sound-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .header-icon-btn[hidden] { display: none; }
+.theme-toggle svg { display: none; }
+:root:not([data-theme-mode]) .theme-toggle .theme-icon-system,
+:root[data-theme-mode="system"] .theme-toggle .theme-icon-system,
+:root[data-theme-mode="light"] .theme-toggle .theme-icon-light,
+:root[data-theme-mode="dark"] .theme-toggle .theme-icon-dark { display: block; }
 .agent-fleet {
   max-width: 1400px;
   margin: 0 auto;
@@ -779,7 +784,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .agent-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* Up to 4 columns: tracks never shrink below 240px (so ~1130px+ viewports fit
+     4 tiles and narrower ones fall back to 3/2) and never get narrower than a
+     quarter of the row (so very wide screens stay at 4 instead of 5+). */
+  grid-template-columns: repeat(auto-fill, minmax(max(240px, calc((100% - 3 * var(--space-md)) / 4)), 1fr));
   gap: var(--space-md);
   padding: var(--space-md);
 }
@@ -810,6 +818,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--border-focus));
   box-shadow: var(--shadow-card-hover);
+}
+/* Four columns at laptop widths leave tiles ~240-280px wide; trim the inner
+   padding so the cost boxes keep room for values like "$4905.66". */
+@media (min-width: 761px) and (max-width: 1320px) {
+  .agent-tile { padding: var(--space-md) 12px; }
 }
 .agent-tile-head,
 .agent-runtime-line,
@@ -1516,7 +1529,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   padding: 0 5px;
   border-radius: 999px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 10px;
   font-weight: 700;
 }
@@ -2550,7 +2563,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .range-btn:hover { background: var(--bg-elevated); color: var(--text); }
 .range-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 .range-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
@@ -2986,8 +2999,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .settings-remove-btn:hover { color: #ef4444; background: var(--bg-elevated); }
 
 .settings-footer { display: flex; justify-content: flex-end; gap: 8px; padding: var(--space-sm) var(--space-lg); border-top: 1px solid var(--border); }
-.action-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-.action-btn-primary:hover { background: #2563eb; border-color: #2563eb; }
+.action-btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.action-btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 
 .settings-status-ok { color: #22c55e; }
 
@@ -2997,8 +3010,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .observer-toolbar h2 { margin: 0 0 4px; }
 .observer-toolbar p { margin: 0; color: var(--text-secondary); font-size: 13px; }
 .observer-notice { margin-bottom: var(--space-sm); padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-xs); color: var(--text-secondary); font-size: 12px; }
-.observer-notice[data-state="live"] { color: #15803d; border-color: rgba(34, 197, 94, .35); background: rgba(34, 197, 94, .06); }
-.observer-notice[data-state="error"] { color: #b91c1c; border-color: rgba(239, 68, 68, .35); background: rgba(239, 68, 68, .06); }
+.observer-notice[data-state="live"] { color: var(--success-text); border-color: rgba(34, 197, 94, .35); background: rgba(34, 197, 94, .06); }
+.observer-notice[data-state="error"] { color: var(--danger-text); border-color: rgba(239, 68, 68, .35); background: rgba(239, 68, 68, .06); }
 .observer-frame-shell { height: min(68vh, 720px); min-height: 360px; overflow: auto; overscroll-behavior: contain; border: 1px solid #253140; border-radius: var(--radius-sm); background: #0a0f14; box-shadow: 0 12px 32px rgba(10, 15, 20, .16); }
 .observer-frame-shell iframe { display: block; width: 100%; height: 100%; border: 0; background: #0a0f14; }
 .observer-settings-state { display: flex; justify-content: space-between; gap: var(--space-sm); padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-secondary); font-size: 13px; }
@@ -3027,7 +3040,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .observer-size-form label { display: inline-flex; align-items: center; gap: 4px; }
 .observer-size-form input[type="number"] { width: 68px; height: 32px; padding: 0 6px; color: var(--text); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; font-variant-numeric: tabular-nums; }
 .observer-size-status:empty { display: none; }
-.observer-size-status[data-state="error"] { color: #b91c1c; }
+.observer-size-status[data-state="error"] { color: var(--danger-text); }
 .observer-view-switch { display: flex; gap: 4px; flex-wrap: wrap; }
 .observer-view-switch .action-btn { flex: 0 0 auto; }
 .observer-view-switch [aria-pressed="true"] { background: var(--bg-elevated); border-color: var(--border-focus); }
