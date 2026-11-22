@@ -5,6 +5,7 @@ import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2'
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
 import { priceWithEditedBaseRates } from './pricing-form.js';
+import { THEME_KEY, normalizeThemeMode, resolveTheme, nextThemeMode } from './theme-mode.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -20,10 +21,6 @@ const PARENT_DASHBOARD_PATH = REMOTE_AGENT ? `${BASE_PATH.slice(0, REMOTE_AGENT_
 const REMOTE_ACCESS = document.documentElement.dataset.remoteAccess === 'admin' ? 'admin' : 'read';
 
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
-// 'system' follows prefers-color-scheme. The inline script in index.html
-// applies the same resolution before first paint.
-const THEME_MODES = ['system', 'light', 'dark'];
-const THEME_KEY = 'zylos-dashboard-theme-mode';
 // Pre-dark-mode builds always wrote 'light' here, so it never meant a choice.
 const LEGACY_THEME_KEY = 'zylos-dashboard-theme';
 const PROMPT_TRANSIENT_SECONDS = 5;
@@ -141,10 +138,9 @@ const darkSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
 let themeMode = 'system';
 
 function applyTheme(mode) {
-  themeMode = THEME_MODES.includes(mode) ? mode : 'system';
-  const dark = themeMode === 'dark' || (themeMode === 'system' && Boolean(darkSchemeQuery?.matches));
+  themeMode = normalizeThemeMode(mode);
   const root = document.documentElement;
-  root.dataset.theme = dark ? 'dark' : 'light';
+  root.dataset.theme = resolveTheme(themeMode, darkSchemeQuery?.matches);
   root.dataset.themeMode = themeMode;
   const btn = $('#theme-toggle');
   if (btn) {
@@ -155,17 +151,14 @@ function applyTheme(mode) {
 }
 
 function initTheme() {
-  let stored = null;
-  try {
-    localStorage.removeItem(LEGACY_THEME_KEY);
-    stored = localStorage.getItem(THEME_KEY);
-  } catch { /* storage unavailable: follow the system */ }
-  applyTheme(stored);
+  try { localStorage.removeItem(LEGACY_THEME_KEY); } catch { /* storage unavailable */ }
+  // The inline bootstrap in index.html already read the stored mode.
+  applyTheme(document.documentElement.dataset.themeMode);
   darkSchemeQuery?.addEventListener?.('change', () => {
     if (themeMode === 'system') applyTheme('system');
   });
   $('#theme-toggle')?.addEventListener('click', () => {
-    const next = THEME_MODES[(THEME_MODES.indexOf(themeMode) + 1) % THEME_MODES.length];
+    const next = nextThemeMode(themeMode);
     try { localStorage.setItem(THEME_KEY, next); } catch { /* best-effort */ }
     applyTheme(next);
   });

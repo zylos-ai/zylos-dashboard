@@ -784,10 +784,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .agent-grid {
   display: grid;
-  /* Up to 4 columns: tracks never shrink below 240px (so ~1130px+ viewports fit
-     4 tiles and narrower ones fall back to 3/2) and never get narrower than a
-     quarter of the row (so very wide screens stay at 4 instead of 5+). */
-  grid-template-columns: repeat(auto-fill, minmax(max(240px, calc((100% - 3 * var(--space-md)) / 4)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--space-md);
   padding: var(--space-md);
 }
@@ -819,8 +816,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--border-focus));
   box-shadow: var(--shadow-card-hover);
 }
-/* Four columns at laptop widths leave tiles ~240-280px wide; trim the inner
-   padding so the cost boxes keep room for values like "$4905.66". */
+/* Right after the grid gains a column (3 at ~926px, 4 at ~1202px) tiles are
+   only ~260px wide; trim the inner padding so wide cost values such as
+   "$49056.60" are cut off over a narrower width range. */
 @media (min-width: 761px) and (max-width: 1320px) {
   .agent-tile { padding: var(--space-md) 12px; }
 }
@@ -1184,6 +1182,16 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   .fleet-view {
     padding-left: var(--space-md);
     padding-right: var(--space-md);
+  }
+  /* The summary and grid already inset their content, so the card's own side
+     padding only squeezes the single tile column (and its cost values). */
+  .agent-fleet {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .fleet-cost-rows span {
+    padding-left: 4px;
+    padding-right: 4px;
   }
   .back-to-fleet {
     height: 40px;
@@ -2946,7 +2954,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   }
   .header-left { display: flex; align-items: baseline; gap: var(--space-sm); }
   .eyebrow { margin: 0; }
-  .header-actions { justify-content: flex-end; }
+  .header-actions { justify-content: flex-end; flex-wrap: wrap; }
   .tab-bar { padding-left: var(--space-md); padding-right: var(--space-md); }
   main { padding: var(--space-sm) var(--space-md) var(--space-lg); }
   .chart-grid { grid-template-columns: 1fr; }

@@ -13,13 +13,14 @@ test('light and dark themes define the same token set', () => {
 });
 
 test('every theme-owned token used by style.css is defined by both themes', () => {
-  const style = read('public/css/style.css');
+  const used = new Set([...read('public/css/style.css').matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((m) => m[1]));
   const light = tokens(read('public/themes/light.css'));
   const dark = tokens(read('public/themes/dark.css'));
-  // Tokens the themes own today; style.css must not use one only a single theme defines.
-  for (const name of light) assert.ok(dark.has(name), `${name} missing from dark.css`);
-  for (const t of ['--on-accent', '--success-text', '--danger-text']) {
-    assert.ok(style.includes(`var(${t})`), `${t} should be used by style.css`);
+  const themeOwned = [...used].filter((name) => light.has(name) || dark.has(name));
+  assert.ok(themeOwned.length > 10, 'style.css should use theme tokens');
+  for (const name of themeOwned) {
+    assert.ok(light.has(name), `${name} is used by style.css but missing from light.css`);
+    assert.ok(dark.has(name), `${name} is used by style.css but missing from dark.css`);
   }
 });
 

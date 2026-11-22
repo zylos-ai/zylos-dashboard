@@ -538,6 +538,13 @@ test('fleet tile renders mini ring with centered value and label below', () => {
   assert.match(html, /class="fleet-mini-ring-dial"><span>8%<\/span><\/span>\s*<small>CPU<\/small>/);
 });
 
+test('fleet tile cost values carry the full amount as a hover title', () => {
+  const html = renderAgentFleetHtml({ agents: [{ name: 'a', state: 'IDLE', session_cost: 4905.66, daily_cost: 0.5, weekly_cost: 49056.6 }] });
+  assert.match(html, /<strong title="\$4905\.66">\$4905\.66<\/strong>/);
+  assert.match(html, /<strong title="\$0\.5000">\$0\.5000<\/strong>/);
+  assert.match(html, /<strong title="\$49056\.60">\$49056\.60<\/strong>/);
+});
+
 test('fleet tile renders link quality chips and granular failure reasons', () => {
   const html = renderAgentFleetHtml({
     agents: [

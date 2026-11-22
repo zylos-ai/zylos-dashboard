@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
 import { mutateConfig } from './config-mutation.js';
 import { sendHtml, sendJson, sendText } from './http.js';
+import { THEME_KEY } from '../../public/js/theme-mode.js';
 
 const SCRYPT_KEYLEN = 64;
 const COOKIE_NAME = '__Secure-zylos_dashboard_session';
@@ -227,7 +228,7 @@ function loginPageHtml(base, error = '', next = '') {
     <script>
       // Honour a manual theme choice made in the dashboard; otherwise the CSS follows the system.
       try {
-        var mode = localStorage.getItem('zylos-dashboard-theme-mode');
+        var mode = localStorage.getItem(${JSON.stringify(THEME_KEY)});
         if (mode === 'light' || mode === 'dark') document.documentElement.setAttribute('data-theme', mode);
       } catch (e) { /* storage unavailable */ }
     </script>

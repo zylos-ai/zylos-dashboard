@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dark mode. The dashboard follows the system color scheme by default; a new header button cycles system → light → dark and the choice is stored in the browser (`zylos-dashboard-theme-mode`). The theme is applied before first paint, so there is no light flash. Charts pick up the theme colors and re-render when it changes. The login page follows the system scheme and a manual choice made in the dashboard.
 
 ### Changed
-- The Agent Fleet grid now fits 4 tiles per row from about 1130px wide (was 3 below ~1200px) and stays at 4 on very wide screens; narrower widths still drop to 3/2/1. Tiles at laptop widths use slightly narrower side padding.
+- Agent Fleet cost values show the full amount as a hover tooltip. Tiles at laptop widths use slightly narrower side padding and on phones the fleet card drops its own side padding, so 4-digit costs such as `$4905.66` are no longer cut off at any width from 320px up, and 5-digit ones are cut off over a narrower width range than before. The grid layout is unchanged (4 tiles per row from about 1200px wide).
+- On phones the header buttons wrap onto a second row when they do not fit, instead of the leftmost one being pushed off-screen.
 - The old `zylos-dashboard-theme` localStorage key is removed on load; it always held `light` and never reflected a user choice.
 
 ## [0.6.10] - 2026-11-03

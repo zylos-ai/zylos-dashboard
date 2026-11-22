@@ -366,9 +366,9 @@ function renderTile(tile, labels) {
       <span class="context-chip${tile.overThreshold ? ' is-over' : ''}" title="${escapeHtml(labels.contextChipTitle)}">${ctxLabel} <small>/ ${thresholdLabel}</small></span>
     </div>
     <div class="fleet-cost-rows">
-      <span><small>${escapeHtml(labels.sessionCost)}</small><strong>${escapeHtml(tile.sessionCostLabel)}</strong></span>
-      <span><small>${escapeHtml(labels.dailyCost)}</small><strong>${escapeHtml(tile.dailyCostLabel)}</strong></span>
-      <span><small>${escapeHtml(labels.weeklyCost)}</small><strong>${escapeHtml(tile.weeklyCostLabel)}</strong></span>
+      <span><small>${escapeHtml(labels.sessionCost)}</small><strong title="${escapeHtml(tile.sessionCostLabel)}">${escapeHtml(tile.sessionCostLabel)}</strong></span>
+      <span><small>${escapeHtml(labels.dailyCost)}</small><strong title="${escapeHtml(tile.dailyCostLabel)}">${escapeHtml(tile.dailyCostLabel)}</strong></span>
+      <span><small>${escapeHtml(labels.weeklyCost)}</small><strong title="${escapeHtml(tile.weeklyCostLabel)}">${escapeHtml(tile.weeklyCostLabel)}</strong></span>
     </div>
     <div class="fleet-system-rings">
       ${miniRing(labels.cpu, tile.cpuPct, labels)}
