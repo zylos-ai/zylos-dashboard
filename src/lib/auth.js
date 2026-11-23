@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
 import { mutateConfig } from './config-mutation.js';
 import { sendHtml, sendJson, sendText } from './http.js';
+import { THEME_KEY } from '../../public/js/theme-mode.js';
 
 const SCRYPT_KEYLEN = 64;
 const COOKIE_NAME = '__Secure-zylos_dashboard_session';
@@ -224,20 +225,32 @@ function loginPageHtml(base, error = '', next = '') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login - Zylos Dashboard</title>
+    <script>
+      // Honour a manual theme choice made in the dashboard; otherwise the CSS follows the system.
+      try {
+        var mode = localStorage.getItem(${JSON.stringify(THEME_KEY)});
+        if (mode === 'light' || mode === 'dark') document.documentElement.setAttribute('data-theme', mode);
+      } catch (e) { /* storage unavailable */ }
+    </script>
     <style>
-      body { font-family: system-ui, -apple-system, sans-serif; background: #f7faf9; color: #101827; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+      :root { color-scheme: light; --bg: #f7faf9; --text: #101827; --text-dim: #526170; --panel: rgba(255,255,255,0.88); --panel-shadow: 0 18px 42px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9); --panel-border: rgba(15,118,110,0.1); --input-bg: #fff; --input-border: rgba(15,118,110,0.16); --accent: #0d9488; --accent-hover: #0f766e; --accent-ring: rgba(13,148,136,0.12); --on-accent: #fff; --error: #dc2626; }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) { color-scheme: dark; --bg: #0b1215; --text: #e3eaee; --text-dim: #a5b3bc; --panel: rgba(18,27,31,0.94); --panel-shadow: 0 18px 42px rgba(0,0,0,0.36), inset 0 1px 0 rgba(255,255,255,0.04); --panel-border: rgba(94,234,212,0.13); --input-bg: #152024; --input-border: rgba(94,234,212,0.2); --accent: #2dd4bf; --accent-hover: #5eead4; --accent-ring: rgba(45,212,191,0.2); --on-accent: #042f2a; --error: #f87171; }
+      }
+      :root[data-theme="dark"] { color-scheme: dark; --bg: #0b1215; --text: #e3eaee; --text-dim: #a5b3bc; --panel: rgba(18,27,31,0.94); --panel-shadow: 0 18px 42px rgba(0,0,0,0.36), inset 0 1px 0 rgba(255,255,255,0.04); --panel-border: rgba(94,234,212,0.13); --input-bg: #152024; --input-border: rgba(94,234,212,0.2); --accent: #2dd4bf; --accent-hover: #5eead4; --accent-ring: rgba(45,212,191,0.2); --on-accent: #042f2a; --error: #f87171; }
+      body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
       .login-shell { width: 100%; max-width: 380px; padding: 1rem; }
-      .login-panel { background: rgba(255,255,255,0.88); backdrop-filter: blur(12px); border-radius: 12px; padding: 2.5rem 2rem; box-shadow: 0 18px 42px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9); border: 1px solid rgba(15,118,110,0.1); }
-      .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: #0d9488; margin: 0 0 0.25rem; font-weight: 600; }
-      h1 { margin: 0 0 1.5rem; font-size: 1.5rem; font-weight: 600; color: #101827; }
-      .login-error { color: #dc2626; font-size: 0.85rem; margin: 0 0 1rem; }
-      .login-label { display: block; font-size: 0.85rem; color: #526170; margin-bottom: 0.5rem; }
-      .login-input { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid rgba(15,118,110,0.16); border-radius: 8px; background: #fff; color: #101827; font-size: 1rem; box-sizing: border-box; transition: border-color 200ms, box-shadow 200ms; outline: none; }
-      .login-input:focus { border-color: #0d9488; box-shadow: 0 0 0 3px rgba(13,148,136,0.12); }
-      .login-remember { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.85rem; color: #526170; cursor: pointer; }
-      .login-remember input { accent-color: #0d9488; cursor: pointer; }
-      .login-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #0d9488; color: #fff; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background 200ms; }
-      .login-button:hover { background: #0f766e; }
+      .login-panel { background: var(--panel); backdrop-filter: blur(12px); border-radius: 12px; padding: 2.5rem 2rem; box-shadow: var(--panel-shadow); border: 1px solid var(--panel-border); }
+      .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--accent); margin: 0 0 0.25rem; font-weight: 600; }
+      h1 { margin: 0 0 1.5rem; font-size: 1.5rem; font-weight: 600; color: var(--text); }
+      .login-error { color: var(--error); font-size: 0.85rem; margin: 0 0 1rem; }
+      .login-label { display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.5rem; }
+      .login-input { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid var(--input-border); border-radius: 8px; background: var(--input-bg); color: var(--text); font-size: 1rem; box-sizing: border-box; transition: border-color 200ms, box-shadow 200ms; outline: none; }
+      .login-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+      .login-remember { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-dim); cursor: pointer; }
+      .login-remember input { accent-color: var(--accent); cursor: pointer; }
+      .login-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 1rem; font-weight: 500; cursor: pointer; transition: background 200ms; }
+      .login-button:hover { background: var(--accent-hover); }
     </style>
   </head>
   <body>
