@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Dark mode. The dashboard follows the system color scheme by default; a new header button cycles system → light → dark and the choice is stored in the browser (`zylos-dashboard-theme-mode`). The theme is applied before first paint, so there is no light flash. Charts pick up the theme colors and re-render when it changes. The login page follows the system scheme and a manual choice made in the dashboard.
+- Fleet API: each agent record in `/api/fleet` (and the `fleet` SSE event) now includes `disk_free_bytes`, the bytes available on the filesystem holding the Zylos directory. It is `null` until the agent has reported it or when the agent's dashboard is too old to send it, and the last known value is kept while the agent is offline. Unlike `disk_pct`, it does not depend on how the filesystem total is defined, so it suits free-space and growth-rate tracking; the README now explains why `disk_pct` can read a few points higher than `df` on macOS APFS and Linux ext4 (#290).
 
 ### Changed
 - Agent Fleet cost values show the full amount as a hover tooltip. Tiles at laptop widths use slightly narrower side padding and on phones the fleet card drops its own side padding, so cost values are not cut off at any width from 320px up (see the next entry for large amounts).

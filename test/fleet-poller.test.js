@@ -51,7 +51,7 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
       running_tools: [{ tool_name: 'Bash', tool_detail: 'npm test' }],
       runtime_info: { model: 'GPT-5', effort: 'high', zylos_update: '1.2.3' },
       new_session_threshold: 75,
-      system_metrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56 },
+      system_metrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56, disk_free_bytes: 123456789012 },
       session_cost: 1.23,
       daily_cost: 4.56,
       weekly_cost: 7.89,
@@ -86,6 +86,7 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
   assert.equal(fleet.agents[0].cpu_pct, 12);
   assert.equal(fleet.agents[0].mem_pct, 34);
   assert.equal(fleet.agents[0].disk_pct, 56);
+  assert.equal(fleet.agents[0].disk_free_bytes, 123456789012);
   assert.equal(fleet.agents[0].has_upgrade, true);
   assert.equal(fleet.agents[0].has_subagent, true);
   assert.equal(fleet.agents[0].health_reason, 'ok');
@@ -633,7 +634,7 @@ test('stateToFleetRecord produces a secret-free self record from local API state
       session_cost: 1.23,
       daily_cost: 4.56,
       weekly_cost: 7.89,
-      system_metrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56 }
+      system_metrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56, disk_free_bytes: 42000000000 }
   }, {
     self: true,
     base_url: null,
@@ -657,6 +658,7 @@ test('stateToFleetRecord produces a secret-free self record from local API state
   assert.equal(record.cpu_pct, 12);
   assert.equal(record.mem_pct, 34);
   assert.equal(record.disk_pct, 56);
+  assert.equal(record.disk_free_bytes, 42000000000);
   assert.equal(record.has_upgrade, true);
   assert.equal(record.has_subagent, true);
   assert.equal(record.base_url, null);
@@ -665,6 +667,48 @@ test('stateToFleetRecord produces a secret-free self record from local API state
   assert.equal(record.last_seen, new Date(0).toISOString());
   assert.equal(JSON.stringify(record).includes('zylos_ak_'), false);
   assert.equal(JSON.stringify(record).includes('zylos_st_'), false);
+});
+
+test('stateToFleetRecord reports disk_free_bytes as null when the remote does not send it (#290)', () => {
+  const older = stateToFleetRecord({ name: 'old' }, {
+    state: 'IDLE',
+    system_metrics: { cpu_pct: 1, mem_pct: 2, disk_pct: 3 }
+  }, { nowMs: 0 });
+  assert.equal(older.disk_pct, 3);
+  assert.equal(older.disk_free_bytes, null);
+
+  const malformed = stateToFleetRecord({ name: 'bad' }, {
+    state: 'IDLE',
+    system_metrics: { disk_free_bytes: 'n/a' }
+  }, { nowMs: 0 });
+  assert.equal(malformed.disk_free_bytes, null);
+
+  const noMetrics = stateToFleetRecord({ name: 'none' }, { state: 'IDLE' }, { nowMs: 0 });
+  assert.equal(Object.hasOwn(noMetrics, 'disk_free_bytes'), true);
+  assert.equal(noMetrics.disk_free_bytes, null);
+});
+
+test('fleet poller keeps the last disk_free_bytes across failures and starts null (#290)', () => {
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: async () => jsonResponse({}), now: () => 0 });
+  const agent = poller.agents[0];
+  assert.equal(poller.getFleet().agents[0].disk_free_bytes, null);
+
+  poller._setSuccess(agent, { state: 'IDLE', system_metrics: { disk_pct: 78.4, disk_free_bytes: 53687091200 } });
+  assert.equal(poller.getFleet().agents[0].disk_free_bytes, 53687091200);
+
+  poller._setFailure(agent, 'timeout');
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.state, 'OFFLINE');
+  assert.equal(record.disk_pct, 78.4);
+  assert.equal(record.disk_free_bytes, 53687091200);
+
+  poller.addAgent({ name: 'Added', base_url: 'https://added.example.test', read_api_key: 'zylos_ak_secret' });
+  const added = poller.getFleet().agents.find(a => a.name === 'Added');
+  assert.equal(Object.hasOwn(added, 'disk_free_bytes'), true);
+  assert.equal(added.disk_free_bytes, null);
+  poller.stop();
 });
 
 test('stateToFleetRecord consumes API snake_case cost tiers directly (#174)', () => {
