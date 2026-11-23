@@ -1,0 +1,33 @@
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1215;
+  --bg-secondary: rgba(21, 31, 35, 0.78);
+  --bg-card: rgba(18, 27, 31, 0.94);
+  --bg-elevated: #152024;
+  --bg-code: rgba(30, 42, 47, 0.9);
+  --text: #e3eaee;
+  --text-dim: #a5b3bc;
+  --text-muted: #84939d;
+  --accent: #2dd4bf;
+  --accent-dim: rgba(45, 212, 191, 0.16);
+  --accent-hover: #5eead4;
+  --on-accent: #042f2a;
+  --purple: #818cf8;
+  --green: #34d399;
+  --success-text: #4ade80;
+  --danger-text: #f87171;
+  --border: rgba(94, 234, 212, 0.13);
+  --border-focus: rgba(45, 212, 191, 0.5);
+  --nav-bg: rgba(11, 18, 21, 0.84);
+  --shadow-card: 0 18px 42px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-card-hover: 0 24px 52px rgba(0, 0, 0, 0.45), 0 0 24px rgba(45, 212, 191, 0.1);
+  --chart-grid: rgba(148, 163, 184, 0.12);
+  --chart-tooltip-bg: #1e2a30;
+  --state-offline: #94a3b8;
+  --state-idle: #4ade80;
+  --state-busy: #facc15;
+  --state-waiting: #60a5fa;
+  --state-possibly-stuck: #fb923c;
+  --state-stuck: #f87171;
+  --state-unknown: #9ca3af;
+}

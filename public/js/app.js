@@ -5,6 +5,7 @@ import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2'
 import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
 import { priceWithEditedBaseRates } from './pricing-form.js';
+import { initTheme } from './theme-mode.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -20,8 +21,6 @@ const PARENT_DASHBOARD_PATH = REMOTE_AGENT ? `${BASE_PATH.slice(0, REMOTE_AGENT_
 const REMOTE_ACCESS = document.documentElement.dataset.remoteAccess === 'admin' ? 'admin' : 'read';
 
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
-const THEMES = ['light'];
-const THEME_KEY = 'zylos-dashboard-theme';
 const PROMPT_TRANSIENT_SECONDS = 5;
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
@@ -130,14 +129,6 @@ function remoteIsReadOnly() {
 
 function viewedAgentName() {
   return state.remoteAgent || REMOTE_AGENT || state.dashboardState?.agent?.name || '';
-}
-
-// ─── Theme ───
-function initTheme(theme) {
-  const stored = localStorage.getItem(THEME_KEY);
-  const resolved = THEMES.includes(theme) ? theme : (THEMES.includes(stored) ? stored : 'light');
-  document.documentElement.dataset.theme = resolved;
-  localStorage.setItem(THEME_KEY, resolved);
 }
 
 // ─── Formatting ───
@@ -2850,9 +2841,32 @@ const CHART_COLORS = {
   blueBg: 'rgba(59, 130, 246, 0.35)',
   pink: '#ec4899',
   pinkBg: 'rgba(236, 72, 153, 0.35)',
+  // Theme-dependent; refreshed from CSS custom properties by applyChartTheme().
   grid: 'rgba(15, 118, 110, 0.06)',
-  text: '#7a8794'
+  text: '#7a8794',
+  tooltip: '#101827'
 };
+
+function applyChartTheme() {
+  const css = getComputedStyle(document.documentElement);
+  const read = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+  CHART_COLORS.grid = read('--chart-grid', CHART_COLORS.grid);
+  CHART_COLORS.text = read('--text-muted', CHART_COLORS.text);
+  CHART_COLORS.tooltip = read('--chart-tooltip-bg', CHART_COLORS.tooltip);
+  if (!window.Chart) return;
+  Chart.defaults.color = CHART_COLORS.text;
+  for (const chart of Object.values(state.charts)) {
+    if (!chart) continue;
+    const { scales = {}, plugins = {} } = chart.options;
+    for (const scale of Object.values(scales)) {
+      if (scale.grid) scale.grid.color = CHART_COLORS.grid;
+      if (scale.ticks) scale.ticks.color = CHART_COLORS.text;
+    }
+    if (plugins.tooltip) plugins.tooltip.backgroundColor = CHART_COLORS.tooltip;
+    if (plugins.legend?.labels) plugins.legend.labels.color = CHART_COLORS.text;
+    chart.update('none');
+  }
+}
 
 function barChartOpts(yCallback, stacked) {
   return {
@@ -2861,7 +2875,7 @@ function barChartOpts(yCallback, stacked) {
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { display: true, position: 'top', labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } },
-      tooltip: { backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6 }
+      tooltip: { backgroundColor: CHART_COLORS.tooltip, titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6 }
     },
     scales: {
       x: {
@@ -2891,7 +2905,7 @@ function horizontalBarOpts() {
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6,
+        backgroundColor: CHART_COLORS.tooltip, titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6,
         callbacks: { label: (ctx) => `${ctx.dataset.label}: ${tok(ctx.raw)}` }
       }
     },
@@ -4562,7 +4576,14 @@ window.addEventListener('beforeunload', () => {
 window.addEventListener('pagehide', () => { closeObserver({ release: true }).catch(() => {}); });
 
 // ─── Init ───
-initTheme();
+initTheme({
+  root: document.documentElement,
+  getStorage: () => localStorage,
+  darkQuery: window.matchMedia?.('(prefers-color-scheme: dark)'),
+  toggle: $('#theme-toggle'),
+  t,
+  onApply: applyChartTheme
+});
 await initI18n();
 await refreshObserverStatus({ quiet: true });
 initTabs();
