@@ -68,7 +68,10 @@ This document guides AI assistants working on the zylos-dashboard component.
 - **Frontend is vanilla JS** — no build step, no framework, no bundler. `app.js` uses cache-busting via query string (`?v=N`). Bump the version after any frontend change.
 - **DB migrations are incremental** — each migration checks `currentVersion < N` and is idempotent. Never modify existing migrations; only append new ones.
 - **macOS vs Linux** — `system-collector.js` uses `vm_stat` on macOS for accurate memory reporting. Test on both platforms when changing system metrics.
-- **Agent runtime adapters** — Keep runtime-specific behavior in adapters. Shared code uses adapter interfaces and capabilities. Keep runtime tool names, file locations, event formats, and prompts inside the relevant adapter. The server exposes capabilities for the frontend to use when deciding which surfaces to show.
+- **Agent runtime adapters** — Shared code uses adapter interfaces and
+  capabilities. Keep runtime tool names, file locations, event formats, and
+  prompts inside the relevant adapter. Use server-derived capabilities to
+  decide which features to show in the frontend.
 
 ## Testing
 
