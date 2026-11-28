@@ -68,7 +68,7 @@ This document guides AI assistants working on the zylos-dashboard component.
 - **Frontend is vanilla JS** — no build step, no framework, no bundler. `app.js` uses cache-busting via query string (`?v=N`). Bump the version after any frontend change.
 - **DB migrations are incremental** — each migration checks `currentVersion < N` and is idempotent. Never modify existing migrations; only append new ones.
 - **macOS vs Linux** — `system-collector.js` uses `vm_stat` on macOS for accurate memory reporting. Test on both platforms when changing system metrics.
-- **Codex runtime** — dashboard detects runtime from config. Claude-only panels are hidden on Codex. Use `config.runtime` checks, not environment sniffing.
+- **Agent runtime adapters** — Keep runtime-specific behavior in adapters. Shared code uses adapter interfaces and capabilities. Keep runtime tool names, file locations, event formats, and prompts inside the relevant adapter. The server exposes capabilities for the frontend to use when deciding which surfaces to show.
 
 ## Testing
 
@@ -80,6 +80,13 @@ npm run smoke:api  # API endpoint smoke test
 ```
 
 Tests live in `test/`. Use `node:test` and `node:assert/strict`. Shared logic (like `gauge-utils.js`) must be imported by both production code and tests — never duplicate logic.
+
+Run integration tests and their services under a dedicated system user with
+isolated `HOME`, `ZYLOS_DIR`, `PM2_HOME`, and a short `TMPDIR`. Use a private
+tmux socket and a dedicated test database. Before running, verify the resolved
+paths and actual targets, and set a time limit. Default to `TZ=Asia/Singapore`.
+Tests specifically covering timezones may select the timezone they need. Stop
+test services and verify that their processes have exited before cleanup.
 
 ## Release Process
 
